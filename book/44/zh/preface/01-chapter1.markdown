@@ -1,0 +1,375 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>前言-Shell 编程范例</title>
+<meta content='前言,Shell 编程范例' name='keywords'>
+<meta content='前言,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/preface/01-chapter0.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">版本修订历史</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/44/zh/chapters/01-chapter1.markdown">
+<span class="">准备工作</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="前言">前言</h1>
+<ul>
+<li><a href="#toc_18682_17841_1">背景</a></li>
+<li><a href="#toc_18682_17841_2">现状</a></li>
+<li><a href="#toc_18682_17841_3">计划</a></li>
+</ul>
+<p><span id="toc_18682_17841_1"></span></p>
+<h2 id="背景">背景</h2>
+<p>早在 2007 年 11 月，为了系统地学习和总结 Shell 编程，作者专门制定了一个 Shell 编程范例的总结计划，当时的计划是：</p>
+<blockquote>
+<p>这个系列将以面向“对象”（即我们操作的对象）来展开，并引入大量的实例，这样有助于让我们真正去学以致用，并在用的过程中提高兴趣。所以这个系列将不会专门介绍 Shell 的语法， 而是假设读者对 Shell 编程有了一定的基础。</p>
+<p>另外，该系列到最后可能会涵盖：数值、逻辑值、字符串、文件、进程、文件系统等所有我们可以操作的“对象”，这个操作对象也将从低级到高级，进而上升到网络层面，整个通过各种方式连接起来的计算机的集合。实际上这也未尝不是在摸索 UNIX 的哲学，那"K.I.S.S"（Keep It Simple, Stupid）蕴藏的巨大能量。</p>
+</blockquote>
+<blockquote>
+<p>—— 摘自《兰大开源社区 &gt;&gt; 脚本编程 &gt;&gt; Shell 编程范例》</p>
+</blockquote>
+<p>2008 年 4 月底，整个系列大部分内容和框架基本完成，后来由于实习和工作原因，并没有持续完善。不过相关章节却获得了较好的反响，很多热心网友有大量评论和转载，例如，在百度文库转载的一份《Shell编程范例之字符串操作》的访问量已接近 3000。说明整个系列还是有比较大的阅读群体。</p>
+<p><span id="toc_18682_17841_2"></span></p>
+<h2 id="现状">现状</h2>
+<p>考虑到整个 Linux 世界的蓬勃发展，Shell 的使用环境越来越多，相关使用群体会不断增加，所以最近已经将该系列重新整理，并以自由书籍的方式发布，以便惠及更多的读者。</p>
+<p>整个系列已经用 <a href="http://www.tinylab.org/start-posting-with-markdown/">Markdown</a> 重新组织，并发布到了 <a href="http://tinylab.org">泰晓科技|TinyLab.org</a>。</p>
+<p>整理到<a href="http://tinylab.org">TinyLab.org</a>的索引篇是：<a href="http://www.tinylab.org/shell-programming-paradigm-series-index-review/">《Shell编程范例之索引篇》</a>，其内容结构如下：</p>
+<ul>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-begins-with/">Shell编程范例之开篇</a> (更新时间：2007-07-21)</li>
+<li><a href="http://www.tinylab.org/shell-numeric-calculation/">Shell编程范例之数值运算</a> (更新时间：2007-11-9)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-of-boolean-operations/">Shell编程范例之布尔运算</a> (更新时间：2007-10-30)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-of-string-manipulation/">Shell编程范例之字符串操作</a> (更新时间：2007-11-21)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigms-of-file-operations/">Shell编程范例之文件操作</a> (更新时间：2007-12-5)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-in-file-system-operations/">Shell编程范例之文件系统操作</a> (更新时间：2007-12-29)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-of-process-operations/">Shell编程范例之进程操作</a> (更新时间：2008-02-22)</li>
+<li><a href="http://www.tinylab.org/shell-programming-paradigm-of-network-operations/">Shell编程范例之网络操作</a> (更新时间：2008-04-19)</li>
+<li><a href="http://www.tinylab.org/summary-of-shell-programming-paradigm-article/">Shell编程范例之总结篇</a> (更新时间：2008-07-21)<br></li>
+</ul>
+<p>最近，基于一个 Markdown 的<a href="http://tinylab.org/docker-quick-start-docker-gitbook-writing-a-book/">开源书籍模版</a>：Gitbook，已经把该系列整理成了自由书籍，并维护在 TinyLab 的<a href="https://github.com/tinyclub/open-shell-book">项目仓库</a>中。项目相关信息如下：</p>
+<ul>
+<li>项目首页：<a href="http://www.tinylab.org/open-shell-book/">http://www.tinylab.org/open-shell-book/</a></li>
+<li>代码仓库：<a href="https://github.com/tinyclub/open-shell-book">https://github.com/tinyclub/open-shell-book.git</a></li>
+</ul>
+<p><span id="toc_18682_17841_3"></span></p>
+<h2 id="计划">计划</h2>
+<p>后续除了继续在 <a href="http://tinylab.org">泰晓科技|TinyLab.org</a> 以 Blog 形式持续更新外，还打算重新规划、增补整个系列，并以自由书籍的方式持续维护，并通过 <a href="http://tinylab.org">TinLab.org</a> 平台接受读者的反馈，直到正式发行出版。</p>
+<p>欢迎大家指出本书初稿中的不足，甚至参与到相关章节的写作、校订和完善中来。</p>
+<p>如果有时间和兴趣，欢迎参与。可以通过 <a href="http://www.tinylab.org/about/">泰晓科技</a> 联系我们，或者直接关注微博<a href="http://weibo.com/tinylaborg">@泰晓科技</a>并私信我们。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/195/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/46/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/191/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/104/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/143/index.html">
+<img class="uk-book-cover" src="/static/icons/48/intellij_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/143/index.html">IntelliJ IDEA 简体中文专题教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/76.html">judasn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="intellij">intellij</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">43页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10995个">10995</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/6/index.html">
+<img class="uk-book-cover" src="/static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/6/index.html">Spring Framework 4.x 参考文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1192个">1192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2882;var bookPageRelUrl ='zh/preface/01-chapter1.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>7. ltree 插件-postgresql教程</title>
+<meta content='7. ltree 插件,postgresql教程' name='keywords'>
+<meta content='7. ltree 插件,postgresql教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/194/chapters/6.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">6. 枚举类型</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/194/chapters/8.html">
+<span class="">8. Window F..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/194/index.html">postgresql教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/hfpp2012/postgresql_tutorial" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h4 id="ltree介绍">ltree介绍</h4>
+<p>ltree是PostgreSQL的一个扩展插件，即extension，使用它可以实现树型结构，而且还支持索引和丰富的查询。</p>
+<p><a href="http://www.postgresql.org/docs/current/static/ltree.html">ltree</a>官方文档给出了详细的解释。</p>
+<p>它的概念很简单，打个比方，比如，我们要存一个树型菜单，不限定级数，有祖先(根)，根子节有子节点，子节点又有子节点，以此类推，形成一颗树。假如我们存公司的数据，它的表名叫companies，有个字段叫name，存的是分公司的名称。有一个很简单的方法，来实现这种树型结构，只要在companies表中增加一个字段parent_id即可，它存的是父节点的id，以此来找到父节点，根节点的parent_id为null，其他节点都为父节点的id。这种方式是可以的，它也能查询到所有的节点，由于存有parent_id，它找子节点，父节点，根节点都很简单，若要找其他节点，只能通过遍历了，效率较低。而且，每次添加节点，都要查找父节点的id，即parent_id，这样也不够直观和灵活。</p>
+<p>而ltree是在数据库级别支持的树型结构。它支持丰富的查询。</p>
+<h4 id="ltree使用">ltree使用</h4>
+<p>我们来演示一下搭建这样的树型结构。</p>
+<pre><code>                        Top
+                     /   |  \
+             Science Hobbies Collections
+                 /       |              \
+        Astronomy   Amateurs_Astronomy Pictures
+           /  \                            |
+Astrophysics  Cosmology                Astronomy
+                                        /  |    \
+                                 Galaxies Stars Astronauts
+</code></pre>
+<p>也会演示它强大的查询方法。</p>
+<p>首先开启ltree扩展。</p>
+<pre><code>sudo -u postgres psql
+CREATE EXTENSION IF NOT EXISTS ltree;
+</code></pre>
+<p>创建数据库表。表名为test，字段名为path，类型指定为ltree。</p>
+<pre><code class="language-sql">CREATE TABLE test (path ltree);
+</code></pre>
+<p>插入数据。</p>
+<pre><code class="language-sql">INSERT INTO test VALUES ('Top');
+INSERT INTO test VALUES ('Top.Science');
+INSERT INTO test VALUES ('Top.Science.Astronomy');
+INSERT INTO test VALUES ('Top.Science.Astronomy.Astrophysics');
+INSERT INTO test VALUES ('Top.Science.Astronomy.Cosmology');
+INSERT INTO test VALUES ('Top.Hobbies');
+INSERT INTO test VALUES ('Top.Hobbies.Amateurs_Astronomy');
+INSERT INTO test VALUES ('Top.Collections');
+INSERT INTO test VALUES ('Top.Collections.Pictures');
+INSERT INTO test VALUES ('Top.Collections.Pictures.Astronomy');
+INSERT INTO test VALUES ('Top.Collections.Pictures.Astronomy.Stars');
+INSERT INTO test VALUES ('Top.Collections.Pictures.Astronomy.Galaxies');
+INSERT INTO test VALUES ('Top.Collections.Pictures.Astronomy.Astronauts');
+</code></pre>
+<p>因为要查询，给数据表加上索引，索引有两种，分别是btree和gist，GiST支持的操作符更为丰富些。具体可看官方文档。</p>
+<pre><code class="language-sql">CREATE INDEX path_gist_idx ON test USING gist(path);
+CREATE INDEX path_idx ON test USING btree(path);
+</code></pre>
+<p>现在整张表的结果是这样。</p>
+<pre><code>rails365_pro=# select * from test;
+                     path                      
+-----------------------------------------------
+ Top
+ Top.Science
+ Top.Science.Astronomy
+ Top.Science.Astronomy.Astrophysics
+ Top.Science.Astronomy.Cosmology
+ Top.Hobbies
+ Top.Hobbies.Amateurs_Astronomy
+ Top.Collections
+ Top.Collections.Pictures
+ Top.Collections.Pictures.Astronomy
+ Top.Collections.Pictures.Astronomy.Stars
+ Top.Collections.Pictures.Astronomy.Galaxies
+ Top.Collections.Pictures.Astronomy.Astronauts
+(13 rows)
+</code></pre>
+<p>接下来演示查询方法。</p>
+<p>先来演示第一个，再来介绍语法。</p>
+<pre><code>rails365_pro=# SELECT path FROM test WHERE path ~ '*.Astronomy.*';
+                     path                      
+-----------------------------------------------
+ Top.Science.Astronomy
+ Top.Science.Astronomy.Astrophysics
+ Top.Science.Astronomy.Cosmology
+ Top.Collections.Pictures.Astronomy
+ Top.Collections.Pictures.Astronomy.Stars
+ Top.Collections.Pictures.Astronomy.Galaxies
+ Top.Collections.Pictures.Astronomy.Astronauts
+(7 rows)
+</code></pre>
+<p>这样会查找所有包含Astronomy的项。</p>
+<p>根据官方的解释。语法大约是这样的。</p>
+<pre><code class="language-sql">SELECT path FROM test WHERE ltree 操作符 lquery;
+</code></pre>
+<p><code>ltree</code>就是要查找的字段名。<code>~</code>就是操作符，官方列出了所有支持的操作符，也给了解释。<code>lquery</code>是表示被匹配的正则表达式的字符串。</p>
+<pre><code>rails365_pro=# SELECT path FROM test WHERE path &lt;@ 'Top.Science';
+                path                
+------------------------------------
+ Top.Science
+ Top.Science.Astronomy
+ Top.Science.Astronomy.Astrophysics
+ Top.Science.Astronomy.Cosmology
+(4 rows)
+</code></pre>
+<p><code>&lt;@</code>的意思是"is left argument a descendant of right (or equal)?"，就是返回指定元素的后代啦，返回的结果正是我们期待的。</p>
+<p>只要懂得了语法，ltree支持的所有操作符只要看官方文档的解释就可以使用了。</p>
+<p>ltree还支持函数。用于选择和组合返回我们想要的结果。比如:</p>
+<pre><code>rails365_pro=# select * from test WHERE path &lt;@ 'Top.Science.Astronomy';
+                path                
+------------------------------------
+ Top.Science.Astronomy
+ Top.Science.Astronomy.Astrophysics
+ Top.Science.Astronomy.Cosmology
+(3 rows)
+
+rails365_pro=# SELECT subpath(path,0,2)||'Space'||subpath(path,2) FROM test WHERE path &lt;@ 'Top.Science.Astronomy';
+                 ?column?                 
+------------------------------------------
+ Top.Science.Space.Astronomy
+ Top.Science.Space.Astronomy.Astrophysics
+ Top.Science.Space.Astronomy.Cosmology
+(3 rows)
+</code></pre>
+<p>subpath的语法是这样的。<code>subltree(ltree, int start, int end)</code>中<code>start</code>是起始位置(从0开始算)，<code>end</code>是结束位置，但不包含结束位置。<code>subpath(path,0,2)</code>返回的就是第一个元素和第二个,即<code>Top.Science.</code>。</p>
+<p>还有其他函数，看官方文档的解释就好了。</p>
+<p>ltree介绍完了。</p>
+<h4 id="ltree-hierarchy的使用">ltree_hierarchy的使用</h4>
+<p><a href="https://github.com/Leadformance/ltree_hierarchy">ltree_hierarchy</a>是一个ruby的gem，它实现了PostgreSQL的ltree的功能。提供了简单的方法来实现树型结构的功能。</p>
+<p>先安装<strong>ltree_hierarchy</strong>这个gem。</p>
+<pre><code class="language-ruby">gem 'ltree_hierarchy'
+</code></pre>
+<p>然后执行<code>bundle</code>。</p>
+<p>我们用已存在的articles这张表来演示。</p>
+<pre><code class="language-ruby"># 20151010060005_add_ltree_to_articles.rb
+class AddLtreeToArticles &lt; ActiveRecord::Migration
+  def change
+    enable_extension "ltree"
+    add_column :articles, :parent_id, :integer, index: true
+    add_column :articles, :path, :ltree
+  end
+end
+</code></pre>
+<p>执行<code>rake db:migrate</code>。</p>
+<p>在app/models/article.rb文件中添加下面那行。</p>
+<pre><code class="language-ruby">class Article &lt; ActiveRecord::Base
+  has_ltree_hierarchy
+end
+</code></pre>
+<pre><code class="language-ruby">  root     = Article.create!(name: 'UK')
+  child    = Article.create!(name: 'London', parent: root)
+  subchild = Article.create!(name: 'Hackney', parent: child)
+
+  root.parent   # =&gt; nil
+  child.parent # =&gt; root
+  root.children # =&gt; [child]
+  root.children.first.children.first # =&gt; subchild
+  subchild.root # =&gt; root
+</code></pre>
+<p><code>parent_id</code>存的是交节点的id，像上述所说的，<code>path</code>存的是以"."分隔的id。</p>
+<p>除了<code>root</code>，<code>children</code>，<code>parent</code>，ltree_hierarchy还实现了其他查询方法。比如查叶子节点，查后代所有节点之类的。具体的查看官方的readme文件就好了。</p>
+<p>完结。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/155/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/155/index.html">CHNote，Apple设备、Git、Shell等使用教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/87.html">wanggw911</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/42/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/docker_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/42/index.html">Docker-從入門到實踐</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="docker">docker</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">82页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/129/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/129/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10个">10</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/87/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/87/index.html">Spring Boot 开源电子书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/56.html">ityouknow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 35个">35</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/187/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/187/index.html">软件开发的工程化</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 112个">112</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/99/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/99/index.html">ECMAScript 6入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/194/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/README.html" title="0. 介绍" data-book-page-rel-url="README.html" data-book-page-id="13215">0. 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/1.html" title="1. 全文检索系统之基本介绍" data-book-page-rel-url="chapters/1.html" data-book-page-id="13216">1. 全文检索系统之基本介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/2.html" title="2. 全文检索系统之进阶" data-book-page-rel-url="chapters/2.html" data-book-page-id="13217">2. 全文检索系统之进阶</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/3.html" title="3. 全文检索系统之中文支持" data-book-page-rel-url="chapters/3.html" data-book-page-id="13218">3. 全文检索系统之中文支持</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/4.html" title="4. 全文检索系统之 pg_search 实现" data-book-page-rel-url="chapters/4.html" data-book-page-id="13219">4. 全文检索系统之 pg_search 实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/5.html" title="5. 客户端程序 pgweb" data-book-page-rel-url="chapters/5.html" data-book-page-id="13220">5. 客户端程序 pgweb</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/6.html" title="6. 枚举类型" data-book-page-rel-url="chapters/6.html" data-book-page-id="13221">6. 枚举类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/7.html" title="7. ltree 插件" data-book-page-rel-url="chapters/7.html" data-book-page-id="13222">7. ltree 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/8.html" title="8. Window Functions" data-book-page-rel-url="chapters/8.html" data-book-page-id="13223">8. Window Functions</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/9.html" title="9. array 和 hstore 类型" data-book-page-rel-url="chapters/9.html" data-book-page-id="13224">9. array 和 hstore 类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/10.html" title="10. 模式 Schema" data-book-page-rel-url="chapters/10.html" data-book-page-id="13225">10. 模式 Schema</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/11.html" title="11. 表的继承和分区之介绍" data-book-page-rel-url="chapters/11.html" data-book-page-id="13226">11. 表的继承和分区之介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/12.html" title="12. 表的继承和分区之 pg_partman" data-book-page-rel-url="chapters/12.html" data-book-page-id="13227">12. 表的继承和分区之 pg_partman</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/13.html" title="13. listen/notify 之消息队列" data-book-page-rel-url="chapters/13.html" data-book-page-id="13228">13. listen/notify 之消息队列</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/14.html" title="14. listen/notify 之 queue_classic" data-book-page-rel-url="chapters/14.html" data-book-page-id="13229">14. listen/notify 之 queue_classic</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/15.html" title="15. 监控工具介绍" data-book-page-rel-url="chapters/15.html" data-book-page-id="13230">15. 监控工具介绍</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =194;var bookPageId =13222;var bookPageRelUrl ='chapters/7.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

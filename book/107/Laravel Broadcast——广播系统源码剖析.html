@@ -1,0 +1,837 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Broadcast——广播系统源码剖析-Laravel 源码详解</title>
+<meta content='Laravel Broadcast——广播系统源码剖析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Broadcast——广播系统源码剖析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Que..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html">
+<span class="">Laravel Pas..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="laravel-broadcast广播系统源码剖析">Laravel Broadcast——广播系统源码剖析</h1>
+<h2 id="前言">前言</h2>
+<p>在现代的 <code>web</code> 应用程序中，<code>WebSockets</code> 被用来实现需要实时、即时更新的接口。当服务器上的数据被更新后，更新信息将通过 <code>WebSocket</code> 连接发送到客户端等待处理。相比于不停地轮询应用程序，<code>WebSocket</code> 是一种更加可靠和高效的选择。</p>
+<p>我们先用一个电子商务网站作为例子来概览一下事件广播。当用户在查看自己的订单时，我们不希望他们必须通过刷新页面才能看到状态更新。我们希望一旦有更新时就主动将更新信息广播到客户端。</p>
+<p><code>laravel</code> 的广播系统和队列系统类似，需要两个进程协作，一个是 <code>laravel</code> 的 <code>web</code> 后台系统，另一个是 <code>Socket.IO</code> 服务器系统。具体的流程是页面加载时，网页 <code>js</code> 程序 <code>Laravel Echo</code> 与 <code>Socket.IO</code> 服务器建立连接， <code>laravel</code> 发起通过驱动发布广播，<code>Socket.IO</code> 服务器接受广播内容，对连接的客户端网页推送信息，以达到网页实时更新的目的。</p>
+<p><code>laravel</code> 发起广播的方式有两种，<code>redis</code> 与 <code>pusher</code>。对于 <code>redis</code> 来说，需要支持 <code>Socket.IO</code> 服务器系统，官方推荐 <code>nodejs</code> 为底层的 <code>tlaverdure/laravel-echo-server</code>。对于 <code>pusher</code> 来说，该第三方服务包含了驱动与 <code>Socket.IO</code> 服务器。</p>
+<p>本文将会介绍 <code>redis</code> 为驱动的广播源码，由于 <code>laravel-echo-server</code> 是 <code>nodejs</code> 编写，本文也无法介绍 <code>Socket.IO</code> 方面的内容。</p>
+<h2 id="广播系统服务的启动">广播系统服务的启动</h2>
+<p>和其他服务类似，广播系统服务的注册实质上就是对 <code>Ioc</code> 容器注册门面类，广播系统的门面类是 <code>BroadcastManager</code>:</p>
+<pre><code class="language-php">class BroadcastServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        $this-&gt;app-&gt;singleton(BroadcastManager::class, function ($app) {
+            return new BroadcastManager($app);
+        });
+
+        $this-&gt;app-&gt;singleton(BroadcasterContract::class, function ($app) {
+            return $app-&gt;make(BroadcastManager::class)-&gt;connection();
+        });
+
+        $this-&gt;app-&gt;alias(
+            BroadcastManager::class, BroadcastingFactory::class
+        );
+    }
+}
+</code></pre>
+<p>除了注册 <code>BroadcastManager</code>，<code>BroadcastServiceProvider</code> 还进行了广播驱动的启动：</p>
+<pre><code class="language-php">public function connection($driver = null)
+{
+    return $this-&gt;driver($driver);
+}
+
+public function driver($name = null)
+{
+    $name = $name ?: $this-&gt;getDefaultDriver();
+
+    return $this-&gt;drivers[$name] = $this-&gt;get($name);
+}
+
+protected function get($name)
+{
+    return isset($this-&gt;drivers[$name]) ? $this-&gt;drivers[$name] : $this-&gt;resolve($name);
+}
+
+protected function resolve($name)
+{
+    $config = $this-&gt;getConfig($name);
+
+    if (is_null($config)) {
+        throw new InvalidArgumentException("Broadcaster [{$name}] is not defined.");
+    }
+
+    if (isset($this-&gt;customCreators[$config['driver']])) {
+        return $this-&gt;callCustomCreator($config);
+    }
+
+    $driverMethod = 'create'.ucfirst($config['driver']).'Driver';
+
+    if (! method_exists($this, $driverMethod)) {
+        throw new InvalidArgumentException("Driver [{$config['driver']}] is not supported.");
+    }
+
+    return $this-&gt;{$driverMethod}($config);
+}
+
+protected function createRedisDriver(array $config)
+{
+    return new RedisBroadcaster(
+        $this-&gt;app-&gt;make('redis'), Arr::get($config, 'connection')
+    );
+}
+</code></pre>
+<h2 id="广播信息的发布">广播信息的发布</h2>
+<p>广播信息的发布与事件的发布大致相同，要告知 <code>Laravel</code> 一个给定的事件是广播类型，只需在事件类中实现 <code>Illuminate\Contracts\Broadcasting\ShouldBroadcast</code> 接口即可。该接口已经被导入到所有由框架生成的事件类中，所以可以很方便地将它添加到自己的事件中。</p>
+<p><code>ShouldBroadcast</code> 接口要求你实现一个方法：<code>broadcastOn</code>. <code>broadcastOn</code> 方法返回一个频道或一个频道数组，事件会被广播到这些频道。频道必须是 <code>Channel</code>、<code>PrivateChannel</code> 或 <code>PresenceChannel</code> 的实例。<code>Channel</code> 实例表示任何用户都可以订阅的公开频道，而 <code>PrivateChannels</code> 和 <code>PresenceChannels</code> 则表示需要 频道授权 的私有频道：</p>
+<pre><code class="language-php">class ServerCreated implements ShouldBroadcast
+{
+    use SerializesModels;
+
+    public $user;
+    
+    //默认情况下，每一个广播事件都被添加到默认的队列上，默认的队列连接在 queue.php 配置文件中指定。可以通过在事件类中定义一个 broadcastQueue 属性来自定义广播器使用的队列。该属性用于指定广播使用的队列名称：
+    public $broadcastQueue = 'your-queue-name';
+
+    public function __construct(User $user)
+    {
+        $this-&gt;user = $user;
+    }
+
+    public function broadcastOn()
+    {
+        return new PrivateChannel('user.'.$this-&gt;user-&gt;id);
+    }
+    
+    //Laravel 默认会使用事件的类名作为广播名称来广播事件，自定义：
+    public function broadcastAs()
+	{
+	    return 'server.created';
+	}
+	
+	//想更细粒度地控制广播数据:
+	public function broadcastWith()
+	{
+	    return ['id' =&gt; $this-&gt;user-&gt;id];
+	}
+	
+	//有时，想在给定条件为 true ，才广播事件:
+	public function broadcastWhen()
+	{
+	    return $this-&gt;value &gt; 100;
+	}
+}
+</code></pre>
+<p>然后，只需要像平时那样触发事件。一旦事件被触发，一个队列任务会自动广播事件到你指定的广播驱动器上。</p>
+<p>当一个事件被广播时，它所有的 <code>public</code> 属性会自动被序列化为广播数据，这允许你在你的 <code>JavaScript</code> 应用中访问事件的公有数据。因此，举个例子，如果你的事件有一个公有的 <code>$user</code> 属性，它包含了一个 <code>Elouqent</code> 模型，那么事件的广播数据会是：</p>
+<pre><code class="language-php">{
+    "user": {
+        "id": 1,
+        "name": "Patrick Stewart"
+        ...
+    }
+}
+
+</code></pre>
+<h2 id="广播发布的源码">广播发布的源码</h2>
+<p>广播的发布与事件的触发是一体的，具体的流程我们已经在 <code>event</code> 的源码中介绍清楚了，现在我们来看唯一的不同：</p>
+<pre><code class="language-php">public function dispatch($event, $payload = [], $halt = false)
+    {
+        list($event, $payload) = $this-&gt;parseEventAndPayload(
+            $event, $payload
+        );
+
+        if ($this-&gt;shouldBroadcast($payload)) {
+            $this-&gt;broadcastEvent($payload[0]);
+        }
+
+        ...
+    }
+    
+    protected function shouldBroadcast(array $payload)
+    {
+        return isset($payload[0]) &amp;&amp; $payload[0] instanceof ShouldBroadcast;
+    }
+    
+    protected function broadcastEvent($event)
+    {
+        $this-&gt;container-&gt;make(BroadcastFactory::class)-&gt;queue($event);
+    }
+</code></pre>
+<p>可见，关键之处在于 <code>BroadcastManager</code> 的 <code>quene</code> 方法：</p>
+<pre><code class="language-php">public function queue($event)
+{
+    $connection = $event instanceof ShouldBroadcastNow ? 'sync' : null;
+
+    if (is_null($connection) &amp;&amp; isset($event-&gt;connection)) {
+        $connection = $event-&gt;connection;
+    }
+
+    $queue = null;
+
+    if (isset($event-&gt;broadcastQueue)) {
+        $queue = $event-&gt;broadcastQueue;
+    } elseif (isset($event-&gt;queue)) {
+        $queue = $event-&gt;queue;
+    }
+
+    $this-&gt;app-&gt;make('queue')-&gt;connection($connection)-&gt;pushOn(
+        $queue, new BroadcastEvent(clone $event)
+    );
+}
+</code></pre>
+<p>可见，<code>quene</code> 方法将广播事件包装为事件类，并且通过队列发布，我们接下来看这个事件类的处理：</p>
+<pre><code class="language-php">class BroadcastEvent implements ShouldQueue
+{
+	public function handle(Broadcaster $broadcaster)
+    {
+        $name = method_exists($this-&gt;event, 'broadcastAs')
+                ? $this-&gt;event-&gt;broadcastAs() : get_class($this-&gt;event);
+
+        $broadcaster-&gt;broadcast(
+            array_wrap($this-&gt;event-&gt;broadcastOn()), $name,
+            $this-&gt;getPayloadFromEvent($this-&gt;event)
+        );
+    }
+
+	protected function getPayloadFromEvent($event)
+    {
+        if (method_exists($event, 'broadcastWith')) {
+            return array_merge(
+                $event-&gt;broadcastWith(), ['socket' =&gt; data_get($event, 'socket')]
+            );
+        }
+
+        $payload = [];
+
+        foreach ((new ReflectionClass($event))-&gt;getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            $payload[$property-&gt;getName()] = $this-&gt;formatProperty($property-&gt;getValue($event));
+        }
+
+        return $payload;
+    }
+    
+    protected function formatProperty($value)
+    {
+        if ($value instanceof Arrayable) {
+            return $value-&gt;toArray();
+        }
+
+        return $value;
+    }
+}
+</code></pre>
+<p>可见该事件主要调用 <code>broadcaster</code> 的 <code>broadcast</code> 方法，我们这里讲 <code>redis</code> 的发布：</p>
+<pre><code class="language-php">class RedisBroadcaster extends Broadcaster
+{
+	public function broadcast(array $channels, $event, array $payload = [])
+    {
+        $connection = $this-&gt;redis-&gt;connection($this-&gt;connection);
+
+        $payload = json_encode([
+            'event' =&gt; $event,
+            'data' =&gt; $payload,
+            'socket' =&gt; Arr::pull($payload, 'socket'),
+        ]);
+
+        foreach ($this-&gt;formatChannels($channels) as $channel) {
+            $connection-&gt;publish($channel, $payload);
+        }
+    }
+}
+
+protected function formatChannels(array $channels)
+{
+    return array_map(function ($channel) {
+        return (string) $channel;
+    }, $channels);
+}
+</code></pre>
+<p><code>broadcast</code> 方法运用了 <code>redis</code> 的 <code>publish</code> 方法，对 <code>redis</code> 进行了频道的信息发布。</p>
+<h2 id="频道授权">频道授权</h2>
+<p>对于私有频道，用户只有被授权后才能监听。实现过程是用户向 <code>Laravel</code> 应用程序发起一个携带频道名称的 <code>HTTP</code> 请求，应用程序判断该用户是否能够监听该频道。在使用 <code>Laravel Echo</code> 时，上述 <code>HTTP</code> 请求会被自动发送；尽管如此，仍然需要定义适当的路由来响应这些请求。</p>
+<h3 id="定义授权路由">定义授权路由</h3>
+<p>我们可以在 Laravel 里很容易地定义路由来响应频道授权请求。</p>
+<pre><code class="language-php">Broadcast::routes();
+
+</code></pre>
+<p><code>Broadcast::routes</code> 方法会自动把它的路由放进 <code>web</code> 中间件组中；另外，如果你想对一些属性自定义，可以向该方法传递一个包含路由属性的数组</p>
+<pre><code class="language-php">Broadcast::routes($attributes);
+
+</code></pre>
+<h3 id="定义授权回调">定义授权回调</h3>
+<p>接下来，我们需要定义真正用于处理频道授权的逻辑。这是在 <code>routes/channels.php</code> 文件中完成。在该文件中，你可以用 <code>Broadcast::channel</code> 方法来注册频道授权回调函数：</p>
+<pre><code class="language-php">Broadcast::channel('order.{orderId}', function ($user, $orderId) {
+    return $user-&gt;id === Order::findOrNew($orderId)-&gt;user_id;
+});
+</code></pre>
+<p><code>channel</code> 方法接收两个参数：频道名称和一个回调函数，该回调通过返回 <code>true</code> 或 <code>false</code> 来表示用户是否被授权监听该频道。</p>
+<p>所有的授权回调接收当前被认证的用户作为第一个参数，任何额外的通配符参数作为后续参数。在本例中，我们使用 <code>{orderId}</code> 占位符来表示频道名称的「ID」部分是通配符。</p>
+<h3 id="授权回调模型绑定">授权回调模型绑定</h3>
+<p>就像 <code>HTTP</code> 路由一样，频道路由也可以利用显式或隐式 路由模型绑定。例如，相比于接收一个字符串或数字类型的 <code>order ID</code>，你也可以请求一个真正的 <code>Order</code> 模型实例:</p>
+<pre><code class="language-php">Broadcast::channel('order.{order}', function ($user, Order $order) {
+    return $user-&gt;id === $order-&gt;user_id;
+});
+
+</code></pre>
+<h2 id="频道授权源码分析">频道授权源码分析</h2>
+<h3 id="授权路由">授权路由</h3>
+<pre><code class="language-php">class BroadcastManager implements FactoryContract
+{
+	public function routes(array $attributes = null)
+    {
+        if ($this-&gt;app-&gt;routesAreCached()) {
+            return;
+        }
+
+        $attributes = $attributes ?: ['middleware' =&gt; ['web']];
+
+        $this-&gt;app['router']-&gt;group($attributes, function ($router) {
+            $router-&gt;post('/broadcasting/auth', BroadcastController::class.'@authenticate');
+        });
+    }
+}
+</code></pre>
+<p>频道专门有 <code>Controller</code> 来处理授权服务：</p>
+<pre><code class="language-php">class BroadcastController extends Controller
+{
+    public function authenticate(Request $request)
+    {
+        return Broadcast::auth($request);
+    }
+}
+
+</code></pre>
+<p>当 <code>Socket Io</code> 服务器对 <code>javascript</code> 程序推送数据的时候，首先会经过该 <code>controller</code> 进行授权验证：</p>
+<pre><code class="language-php">public function auth($request)
+{
+    if (Str::startsWith($request-&gt;channel_name, ['private-', 'presence-']) &amp;&amp;
+        ! $request-&gt;user()) {
+        throw new HttpException(403);
+    }
+
+    $channelName = Str::startsWith($request-&gt;channel_name, 'private-')
+                        ? Str::replaceFirst('private-', '', $request-&gt;channel_name)
+                        : Str::replaceFirst('presence-', '', $request-&gt;channel_name);
+
+    return parent::verifyUserCanAccessChannel(
+        $request, $channelName
+    );
+}
+</code></pre>
+<p><code>verifyUserCanAccessChannel</code> 根据频道与其绑定的闭包函数来验证该频道是否可以通过授权：</p>
+<pre><code class="language-php">protected function verifyUserCanAccessChannel($request, $channel)
+{
+    foreach ($this-&gt;channels as $pattern =&gt; $callback) {
+        if (! Str::is(preg_replace('/\{(.*?)\}/', '*', $pattern), $channel)) {
+            continue;
+        }
+
+        $parameters = $this-&gt;extractAuthParameters($pattern, $channel, $callback);
+
+        if ($result = $callback($request-&gt;user(), ...$parameters)) {
+            return $this-&gt;validAuthenticationResponse($request, $result);
+        }
+    }
+
+    throw new HttpException(403);
+}
+</code></pre>
+<p>由于频道的命名经常带有 <code>userid</code> 等参数，因此判断频道之前首先要把 <code>channels</code> 中的频道名转为通配符 <code>*</code>，例如 <code>order.{userid}</code> 转为 order.*，之后进行正则匹配。</p>
+<p><code>extractAuthParameters</code> 用于提取频道的闭包函数的参数，合并 <code>$request-&gt;user()</code> 之后调用闭包函数。</p>
+<pre><code class="language-php">protected function extractAuthParameters($pattern, $channel, $callback)
+{
+    $callbackParameters = (new ReflectionFunction($callback))-&gt;getParameters();
+
+    return collect($this-&gt;extractChannelKeys($pattern, $channel))-&gt;reject(function ($value, $key) {
+        return is_numeric($key);
+    })-&gt;map(function ($value, $key) use ($callbackParameters) {
+        return $this-&gt;resolveBinding($key, $value, $callbackParameters);
+    })-&gt;values()-&gt;all();
+}
+
+protected function extractChannelKeys($pattern, $channel)
+{
+    preg_match('/^'.preg_replace('/\{(.*?)\}/', '(?&lt;$1&gt;[^\.]+)', $pattern).'/', $channel, $keys);
+
+    return $keys;
+}
+
+public function validAuthenticationResponse($request, $result)
+{
+    if (is_bool($result)) {
+        return json_encode($result);
+    }
+
+    return json_encode(['channel_data' =&gt; [
+        'user_id' =&gt; $request-&gt;user()-&gt;getKey(),
+        'user_info' =&gt; $result,
+    ]]);
+}
+</code></pre>
+<p><code>extractChannelKeys</code> 用于将 <code>order.{userid}</code> 与 <code>order.23</code> 中 <code>userid</code> 和 <code>23</code> 建立 <code>key</code>、<code>value</code> 关联。如果 <code>userid</code> 是 <code>User</code> 的主键，<code>resolveBinding</code> 还可以为其自动进行路由模型绑定。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/135/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/135/index.html">微前端的那些事儿</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">55页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/77/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/openstack_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/77/index.html">深入理解 Neutron -- OpenStack 网络实现</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="openstack">openstack</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 136个">136</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/62/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/62/index.html">Google 深度学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/38.html">ahangchen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1243个">1243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/101/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/chrome_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/101/index.html">Chromium中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="chrome">chrome</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/22/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/22/index.html">计算与推断思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/17.html">Kivy Developers From China</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 243个">243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/30/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/atom_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/30/index.html">Atom飞行手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="atom">atom</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 45个">45</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7781;var bookPageRelUrl ='Laravel%20Broadcast——广播系统源码剖析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

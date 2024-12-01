@@ -1,0 +1,509 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>用户管理-Shell 编程范例</title>
+<meta content='用户管理,Shell 编程范例' name='keywords'>
+<meta content='用户管理,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/chapters/01-chapter8.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">网络操作</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/44/zh/chapters/01-chapter10.markdown">
+<span class="">总结</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="用户管理">用户管理</h1>
+<ul>
+<li><a href="#toc_13359_11834_1">用户帐号</a></li>
+<li><a href="#toc_13359_11834_2">添加</a></li>
+<li><a href="#toc_13359_11834_3">删除</a></li>
+<li><a href="#toc_13359_11834_4">修改</a></li>
+<li><a href="#toc_13359_11834_5">禁用</a></li>
+<li><a href="#toc_13359_11834_6">用户口令</a></li>
+<li><a href="#toc_13359_11834_7">设置</a></li>
+<li><a href="#toc_13359_11834_8">删除</a></li>
+<li><a href="#toc_13359_11834_9">修改</a></li>
+<li><a href="#toc_13359_11834_10">禁用</a></li>
+<li><a href="#toc_13359_11834_11">用户组别</a></li>
+<li><a href="#toc_13359_11834_12">添加</a></li>
+<li><a href="#toc_13359_11834_13">删除</a></li>
+<li><a href="#toc_13359_11834_14">修改</a></li>
+<li><a href="#toc_13359_11834_15">用户和组</a></li>
+<li><a href="#toc_13359_11834_16">增加</a></li>
+<li><a href="#toc_13359_11834_17">删除</a></li>
+<li><a href="#toc_13359_11834_18">用户切换</a></li>
+<li><a href="#toc_13359_11834_19">切换帐号</a></li>
+<li><a href="#toc_13359_11834_20">免密码切到 Root</a></li>
+</ul>
+<p>在初次撰写本书时，都只讨论到了“物”，而没有关注“人”。而在实际使用中，Linux 系统首先是面向用户的系统，所有之前介绍的内容全部是提供给不同的用户使用的。实际使用中常常碰到各类用户操作，所以这里添加一个独立的章节来介绍。</p>
+<p>Linux 支持多用户，也就是说允许不同的人使用同一个系统，每个人有一个属于自己的帐号。而且允许大家设置不同的认证密码，确保大家的私有信息得到保护。另外，为了确保整个系统的安全，用户权限又做了进一步划分，包括普通用户和系统管理员。普通用户只允许访问自己账户授权下的信息，而系统管理员才能访问所有资源。普通用户如果想行使管理员的职能，必须获得系统管理员的许可。</p>
+<p>为避免分散注意力，咱们不去介绍背后的那些数据文件： <code>/etc/passwd</code>，<code>/etc/shadow</code>，<code>/etc/group</code>，<code>/etc/gshadow</code></p>
+<p>如果确实有需要，大家可通过如下命令查看帮助： <code>man 5 passwd</code>，<code>man shadow</code>, <code>man group</code> 和 <code>man gshadow</code></p>
+<p>下面我们分如下几个部分来介绍：</p>
+<ul>
+<li>用户帐号</li>
+<li>用户口令</li>
+<li>用户组别</li>
+<li>用户和组</li>
+<li>用户切换</li>
+</ul>
+<p><span id="toc_13359_11834_1"></span></p>
+<h2 id="用户帐号">用户帐号</h2>
+<p>帐号操作主要是增、删、改、禁。Linux 系统提供了底层的 <code>useradd</code>, <code>userdel</code> 和 <code>usermod</code> 来完成相关操作，也提供了进一步的简化封装：<code>adduser</code>, <code>deluser</code>。为了避免混淆，咱们这里只介绍最底层的指令，这些指令设计上已经够简洁明了方便。</p>
+<p>由于只有系统管理员才能创建新用户，请确保以 root 帐号登录或者可以通过 sudo 切换为管理员帐号。</p>
+<p><span id="toc_13359_11834_2"></span></p>
+<h3 id="添加">添加</h3>
+<p>创建家目录并指定登录 Shell：</p>
+<pre><code># useradd -s /bin/bash -m test
+# groups test
+test : test
+</code></pre>
+<p>并加入所属组：</p>
+<pre><code># useradd -s /bin/bash -m -G docker test
+# groups test
+test : test docker
+</code></pre>
+<p><span id="toc_13359_11834_3"></span></p>
+<h3 id="删除">删除</h3>
+<p>删除用户以及家目录等：</p>
+<pre><code># userdel -r test
+</code></pre>
+<p><span id="toc_13359_11834_4"></span></p>
+<h3 id="修改">修改</h3>
+<p>常常用来修改默认的 Shell：</p>
+<pre><code># usermod -s /bin/bash test
+</code></pre>
+<p>或者把用户加入某个新安装软件所属的组：</p>
+<pre><code># usermod -a -G docker test
+</code></pre>
+<p>修改登录用户名并搬到新家：</p>
+<pre><code># usermod -d /home/new_test -m -l new_test test
+</code></pre>
+<p><span id="toc_13359_11834_5"></span></p>
+<h3 id="禁用">禁用</h3>
+<p>如果想禁用某个帐号：</p>
+<pre><code># usermod -L test
+# usermod --expiredate 1 test
+</code></pre>
+<p><span id="toc_13359_11834_6"></span></p>
+<h2 id="用户口令">用户口令</h2>
+<p>口令操作主要是设置、删除、修改和禁用。Linux 系统提供了 <code>passwd</code> 命令来管理用户口令。</p>
+<p><span id="toc_13359_11834_7"></span></p>
+<h3 id="设置">设置</h3>
+<p>设置用户 test 的初始密码：</p>
+<pre><code>$ passwd test
+Enter new UNIX password:
+Retype new UNIX password:
+passwd: password updated successfully
+</code></pre>
+<p><span id="toc_13359_11834_8"></span></p>
+<h3 id="删除-1">删除</h3>
+<p>让用户 test 无须密码登录（密码为空）：</p>
+<pre><code>$ passwd -d test
+</code></pre>
+<p>这个很方便某些安全无关紧要的条件下（比如已登录主机中的虚拟机），可避免每次频繁输入密码。</p>
+<p><span id="toc_13359_11834_9"></span></p>
+<h3 id="修改-1">修改</h3>
+<pre><code>$ passwd test
+Changing password for test.
+(current) UNIX password:
+Enter new UNIX password:
+Retype new UNIX password:
+passwd: password updated successfully
+</code></pre>
+<p><span id="toc_13359_11834_10"></span></p>
+<h3 id="禁用-1">禁用</h3>
+<p>禁止用户通过密码登录：</p>
+<pre><code>$ passwd -l user
+</code></pre>
+<p>为了安全起见或者为了避免暴力破解，我们通常可以禁用密码登录，而只允许通过 SSH Key 登录。</p>
+<p>如果要真地禁用整个帐号的使用，需要用上一节提到的 <code>usermod --expiredate 1</code>。</p>
+<p><span id="toc_13359_11834_11"></span></p>
+<h2 id="用户组别">用户组别</h2>
+<p>类似帐号，主要操作也是增、删、改。</p>
+<p>Linux 系统提供了底层的 <code>groupadd</code>, <code>groupdel</code> 和 <code>groupmod</code> 来完成相关操作，也提供了进一步的简化封装：<code>addgroup</code>, <code>delgroup</code>。</p>
+<p>用户组别通常用来管理不同的资源，确保只有某个组别的用户才可以访问某类资源。当然，实际案例中，有些软件也为自己定义一个组别，只有该组别的用户才能访问该软件的一些功能。</p>
+<p><span id="toc_13359_11834_12"></span></p>
+<h3 id="添加-1">添加</h3>
+<p>添加一个新组别：</p>
+<pre><code># groupadd test
+</code></pre>
+<p><span id="toc_13359_11834_13"></span></p>
+<h3 id="删除-2">删除</h3>
+<pre><code># groupdel test
+</code></pre>
+<p><span id="toc_13359_11834_14"></span></p>
+<h3 id="修改-2">修改</h3>
+<p>修改组别名：</p>
+<pre><code># groupmod -n new_test test
+</code></pre>
+<p><span id="toc_13359_11834_15"></span></p>
+<h2 id="用户和组">用户和组</h2>
+<p>用户和组别不能独立存在，<code>gpasswd</code> 可以用来处理两者的关系。</p>
+<p><span id="toc_13359_11834_16"></span></p>
+<h3 id="增加">增加</h3>
+<p>从 docker 组中增加用户 test（等同于把 test 增加到 docker 组中）：</p>
+<pre><code># gpasswd -a test docker
+
+或
+
+# usermod -a -G docker test
+</code></pre>
+<p><span id="toc_13359_11834_17"></span></p>
+<h3 id="删除-3">删除</h3>
+<p>从 test 组中删除用户 test：</p>
+<pre><code># gpasswd -d test test
+</code></pre>
+<p><span id="toc_13359_11834_18"></span></p>
+<h2 id="用户切换">用户切换</h2>
+<p>由于支持多用户，那么在登录一个帐号后，可能需要切换到另外一个帐号下，可以通过 <code>su</code> 命令完成，而 <code>sudo</code> 则可以用来作为另外一个用户来执行命令。</p>
+<p><span id="toc_13359_11834_19"></span></p>
+<h3 id="切换帐号">切换帐号</h3>
+<p>切换到 Root 并启用 Bash：</p>
+<pre><code>$ su -s /bin/bash -
+root@falcon-desktop:~#
+
+或者
+
+$ sudo -s
+</code></pre>
+<p>切换到普通用户：</p>
+<pre><code>$ su -s /bin/bash - test
+test@falcon-desktop:~$ 
+
+或者
+
+$ sudo -i -u test 
+test@falcon-desktop:~$ 
+</code></pre>
+<p><span id="toc_13359_11834_20"></span></p>
+<h3 id="免密码切到-root">免密码切到 Root</h3>
+<p>首先得把用户加入到 sudo 用户组：</p>
+<pre><code># usermod -a -G sudo falcon
+</code></pre>
+<p>否则，会看到如下信息：</p>
+<pre><code>$ sudo -s
+[sudo] password for test: 
+test is not in the sudoers file.  This incident will be reported.
+</code></pre>
+<p>加入 sudo 用户组以后：</p>
+<pre><code>$ sudo -s
+[sudo] password for test: 
+</code></pre>
+<p>要实现免密切换，需要先修改 <code>/etc/sudoers</code>，加入如下一行：</p>
+<pre><code>test ALL=(ALL) NOPASSWD: ALL
+</code></pre>
+<p>或者在 <code>/etc/sudoers.d/</code> 下创建一个文件并加入上述内容。</p>
+<pre><code># echo "test ALL=(ALL) NOPASSWD: ALL" &gt; /etc/sudoers.d/test
+# chmod 440 /etc/sudoers.d/test
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/28/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/29/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/181/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/69/index.html">
+<img class="uk-book-cover" src="/static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/69/index.html">Android 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1046个">1046</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/64/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/64/index.html">免费的编程中文书籍索引</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/40.html">justjavac</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33914个">33914</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/30/index.html">
+<img class="uk-book-cover" src="/static/icons/48/atom_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/30/index.html">Atom飞行手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="atom">atom</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 45个">45</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2891;var bookPageRelUrl ='zh/chapters/01-chapter9.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

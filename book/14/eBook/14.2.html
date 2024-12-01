@@ -1,0 +1,2090 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>使用通道进行协程间通信-Go入门指南(The Way to Go)</title>
+<meta content='使用通道进行协程间通信,Go入门指南,The Way to Go' name='keywords'>
+<meta content='使用通道进行协程间通信,Go入门指南,The Way to Go' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/14/eBook/14.1.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">并发、并行和协程</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/14/eBook/14.3.html">
+<span class="">协程同步：关闭通道-对..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/14/index.html">Go入门指南 (The Way to Go)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/Unknwon/the-way-to-go_ZH_CN" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="142-协程间的信道">14.2 协程间的信道</h1>
+<h2 id="1421-概念">14.2.1 概念</h2>
+<p>在第一个例子中，协程是独立执行的，他们之间没有通信。他们必须通信才会变得更有用：彼此之间发送和接收信息并且协调/同步他们的工作。协程可以使用共享变量来通信，但是很不提倡这样做，因为这种方式给所有的共享内存的多线程都带来了困难。</p>
+<p>而Go有一个特殊的类型，<code>通道（channel）</code>，像是通道（管道），可以通过它们发送类型化的数据在协程之间通信，可以避开所有内存共享导致的坑；通道的通信方式保证了同步性。数据通过通道：同一时间只有一个协程可以访问数据：所以不会出现数据竞争，设计如此。数据的归属（可以读写数据的能力）被传递。</p>
+<p>工厂的传送带是个很有用的例子。一个机器（生产者协程）在传送带上放置物品，另外一个机器（消费者协程）拿到物品并打包。</p>
+<p>通道服务于通信的两个目的：值的交换，同步的，保证了两个计算（协程）任何时候都是可知状态。</p>
+<p><a href="https://img.cntofu.com/book/the-way-to-go_ZH_CN/images/14.2_fig14.1.png?raw=true" data-uk-lightbox><img src="https://img.cntofu.com/book/the-way-to-go_ZH_CN/images/14.2_fig14.1.png?raw=true" alt=""></a></p>
+<p>通常使用这样的格式来声明通道：<code>var identifier chan datatype</code></p>
+<p>未初始化的通道的值是nil。</p>
+<p>所以通道只能传输一种类型的数据，比如 <code>chan int</code> 或者 <code>chan string</code>，所有的类型都可以用于通道，空接口 <code>interface{}</code> 也可以。甚至可以（有时非常有用）创建通道的通道。</p>
+<p>通道实际上是类型化消息的队列：使数据得以传输。它是先进先出（FIFO）的结构所以可以保证发送给他们的元素的顺序（有些人知道，通道可以比作 Unix shells 中的双向管道（two-way pipe））。通道也是引用类型，所以我们使用 <code>make()</code> 函数来给它分配内存。这里先声明了一个字符串通道 ch1，然后创建了它（实例化）：</p>
+<pre><code class="language-go">var ch1 chan string
+ch1 = make(chan string)
+</code></pre>
+<p>当然可以更短： <code>ch1 := make(chan string)</code>。</p>
+<p>这里我们构建一个int通道的通道： <code>chanOfChans := make(chan int)</code>。</p>
+<p>或者函数通道：<code>funcChan := chan func()</code>（相关示例请看第 <a href="14.17.html">14.17</a> 节）。</p>
+<p>所以通道是对象的第一类型：可以存储在变量中，作为函数的参数传递，从函数返回以及通过通道发送它们自身。另外它们是类型化的，允许类型检查，比如尝试使用整数通道发送一个指针。</p>
+<h2 id="1422-通信操作符--">14.2.2 通信操作符 &lt;-</h2>
+<p>这个操作符直观的标示了数据的传输：信息按照箭头的方向流动。</p>
+<p>流向通道（发送）</p>
+<p><code>ch &lt;- int1</code> 表示：用通道 ch 发送变量 int1（双目运算符，中缀 = 发送）</p>
+<p>从通道流出（接收），三种方式：</p>
+<p><code>int2 = &lt;- ch</code> 表示：变量 int2 从通道 ch（一元运算的前缀操作符，前缀 = 接收）接收数据（获取新值）；假设 int2 已经声明过了，如果没有的话可以写成：<code>int2 := &lt;- ch</code>。</p>
+<p><code>&lt;- ch</code> 可以单独调用获取通道的（下一个）值，当前值会被丢弃，但是可以用来验证，所以以下代码是合法的：</p>
+<pre><code class="language-go">if &lt;- ch != 1000{
+	...
+}
+</code></pre>
+<p>操作符 &lt;- 也被用来发送和接收，Go 尽管不必要，为了可读性，通道的命名通常以 <code>ch</code> 开头或者包含 <code>chan</code>。通道的发送和接收操作都是自动的：它们通常一气呵成。下面的示例展示了通信操作。</p>
+<p>示例 14.2-<a href="examples/chapter_14/goroutine2.go">goroutine2.go</a></p>
+<pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	ch := make(chan string)
+
+	go sendData(ch)
+	go getData(ch)  
+
+	time.Sleep(1e9)
+}
+
+func sendData(ch chan string) {
+	ch &lt;- "Washington"
+	ch &lt;- "Tripoli"
+	ch &lt;- "London"
+	ch &lt;- "Beijing"
+	ch &lt;- "Tokio"
+}
+
+func getData(ch chan string) {
+	var input string
+	// time.Sleep(2e9)
+	for {
+		input = &lt;-ch
+		fmt.Printf("%s ", input)
+	}
+}
+</code></pre>
+<p>输出：</p>
+<pre><code>Washington Tripoli London Beijing Tokio
+</code></pre>
+<p><code>main()</code> 函数中启动了两个协程：<code>sendData()</code> 通过通道 ch 发送了 5 个字符串，<code>getData()</code> 按顺序接收它们并打印出来。</p>
+<p>如果 2 个协程需要通信，你必须给他们同一个通道作为参数才行。</p>
+<p>尝试一下如果注释掉 <code>time.Sleep(1e9)</code> 会如何。</p>
+<p>我们发现协程之间的同步非常重要：</p>
+<ul>
+<li>main() 等待了 1 秒让两个协程完成，如果不这样，sendData() 就没有机会输出。</li>
+<li>getData() 使用了无限循环：它随着 sendData() 的发送完成和 ch 变空也结束了。</li>
+<li>如果我们移除一个或所有 <code>go</code> 关键字，程序无法运行，Go 运行时会抛出 panic：</li>
+</ul>
+<pre><code>---- Error run E:/Go/Goboek/code examples/chapter 14/goroutine2.exe with code Crashed ---- Program exited with code -2147483645: panic: all goroutines are asleep-deadlock!
+</code></pre>
+<p>为什么会这样？运行时会检查所有的协程（也许只有一个是这种情况）是否在等待（可以读取或者写入某个通道），意味着程序无法处理。这是死锁（deadlock）形式，运行时可以检测到这种情况。</p>
+<p>注意：不要使用打印状态来表明通道的发送和接收顺序：由于打印状态和通道实际发生读写的时间延迟会导致和真实发生的顺序不同。</p>
+<p>练习 14.4：解释一下为什么如果在函数 <code>getData()</code> 的一开始插入 <code>time.Sleep(2e9)</code>，不会出现错误但也没有输出呢。</p>
+<h2 id="1423-通道阻塞">14.2.3 通道阻塞</h2>
+<p>默认情况下，通信是同步且无缓冲的：在有接受者接收数据之前，发送不会结束。可以想象一个无缓冲的通道在没有空间来保存数据的时候：必须要一个接收者准备好接收通道的数据然后发送者可以直接把数据发送给接收者。所以通道的发送/接收操作在对方准备好之前是阻塞的：</p>
+<p>1）对于同一个通道，发送操作（协程或者函数中的），在接收者准备好之前是阻塞的：如果ch中的数据无人接收，就无法再给通道传入其他数据：新的输入无法在通道非空的情况下传入。所以发送操作会等待 ch 再次变为可用状态：就是通道值被接收时（可以传入变量）。</p>
+<p>2）对于同一个通道，接收操作是阻塞的（协程或函数中的），直到发送者可用：如果通道中没有数据，接收者就阻塞了。</p>
+<p>尽管这看上去是非常严格的约束，实际在大部分情况下工作的很不错。</p>
+<p>程序 <code>channel_block.go</code> 验证了以上理论，一个协程在无限循环中给通道发送整数数据。不过因为没有接收者，只输出了一个数字 0。</p>
+<p>示例 14.3-<a href="examples/chapter_14/channel_block.go">channel_block.go</a></p>
+<pre><code class="language-go">package main
+
+import "fmt"
+
+func main() {
+	ch1 := make(chan int)
+	go pump(ch1)       // pump hangs
+	fmt.Println(&lt;-ch1) // prints only 0
+}
+
+func pump(ch chan int) {
+	for i := 0; ; i++ {
+		ch &lt;- i
+	}
+}
+</code></pre>
+<p>输出：</p>
+<pre><code>0
+</code></pre>
+<p><code>pump()</code> 函数为通道提供数值，也被叫做生产者。</p>
+<p>为通道解除阻塞定义了 <code>suck</code> 函数来在无限循环中读取通道，参见示例 14.4-<a href="examples/chapter_14/channel_block2.go">channel_block2.go</a>：</p>
+<pre><code class="language-go">func suck(ch chan int) {
+	for {
+		fmt.Println(&lt;-ch)
+	}
+}
+</code></pre>
+<p>在 <code>main()</code> 中使用协程开始它：</p>
+<pre><code class="language-go">go pump(ch1)
+go suck(ch1)
+time.Sleep(1e9)
+</code></pre>
+<p>给程序 1 秒的时间来运行：输出了上万个整数。</p>
+<p>练习 14.1：<a href="exercises/chapter_14/channel_block3.go">channel_block3.go</a>：写一个通道证明它的阻塞性，开启一个协程接收通道的数据，持续 15 秒，然后给通道放入一个值。在不同的阶段打印消息并观察输出。</p>
+<h2 id="1424-通过一个或多个通道交换数据进行协程同步">14.2.4 通过一个（或多个）通道交换数据进行协程同步。</h2>
+<p>通信是一种同步形式：通过通道，两个协程在通信（协程会和）中某刻同步交换数据。无缓冲通道成为了多个协程同步的完美工具。</p>
+<p>甚至可以在通道两端互相阻塞对方，形成了叫做死锁的状态。Go 运行时会检查并 panic，停止程序。死锁几乎完全是由糟糕的设计导致的。</p>
+<p>无缓冲通道会被阻塞。设计无阻塞的程序可以避免这种情况，或者使用带缓冲的通道。</p>
+<p>练习 14.2： <a href="exercises/chapter_14/blocking.go">blocking.go</a></p>
+<p>解释为什么下边这个程序会导致 panic：所有的协程都休眠了 - 死锁！</p>
+<pre><code class="language-go">package main
+
+import (
+	"fmt"
+)
+
+func f1(in chan int) {
+	fmt.Println(&lt;-in)
+}
+
+func main() {
+	out := make(chan int)
+	out &lt;- 2
+	go f1(out)
+}
+</code></pre>
+<h2 id="1425-同步通道-使用带缓冲的通道">14.2.5 同步通道-使用带缓冲的通道</h2>
+<p>一个无缓冲通道只能包含 1 个元素，有时显得很局限。我们给通道提供了一个缓存，可以在扩展的 <code>make</code> 命令中设置它的容量，如下：</p>
+<pre><code class="language-go">buf := 100
+ch1 := make(chan string, buf)
+</code></pre>
+<p>buf 是通道可以同时容纳的元素（这里是 string）个数</p>
+<p>在缓冲满载（缓冲被全部使用）之前，给一个带缓冲的通道发送数据是不会阻塞的，而从通道读取数据也不会阻塞，直到缓冲空了。</p>
+<p>缓冲容量和类型无关，所以可以（尽管可能导致危险）给一些通道设置不同的容量，只要他们拥有同样的元素类型。内置的 <code>cap</code> 函数可以返回缓冲区的容量。</p>
+<p>如果容量大于 0，通道就是异步的了：缓冲满载（发送）或变空（接收）之前通信不会阻塞，元素会按照发送的顺序被接收。如果容量是0或者未设置，通信仅在收发双方准备好的情况下才可以成功。</p>
+<p>同步：<code>ch :=make(chan type, value)</code></p>
+<ul>
+<li>value == 0 -&gt; synchronous, unbuffered (阻塞）</li>
+<li>value &gt; 0 -&gt; asynchronous, buffered（非阻塞）取决于value元素</li>
+</ul>
+<p>若使用通道的缓冲，你的程序会在“请求”激增的时候表现更好：更具弹性，专业术语叫：更具有伸缩性（scalable）。要在首要位置使用无缓冲通道来设计算法，只在不确定的情况下使用缓冲。</p>
+<p>练习 14.3：<a href="exercises/chapter_14/channel_buffer.go">channel_buffer.go</a>：给 <a href="exercises/chapter_14/channel_block3.go">channel_block3.go</a> 的通道增加缓冲并观察输出有何不同。</p>
+<h2 id="1426-协程中用通道输出结果">14.2.6 协程中用通道输出结果</h2>
+<p>为了知道计算何时完成，可以通过信道回报。在例子 <code>go sum(bigArray)</code> 中，要这样写：</p>
+<pre><code class="language-go">ch := make(chan int)
+go sum(bigArray, ch) // bigArray puts the calculated sum on ch
+// .. do something else for a while
+sum := &lt;- ch // wait for, and retrieve the sum
+</code></pre>
+<p>也可以使用通道来达到同步的目的，这个很有效的用法在传统计算机中称为信号量（semaphore）。或者换个方式：通过通道发送信号告知处理已经完成（在协程中）。</p>
+<p>在其他协程运行时让 main 程序无限阻塞的通常做法是在 <code>main</code> 函数的最后放置一个{}。</p>
+<p>也可以使用通道让 <code>main</code> 程序等待协程完成，就是所谓的信号量模式，我们会在接下来的部分讨论。</p>
+<h2 id="1427-信号量模式">14.2.7 信号量模式</h2>
+<p>下边的片段阐明：协程通过在通道 <code>ch</code> 中放置一个值来处理结束的信号。<code>main</code> 协程等待 <code>&lt;-ch</code> 直到从中获取到值。</p>
+<p>我们期望从这个通道中获取返回的结果，像这样：</p>
+<pre><code class="language-go">func compute(ch chan int){
+	ch &lt;- someComputation() // when it completes, signal on the channel.
+}
+
+func main(){
+	ch := make(chan int) 	// allocate a channel.
+	go compute(ch)		// stat something in a goroutines
+	doSomethingElseForAWhile()
+	result := &lt;- ch
+}
+</code></pre>
+<p>这个信号也可以是其他的，不返回结果，比如下面这个协程中的匿名函数（lambda）协程：</p>
+<pre><code class="language-go">ch := make(chan int)
+go func(){
+	// doSomething
+	ch &lt;- 1 // Send a signal; value does not matter
+}()
+doSomethingElseForAWhile()
+&lt;- ch	// Wait for goroutine to finish; discard sent value.
+</code></pre>
+<p>或者等待两个协程完成，每一个都会对切片s的一部分进行排序，片段如下：</p>
+<pre><code class="language-go">done := make(chan bool)
+// doSort is a lambda function, so a closure which knows the channel done:
+doSort := func(s []int){
+	sort(s)
+	done &lt;- true
+}
+i := pivot(s)
+go doSort(s[:i])
+go doSort(s[i:])
+&lt;-done
+&lt;-done
+</code></pre>
+<p>下边的代码，用完整的信号量模式对长度为N的 float64 切片进行了 N 个<code>doSomething()</code> 计算并同时完成，通道 sem 分配了相同的长度（切包含空接口类型的元素），待所有的计算都完成后，发送信号（通过放入值）。在循环中从通道 sem 不停的接收数据来等待所有的协程完成。</p>
+<pre><code class="language-go">type Empty interface {}
+var empty Empty
+...
+data := make([]float64, N)
+res := make([]float64, N)
+sem := make(chan Empty, N)
+...
+for i, xi := range data {
+	go func (i int, xi float64) {
+		res[i] = doSomething(i, xi)
+		sem &lt;- empty
+	} (i, xi)
+}
+// wait for goroutines to finish
+for i := 0; i &lt; N; i++ { &lt;-sem }
+</code></pre>
+<p>注意闭合：<code>i</code>、<code>xi</code> 都是作为参数传入闭合函数的，从外层循环中隐藏了变量 <code>i</code> 和 <code>xi</code>。让每个协程有一份 <code>i</code> 和 <code>xi</code> 的拷贝；另外，for 循环的下一次迭代会更新所有协程中 <code>i</code> 和 <code>xi</code> 的值。切片 <code>res</code> 没有传入闭合函数，因为协程不需要单独拷贝一份。切片 <code>res</code> 也在闭合函数中但并不是参数。</p>
+<h2 id="1428-实现并行的-for-循环">14.2.8 实现并行的 for 循环</h2>
+<p>在上一部分章节 <a href="14.2.html#1427-信号量模式">14.2.7</a> 的代码片段中：for 循环的每一个迭代是并行完成的：</p>
+<pre><code class="language-go">for i, v := range data {
+	go func (i int, v float64) {
+		doSomething(i, v)
+		...
+	} (i, v)
+}
+</code></pre>
+<p>在 for 循环中并行计算迭代可能带来很好的性能提升。不过所有的迭代都必须是独立完成的。有些语言比如 Fortress 或者其他并行框架以不同的结构实现了这种方式，在 Go 中用协程实现起来非常容易：</p>
+<h2 id="1429-用带缓冲通道实现一个信号量">14.2.9 用带缓冲通道实现一个信号量</h2>
+<p>信号量是实现互斥锁（排外锁）常见的同步机制，限制对资源的访问，解决读写问题，比如没有实现信号量的 <code>sync</code> 的 Go 包，使用带缓冲的通道可以轻松实现：</p>
+<ul>
+<li>带缓冲通道的容量和要同步的资源容量相同</li>
+<li>通道的长度（当前存放的元素个数）与当前资源被使用的数量相同</li>
+<li>容量减去通道的长度就是未处理的资源个数（标准信号量的整数值）</li>
+</ul>
+<p>不用管通道中存放的是什么，只关注长度；因此我们创建了一个长度可变但容量为0（字节）的通道：</p>
+<pre><code class="language-go">type Empty interface {}
+type semaphore chan Empty
+</code></pre>
+<p>将可用资源的数量N来初始化信号量 <code>semaphore</code>：<code>sem = make(semaphore, N)</code></p>
+<p>然后直接对信号量进行操作：</p>
+<pre><code class="language-go">// acquire n resources
+func (s semaphore) P(n int) {
+	e := new(Empty)
+	for i := 0; i &lt; n; i++ {
+		s &lt;- e
+	}
+}
+
+// release n resouces
+func (s semaphore) V(n int) {
+	for i:= 0; i &lt; n; i++{
+		&lt;- s
+	}
+}
+</code></pre>
+<p>可以用来实现一个互斥的例子：</p>
+<pre><code class="language-go">/* mutexes */
+func (s semaphore) Lock() {
+	s.P(1)
+}
+
+func (s semaphore) Unlock(){
+	s.V(1)
+}
+
+/* signal-wait */
+func (s semaphore) Wait(n int) {
+	s.P(n)
+}
+
+func (s semaphore) Signal() {
+	s.V(1)
+}
+</code></pre>
+<p>练习 14.5：<a href="exercises/chapter_14/gosum.go">gosum.go</a>：用这种习惯用法写一个程序，开启一个协程来计算2个整数的合并等待计算结果并打印出来。</p>
+<p>练习 14.6：<a href="exercises/chapter_14/producer_consumer.go">producer_consumer.go</a>：用这种习惯用法写一个程序，有两个协程，第一个提供数字 0，10，20，...90 并将他们放入通道，第二个协程从通道中读取并打印。<code>main()</code> 等待两个协程完成后再结束。</p>
+<p>习惯用法：通道工厂模式</p>
+<p>编程中常见的另外一种模式如下：不将通道作为参数传递给协程，而用函数来生成一个通道并返回（工厂角色）；函数内有个匿名函数被协程调用。</p>
+<p>在 <a href="examples/chapter_14/channel_block2.go">channel_block2.go</a> 加入这种模式便有了示例 14.5-<a href="examples/chapter_14/channel_idiom.go">channel_idiom.go</a>：</p>
+<pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	stream := pump()
+	go suck(stream)
+	time.Sleep(1e9)
+}
+
+func pump() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 0; ; i++ {
+			ch &lt;- i
+		}
+	}()
+	return ch
+}
+
+func suck(ch chan int) {
+	for {
+		fmt.Println(&lt;-ch)
+	}
+}
+</code></pre>
+<h2 id="14210-给通道使用-for-循环">14.2.10 给通道使用 for 循环</h2>
+<p><code>for</code> 循环的 <code>range</code> 语句可以用在通道 <code>ch</code> 上，便可以从通道中获取值，像这样：</p>
+<pre><code class="language-go">for v := range ch {
+	fmt.Printf("The value is %v\n", v)
+}
+</code></pre>
+<p>它从指定通道中读取数据直到通道关闭，才继续执行下边的代码。很明显，另外一个协程必须写入 <code>ch</code>（不然代码就阻塞在 for 循环了），而且必须在写入完成后才关闭。<code>suck</code> 函数可以这样写，且在协程中调用这个动作，程序变成了这样：</p>
+<p>示例 14.6-<a href="examples/chapter_14/channel_idiom2.go">channel_idiom2.go</a>：</p>
+<pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	suck(pump())
+	time.Sleep(1e9)
+}
+
+func pump() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 0; ; i++ {
+			ch &lt;- i
+		}
+	}()
+	return ch
+}
+
+func suck(ch chan int) {
+	go func() {
+		for v := range ch {
+			fmt.Println(v)
+		}
+	}()
+}
+</code></pre>
+<p>习惯用法：通道迭代模式</p>
+<p>这个模式用到了后边14.6章示例 <a href="exercises/chapter_14/producer_consumer.go">producer_consumer.go</a> 的生产者-消费者模式，通常，需要从包含了地址索引字段 items 的容器给通道填入元素。为容器的类型定义一个方法 <code>Iter()</code>，返回一个只读的通道（参见第 <a href="14.2.html#1428-实现并行的-for-循环">14.2.8</a> 节）items，如下：</p>
+<pre><code class="language-go">func (c *container) Iter () &lt;- chan items {
+	ch := make(chan item)
+	go func () {
+		for i:= 0; i &lt; c.Len(); i++{	// or use a for-range loop
+			ch &lt;- c.items[i]
+		}
+	} ()
+	return ch
+}
+</code></pre>
+<p>在协程里，一个 for 循环迭代容器 c 中的元素（对于树或图的算法，这种简单的 for 循环可以替换为深度优先搜索）。</p>
+<p>调用这个方法的代码可以这样迭代容器：</p>
+<pre><code class="language-go">for x := range container.Iter() { ... }
+</code></pre>
+<p>可以运行在自己的协程中，所以上边的迭代用到了一个通道和两个协程（可能运行在两个线程上）。就有了一个特殊的生产者-消费者模式。如果程序在协程给通道写完值之前结束，协程不会被回收；设计如此。这种行为看起来是错误的，但是通道是一种线程安全的通信。在这种情况下，协程尝试写入一个通道，而这个通道永远不会被读取，这可能是个 bug 而并非期望它被静默的回收。</p>
+<p>习惯用法：生产者消费者模式</p>
+<p>假设你有 <code>Produce()</code> 函数来产生 <code>Consume</code> 函数需要的值。它们都可以运行在独立的协程中，生产者在通道中放入给消费者读取的值。整个处理过程可以替换为无限循环：</p>
+<pre><code class="language-go">for {
+	Consume(Produce())
+}
+</code></pre>
+<h2 id="14211-通道的方向">14.2.11 通道的方向</h2>
+<p>通道类型可以用注解来表示它只发送或者只接收：</p>
+<pre><code class="language-go">var send_only chan&lt;- int 		// channel can only receive data
+var recv_only &lt;-chan int		// channel can only send data
+</code></pre>
+<p>只接收的通道（&lt;-chan T）无法关闭，因为关闭通道是发送者用来表示不再给通道发送值了，所以对只接收通道是没有意义的。通道创建的时候都是双向的，但也可以分配有方向的通道变量，就像以下代码：</p>
+<pre><code class="language-go">var c = make(chan int) // bidirectional
+go source(c)
+go sink(c)
+
+func source(ch chan&lt;- int){
+	for { ch &lt;- 1 }
+}
+
+func sink(ch &lt;-chan int) {
+	for { &lt;-ch }
+}
+</code></pre>
+<p>习惯用法：管道和选择器模式</p>
+<p>更具体的例子还有协程处理它从通道接收的数据并发送给输出通道：</p>
+<pre><code class="language-go">sendChan := make(chan int)
+reciveChan := make(chan string)
+go processChannel(sendChan, receiveChan)
+
+func processChannel(in &lt;-chan int, out chan&lt;- string) {
+	for inValue := range in {
+		result := ... /// processing inValue
+	out &lt;- result
+	}
+}
+</code></pre>
+<p>通过使用方向注解来限制协程对通道的操作。</p>
+<p>这里有一个来自 Go 指导的很赞的例子，打印了输出的素数，使用选择器（‘筛’）作为它的算法。每个 prime 都有一个选择器，如下图：</p>
+<p><a href="https://img.cntofu.com/book/the-way-to-go_ZH_CN/images/14.2_fig14.2.png?raw=true" data-uk-lightbox><img src="https://img.cntofu.com/book/the-way-to-go_ZH_CN/images/14.2_fig14.2.png?raw=true" alt=""></a></p>
+<p>版本1：示例 14.7-<a href="examples/chapter_14/sieve1.go">sieve1.go</a></p>
+<pre><code class="language-go">// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.package main
+package main
+
+import "fmt"
+
+// Send the sequence 2, 3, 4, ... to channel 'ch'.
+func generate(ch chan int) {
+	for i := 2; ; i++ {
+		ch &lt;- i // Send 'i' to channel 'ch'.
+	}
+}
+
+// Copy the values from channel 'in' to channel 'out',
+// removing those divisible by 'prime'.
+func filter(in, out chan int, prime int) {
+	for {
+		i := &lt;-in // Receive value of new variable 'i' from 'in'.
+		if i%prime != 0 {
+			out &lt;- i // Send 'i' to channel 'out'.
+		}
+	}
+}
+
+// The prime sieve: Daisy-chain filter processes together.
+func main() {
+	ch := make(chan int) // Create a new channel.
+	go generate(ch)      // Start generate() as a goroutine.
+	for {
+		prime := &lt;-ch
+		fmt.Print(prime, " ")
+		ch1 := make(chan int)
+		go filter(ch, ch1, prime)
+		ch = ch1
+	}
+}
+</code></pre>
+<p>协程 <code>filter(in, out chan int, prime int)</code> 拷贝整数到输出通道，丢弃掉可以被 prime 整除的数字。然后每个 prime 又开启了一个新的协程，生成器和选择器并发请求。</p>
+<p>输出：</p>
+<pre><code>2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 101
+103 107 109 113 127 131 137 139 149 151 157 163 167 173 179 181 191 193 197 199 211 223
+227 229 233 239 241 251 257 263 269 271 277 281 283 293 307 311 313 317 331 337 347 349
+353 359 367 373 379 383 389 397 401 409 419 421 431 433 439 443 449 457 461 463 467 479
+487 491 499 503 509 521 523 541 547 557 563 569 571 577 587 593 599 601 607 613 617 619
+631 641 643 647 653 659 661 673 677 683 691 701 709 719 727 733 739 743 751 757 761 769
+773 787 797 809 811 821 823 827 829 839 853 857 859 863 877 881 883 887 907 911 919 929
+937 941 947 953 967 971 977 983 991 997 1009 1013...
+</code></pre>
+<p>第二个版本引入了上边的习惯用法：函数 <code>sieve</code>、<code>generate</code> 和 <code>filter</code> 都是工厂；它们创建通道并返回，而且使用了协程的 lambda 函数。<code>main</code> 函数现在短小清晰：它调用 <code>sieve()</code> 返回了包含素数的通道，然后通过 <code>fmt.Println(&lt;-primes)</code> 打印出来。</p>
+<p>版本2：示例 14.8-<a href="examples/chapter_14/sieve2.go">sieve2.go</a></p>
+<pre><code class="language-go">// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package main
+
+import (
+	"fmt"
+)
+
+// Send the sequence 2, 3, 4, ... to returned channel
+func generate() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 2; ; i++ {
+			ch &lt;- i
+		}
+	}()
+	return ch
+}
+
+// Filter out input values divisible by 'prime', send rest to returned channel
+func filter(in chan int, prime int) chan int {
+	out := make(chan int)
+	go func() {
+		for {
+			if i := &lt;-in; i%prime != 0 {
+				out &lt;- i
+			}
+		}
+	}()
+	return out
+}
+
+func sieve() chan int {
+	out := make(chan int)
+	go func() {
+		ch := generate()
+		for {
+			prime := &lt;-ch
+			ch = filter(ch, prime)
+			out &lt;- prime
+		}
+	}()
+	return out
+}
+
+func main() {
+	primes := sieve()
+	for {
+		fmt.Println(&lt;-primes)
+	}
+}
+</code></pre>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="directory.html">目录</a></li>
+<li>上一节：<a href="14.1.html">并发、并行和协程</a></li>
+<li>下一节：<a href="14.3.html">协程同步：关闭通道-测试阻塞的通道</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/89/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/73/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/73/index.html">Go语言高级编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/44.html">chai2010</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2423个">2423</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/164/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/164/index.html">Go 开发者路线图</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/93.html">Alikhll</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4583个">4583</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/100/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/lua_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/100/index.html">Lua编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/61.html">andycai</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="lua">lua</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 192个">192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/119/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/119/index.html">给小白看的设计模式书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/14/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/preface.html" title="前言" data-book-page-rel-url="eBook/preface.html" data-book-page-id="8678">前言</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.1" disabled data-book-page-rel-url="" data-book-page-id="8679">1.1</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第1章：Go 语言的起源，发展与普及" disabled data-book-page-rel-url="" data-book-page-id="8680">第1章：Go 语言的起源，发展与普及</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/01.1.html" title="起源与发展" data-book-page-rel-url="eBook/01.1.html" data-book-page-id="8681">起源与发展</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.2" disabled data-book-page-rel-url="" data-book-page-id="8682">1.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/01.2.html" title="语言的主要特性与发展的环境和影响因素" data-book-page-rel-url="eBook/01.2.html" data-book-page-id="8683">语言的主要特性与发展的环境和影响因素</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.1" disabled data-book-page-rel-url="" data-book-page-id="8684">2.1</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第2章：安装与运行环境" disabled data-book-page-rel-url="" data-book-page-id="8685">第2章：安装与运行环境</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.1.html" title="平台与架构" data-book-page-rel-url="eBook/02.1.html" data-book-page-id="8686">平台与架构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.2" disabled data-book-page-rel-url="" data-book-page-id="8687">2.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.2.html" title="Go 环境变量" data-book-page-rel-url="eBook/02.2.html" data-book-page-id="8688">Go 环境变量</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.3" disabled data-book-page-rel-url="" data-book-page-id="8689">2.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.3.html" title="在 Linux 上安装 Go" data-book-page-rel-url="eBook/02.3.html" data-book-page-id="8690">在 Linux 上安装 Go</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.4" disabled data-book-page-rel-url="" data-book-page-id="8691">2.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.4.html" title="在 Mac OS X 上安装 Go" data-book-page-rel-url="eBook/02.4.html" data-book-page-id="8692">在 Mac OS X 上安装 Go</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.5" disabled data-book-page-rel-url="" data-book-page-id="8693">2.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.5.html" title="在 Windows 上安装 Go" data-book-page-rel-url="eBook/02.5.html" data-book-page-id="8694">在 Windows 上安装 Go</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.6" disabled data-book-page-rel-url="" data-book-page-id="8695">2.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.6.html" title="安装目录清单" data-book-page-rel-url="eBook/02.6.html" data-book-page-id="8696">安装目录清单</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.7" disabled data-book-page-rel-url="" data-book-page-id="8697">2.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.7.html" title="Go 运行时（runtime）" data-book-page-rel-url="eBook/02.7.html" data-book-page-id="8698">Go 运行时（runtime）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.8" disabled data-book-page-rel-url="" data-book-page-id="8699">2.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/02.8.html" title="Go 解释器" data-book-page-rel-url="eBook/02.8.html" data-book-page-id="8700">Go 解释器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第3章：" disabled data-book-page-rel-url="" data-book-page-id="8701">第3章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.0.html" title="编辑器、集成开发环境与其它工具" data-book-page-rel-url="eBook/03.0.html" data-book-page-id="8702">编辑器、集成开发环境与其它工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.1" disabled data-book-page-rel-url="" data-book-page-id="8703">3.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.1.html" title="Go 开发环境的基本要求" data-book-page-rel-url="eBook/03.1.html" data-book-page-id="8704">Go 开发环境的基本要求</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.2" disabled data-book-page-rel-url="" data-book-page-id="8705">3.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.2.html" title="编辑器和集成开发环境" data-book-page-rel-url="eBook/03.2.html" data-book-page-id="8706">编辑器和集成开发环境</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.3" disabled data-book-page-rel-url="" data-book-page-id="8707">3.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.3.html" title="调试器" data-book-page-rel-url="eBook/03.3.html" data-book-page-id="8708">调试器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.4" disabled data-book-page-rel-url="" data-book-page-id="8709">3.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.4.html" title="构建并运行 Go 程序" data-book-page-rel-url="eBook/03.4.html" data-book-page-id="8710">构建并运行 Go 程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.5" disabled data-book-page-rel-url="" data-book-page-id="8711">3.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.5.html" title="格式化代码" data-book-page-rel-url="eBook/03.5.html" data-book-page-id="8712">格式化代码</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.6" disabled data-book-page-rel-url="" data-book-page-id="8713">3.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.6.html" title="生成代码文档" data-book-page-rel-url="eBook/03.6.html" data-book-page-id="8714">生成代码文档</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.7" disabled data-book-page-rel-url="" data-book-page-id="8715">3.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.7.html" title="其它工具" data-book-page-rel-url="eBook/03.7.html" data-book-page-id="8716">其它工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.8" disabled data-book-page-rel-url="" data-book-page-id="8717">3.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.8.html" title="Go 性能说明" data-book-page-rel-url="eBook/03.8.html" data-book-page-id="8718">Go 性能说明</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.9" disabled data-book-page-rel-url="" data-book-page-id="8719">3.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/03.9.html" title="与其它语言进行交互" data-book-page-rel-url="eBook/03.9.html" data-book-page-id="8720">与其它语言进行交互</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1" disabled data-book-page-rel-url="" data-book-page-id="8721">4.1</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第4章：基本结构和基本数据类型" disabled data-book-page-rel-url="" data-book-page-id="8722">第4章：基本结构和基本数据类型</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.1.html" title="文件名、关键字与标识符" data-book-page-rel-url="eBook/04.1.html" data-book-page-id="8723">文件名、关键字与标识符</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2" disabled data-book-page-rel-url="" data-book-page-id="8724">4.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.2.html" title="Go 程序的基本结构和要素" data-book-page-rel-url="eBook/04.2.html" data-book-page-id="8725">Go 程序的基本结构和要素</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3" disabled data-book-page-rel-url="" data-book-page-id="8726">4.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.3.html" title="常量" data-book-page-rel-url="eBook/04.3.html" data-book-page-id="8727">常量</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4" disabled data-book-page-rel-url="" data-book-page-id="8728">4.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.4.html" title="变量" data-book-page-rel-url="eBook/04.4.html" data-book-page-id="8729">变量</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.5" disabled data-book-page-rel-url="" data-book-page-id="8730">4.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.5.html" title="基本类型和运算符" data-book-page-rel-url="eBook/04.5.html" data-book-page-id="8731">基本类型和运算符</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.6" disabled data-book-page-rel-url="" data-book-page-id="8732">4.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.6.html" title="字符串" data-book-page-rel-url="eBook/04.6.html" data-book-page-id="8733">字符串</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.7" disabled data-book-page-rel-url="" data-book-page-id="8734">4.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.7.html" title="strings 和 strconv 包" data-book-page-rel-url="eBook/04.7.html" data-book-page-id="8735">strings 和 strconv 包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.8" disabled data-book-page-rel-url="" data-book-page-id="8736">4.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.8.html" title="时间和日期" data-book-page-rel-url="eBook/04.8.html" data-book-page-id="8737">时间和日期</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.9" disabled data-book-page-rel-url="" data-book-page-id="8738">4.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/04.9.html" title="指针" data-book-page-rel-url="eBook/04.9.html" data-book-page-id="8739">指针</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第5章：" disabled data-book-page-rel-url="" data-book-page-id="8740">第5章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.0.html" title="控制结构" data-book-page-rel-url="eBook/05.0.html" data-book-page-id="8741">控制结构</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.1" disabled data-book-page-rel-url="" data-book-page-id="8742">5.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.1.html" title="if-else 结构" data-book-page-rel-url="eBook/05.1.html" data-book-page-id="8743">if-else 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.2" disabled data-book-page-rel-url="" data-book-page-id="8744">5.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.2.html" title="测试多返回值函数的错误" data-book-page-rel-url="eBook/05.2.html" data-book-page-id="8745">测试多返回值函数的错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.3" disabled data-book-page-rel-url="" data-book-page-id="8746">5.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.3.html" title="switch 结构" data-book-page-rel-url="eBook/05.3.html" data-book-page-id="8747">switch 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.4" disabled data-book-page-rel-url="" data-book-page-id="8748">5.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.4.html" title="for 结构" data-book-page-rel-url="eBook/05.4.html" data-book-page-id="8749">for 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.5" disabled data-book-page-rel-url="" data-book-page-id="8750">5.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.5.html" title="Break 与 continue" data-book-page-rel-url="eBook/05.5.html" data-book-page-id="8751">Break 与 continue</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.6" disabled data-book-page-rel-url="" data-book-page-id="8752">5.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/05.6.html" title="标签与 goto" data-book-page-rel-url="eBook/05.6.html" data-book-page-id="8753">标签与 goto</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第6章：" disabled data-book-page-rel-url="" data-book-page-id="8754">第6章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.0.html" title="函数（function）" data-book-page-rel-url="eBook/06.0.html" data-book-page-id="8755">函数（function）</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.1" disabled data-book-page-rel-url="" data-book-page-id="8756">6.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.1.html" title="介绍" data-book-page-rel-url="eBook/06.1.html" data-book-page-id="8757">介绍</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.2" disabled data-book-page-rel-url="" data-book-page-id="8758">6.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.2.html" title="函数参数与返回值" data-book-page-rel-url="eBook/06.2.html" data-book-page-id="8759">函数参数与返回值</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.3" disabled data-book-page-rel-url="" data-book-page-id="8760">6.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.3.html" title="传递变长参数" data-book-page-rel-url="eBook/06.3.html" data-book-page-id="8761">传递变长参数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.4" disabled data-book-page-rel-url="" data-book-page-id="8762">6.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.4.html" title="defer 和追踪" data-book-page-rel-url="eBook/06.4.html" data-book-page-id="8763">defer 和追踪</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.5" disabled data-book-page-rel-url="" data-book-page-id="8764">6.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.5.html" title="内置函数" data-book-page-rel-url="eBook/06.5.html" data-book-page-id="8765">内置函数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.6" disabled data-book-page-rel-url="" data-book-page-id="8766">6.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.6.html" title="递归函数" data-book-page-rel-url="eBook/06.6.html" data-book-page-id="8767">递归函数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.7" disabled data-book-page-rel-url="" data-book-page-id="8768">6.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.7.html" title="将函数作为参数" data-book-page-rel-url="eBook/06.7.html" data-book-page-id="8769">将函数作为参数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.8" disabled data-book-page-rel-url="" data-book-page-id="8770">6.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.8.html" title="闭包" data-book-page-rel-url="eBook/06.8.html" data-book-page-id="8771">闭包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.9" disabled data-book-page-rel-url="" data-book-page-id="8772">6.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.9.html" title="应用闭包：将函数作为返回值" data-book-page-rel-url="eBook/06.9.html" data-book-page-id="8773">应用闭包：将函数作为返回值</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.10" disabled data-book-page-rel-url="" data-book-page-id="8774">6.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.10.html" title="使用闭包调试" data-book-page-rel-url="eBook/06.10.html" data-book-page-id="8775">使用闭包调试</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.11" disabled data-book-page-rel-url="" data-book-page-id="8776">6.11</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.11.html" title="计算函数执行时间" data-book-page-rel-url="eBook/06.11.html" data-book-page-id="8777">计算函数执行时间</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.12" disabled data-book-page-rel-url="" data-book-page-id="8778">6.12</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/06.12.html" title="通过内存缓存来提升性能" data-book-page-rel-url="eBook/06.12.html" data-book-page-id="8779">通过内存缓存来提升性能</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第7章：" disabled data-book-page-rel-url="" data-book-page-id="8780">第7章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.0.html" title="数组与切片" data-book-page-rel-url="eBook/07.0.html" data-book-page-id="8781">数组与切片</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.1" disabled data-book-page-rel-url="" data-book-page-id="8782">7.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.1.html" title="声明和初始化" data-book-page-rel-url="eBook/07.1.html" data-book-page-id="8783">声明和初始化</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.2" disabled data-book-page-rel-url="" data-book-page-id="8784">7.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.2.html" title="切片" data-book-page-rel-url="eBook/07.2.html" data-book-page-id="8785">切片</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.3" disabled data-book-page-rel-url="" data-book-page-id="8786">7.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.3.html" title="For-range 结构" data-book-page-rel-url="eBook/07.3.html" data-book-page-id="8787">For-range 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.4" disabled data-book-page-rel-url="" data-book-page-id="8788">7.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.4.html" title="切片重组（reslice）" data-book-page-rel-url="eBook/07.4.html" data-book-page-id="8789">切片重组（reslice）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.5" disabled data-book-page-rel-url="" data-book-page-id="8790">7.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.5.html" title="切片的复制与追加" data-book-page-rel-url="eBook/07.5.html" data-book-page-id="8791">切片的复制与追加</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.6" disabled data-book-page-rel-url="" data-book-page-id="8792">7.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/07.6.html" title="字符串、数组和切片的应用" data-book-page-rel-url="eBook/07.6.html" data-book-page-id="8793">字符串、数组和切片的应用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第8章：" disabled data-book-page-rel-url="" data-book-page-id="8794">第8章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.0.html" title="Map" data-book-page-rel-url="eBook/08.0.html" data-book-page-id="8795">Map</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.1" disabled data-book-page-rel-url="" data-book-page-id="8796">8.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.1.html" title="声明、初始化和 make" data-book-page-rel-url="eBook/08.1.html" data-book-page-id="8797">声明、初始化和 make</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.2" disabled data-book-page-rel-url="" data-book-page-id="8798">8.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.2.html" title="测试键值对是否存在及删除元素" data-book-page-rel-url="eBook/08.2.html" data-book-page-id="8799">测试键值对是否存在及删除元素</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.3" disabled data-book-page-rel-url="" data-book-page-id="8800">8.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.3.html" title="for-range 的配套用法" data-book-page-rel-url="eBook/08.3.html" data-book-page-id="8801">for-range 的配套用法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.4" disabled data-book-page-rel-url="" data-book-page-id="8802">8.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.4.html" title="map 类型的切片" data-book-page-rel-url="eBook/08.4.html" data-book-page-id="8803">map 类型的切片</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.5" disabled data-book-page-rel-url="" data-book-page-id="8804">8.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.5.html" title="map 的排序" data-book-page-rel-url="eBook/08.5.html" data-book-page-id="8805">map 的排序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.6" disabled data-book-page-rel-url="" data-book-page-id="8806">8.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/08.6.html" title="将 map 的键值对调" data-book-page-rel-url="eBook/08.6.html" data-book-page-id="8807">将 map 的键值对调</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第9章：" disabled data-book-page-rel-url="" data-book-page-id="8808">第9章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.0.html" title="包（package）" data-book-page-rel-url="eBook/09.0.html" data-book-page-id="8809">包（package）</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.1" disabled data-book-page-rel-url="" data-book-page-id="8810">9.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.1.html" title="标准库概述" data-book-page-rel-url="eBook/09.1.html" data-book-page-id="8811">标准库概述</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.2" disabled data-book-page-rel-url="" data-book-page-id="8812">9.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.2.html" title="regexp 包" data-book-page-rel-url="eBook/09.2.html" data-book-page-id="8813">regexp 包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.3" disabled data-book-page-rel-url="" data-book-page-id="8814">9.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.3.html" title="锁和 sync 包" data-book-page-rel-url="eBook/09.3.html" data-book-page-id="8815">锁和 sync 包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.4" disabled data-book-page-rel-url="" data-book-page-id="8816">9.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.4.html" title="精密计算和 big 包" data-book-page-rel-url="eBook/09.4.html" data-book-page-id="8817">精密计算和 big 包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.5" disabled data-book-page-rel-url="" data-book-page-id="8818">9.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.5.html" title="自定义包和可见性" data-book-page-rel-url="eBook/09.5.html" data-book-page-id="8819">自定义包和可见性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.6" disabled data-book-page-rel-url="" data-book-page-id="8820">9.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.6.html" title="为自定义包使用 godoc" data-book-page-rel-url="eBook/09.6.html" data-book-page-id="8821">为自定义包使用 godoc</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.7" disabled data-book-page-rel-url="" data-book-page-id="8822">9.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.7.html" title="使用 go install 安装自定义包" data-book-page-rel-url="eBook/09.7.html" data-book-page-id="8823">使用 go install 安装自定义包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.8" disabled data-book-page-rel-url="" data-book-page-id="8824">9.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.8.html" title="自定义包的目录结构、go install 和 go test" data-book-page-rel-url="eBook/09.8.html" data-book-page-id="8825">自定义包的目录结构、go install 和 go test</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.9" disabled data-book-page-rel-url="" data-book-page-id="8826">9.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.9.html" title="通过 Git 打包和安装" data-book-page-rel-url="eBook/09.9.html" data-book-page-id="8827">通过 Git 打包和安装</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.10" disabled data-book-page-rel-url="" data-book-page-id="8828">9.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.10.html" title="Go 的外部包和项目" data-book-page-rel-url="eBook/09.10.html" data-book-page-id="8829">Go 的外部包和项目</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.11" disabled data-book-page-rel-url="" data-book-page-id="8830">9.11</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/09.11.html" title="在 Go 程序中使用外部库" data-book-page-rel-url="eBook/09.11.html" data-book-page-id="8831">在 Go 程序中使用外部库</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第10章：" disabled data-book-page-rel-url="" data-book-page-id="8832">第10章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.0.html" title="结构（struct）与方法（method）" data-book-page-rel-url="eBook/10.0.html" data-book-page-id="8833">结构（struct）与方法（method）</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.1" disabled data-book-page-rel-url="" data-book-page-id="8834">10.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.1.html" title="结构体定义" data-book-page-rel-url="eBook/10.1.html" data-book-page-id="8835">结构体定义</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.2" disabled data-book-page-rel-url="" data-book-page-id="8836">10.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.2.html" title="使用工厂方法创建结构体实例" data-book-page-rel-url="eBook/10.2.html" data-book-page-id="8837">使用工厂方法创建结构体实例</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.3" disabled data-book-page-rel-url="" data-book-page-id="8838">10.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.3.html" title="使用自定义包中的结构体" data-book-page-rel-url="eBook/10.3.html" data-book-page-id="8839">使用自定义包中的结构体</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.4" disabled data-book-page-rel-url="" data-book-page-id="8840">10.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.4.html" title="带标签的结构体" data-book-page-rel-url="eBook/10.4.html" data-book-page-id="8841">带标签的结构体</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.5" disabled data-book-page-rel-url="" data-book-page-id="8842">10.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.5.html" title="匿名字段和内嵌结构体" data-book-page-rel-url="eBook/10.5.html" data-book-page-id="8843">匿名字段和内嵌结构体</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.6" disabled data-book-page-rel-url="" data-book-page-id="8844">10.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.6.html" title="方法" data-book-page-rel-url="eBook/10.6.html" data-book-page-id="8845">方法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.7" disabled data-book-page-rel-url="" data-book-page-id="8846">10.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.7.html" title="类型的 String() 方法和格式化描述符" data-book-page-rel-url="eBook/10.7.html" data-book-page-id="8847">类型的 String() 方法和格式化描述符</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.8" disabled data-book-page-rel-url="" data-book-page-id="8848">10.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/10.8.html" title="垃圾回收和 SetFinalizer" data-book-page-rel-url="eBook/10.8.html" data-book-page-id="8849">垃圾回收和 SetFinalizer</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第11章：" disabled data-book-page-rel-url="" data-book-page-id="8850">第11章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.0.html" title="接口（interface）与反射（reflection）" data-book-page-rel-url="eBook/11.0.html" data-book-page-id="8851">接口（interface）与反射（reflection）</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.1" disabled data-book-page-rel-url="" data-book-page-id="8852">11.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.1.html" title="接口是什么" data-book-page-rel-url="eBook/11.1.html" data-book-page-id="8853">接口是什么</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.2" disabled data-book-page-rel-url="" data-book-page-id="8854">11.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.2.html" title="接口嵌套接口" data-book-page-rel-url="eBook/11.2.html" data-book-page-id="8855">接口嵌套接口</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.3" disabled data-book-page-rel-url="" data-book-page-id="8856">11.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.3.html" title="类型断言：如何检测和转换接口变量的类型" data-book-page-rel-url="eBook/11.3.html" data-book-page-id="8857">类型断言：如何检测和转换接口变量的类型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.4" disabled data-book-page-rel-url="" data-book-page-id="8858">11.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.4.html" title="类型判断：type-switch" data-book-page-rel-url="eBook/11.4.html" data-book-page-id="8859">类型判断：type-switch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.5" disabled data-book-page-rel-url="" data-book-page-id="8860">11.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.5.html" title="测试一个值是否实现了某个接口" data-book-page-rel-url="eBook/11.5.html" data-book-page-id="8861">测试一个值是否实现了某个接口</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.6" disabled data-book-page-rel-url="" data-book-page-id="8862">11.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.6.html" title="使用方法集与接口" data-book-page-rel-url="eBook/11.6.html" data-book-page-id="8863">使用方法集与接口</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.7" disabled data-book-page-rel-url="" data-book-page-id="8864">11.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.7.html" title="第一个例子：使用 Sorter 接口排序" data-book-page-rel-url="eBook/11.7.html" data-book-page-id="8865">第一个例子：使用 Sorter 接口排序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.8" disabled data-book-page-rel-url="" data-book-page-id="8866">11.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.8.html" title="第二个例子：读和写" data-book-page-rel-url="eBook/11.8.html" data-book-page-id="8867">第二个例子：读和写</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.9" disabled data-book-page-rel-url="" data-book-page-id="8868">11.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.9.html" title="空接口" data-book-page-rel-url="eBook/11.9.html" data-book-page-id="8869">空接口</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.10" disabled data-book-page-rel-url="" data-book-page-id="8870">11.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.10.html" title="反射包" data-book-page-rel-url="eBook/11.10.html" data-book-page-id="8871">反射包</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.11" disabled data-book-page-rel-url="" data-book-page-id="8872">11.11</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.11.html" title="Printf 和反射" data-book-page-rel-url="eBook/11.11.html" data-book-page-id="8873">Printf 和反射</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.12" disabled data-book-page-rel-url="" data-book-page-id="8874">11.12</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.12.html" title="接口与动态类型" data-book-page-rel-url="eBook/11.12.html" data-book-page-id="8875">接口与动态类型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.13" disabled data-book-page-rel-url="" data-book-page-id="8876">11.13</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.13.html" title="总结：Go 中的面向对象" data-book-page-rel-url="eBook/11.13.html" data-book-page-id="8877">总结：Go 中的面向对象</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.14" disabled data-book-page-rel-url="" data-book-page-id="8878">11.14</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/11.14.html" title="结构体、集合和高阶函数" data-book-page-rel-url="eBook/11.14.html" data-book-page-id="8879">结构体、集合和高阶函数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第12章：" disabled data-book-page-rel-url="" data-book-page-id="8880">第12章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.0.html" title="读写数据" data-book-page-rel-url="eBook/12.0.html" data-book-page-id="8881">读写数据</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.1" disabled data-book-page-rel-url="" data-book-page-id="8882">12.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.1.html" title="读取用户的输入" data-book-page-rel-url="eBook/12.1.html" data-book-page-id="8883">读取用户的输入</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.2" disabled data-book-page-rel-url="" data-book-page-id="8884">12.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.2.html" title="文件读写" data-book-page-rel-url="eBook/12.2.html" data-book-page-id="8885">文件读写</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.3" disabled data-book-page-rel-url="" data-book-page-id="8886">12.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.3.html" title="文件拷贝" data-book-page-rel-url="eBook/12.3.html" data-book-page-id="8887">文件拷贝</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.4" disabled data-book-page-rel-url="" data-book-page-id="8888">12.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.4.html" title="从命令行读取参数" data-book-page-rel-url="eBook/12.4.html" data-book-page-id="8889">从命令行读取参数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.5" disabled data-book-page-rel-url="" data-book-page-id="8890">12.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.5.html" title="用 buffer 读取文件" data-book-page-rel-url="eBook/12.5.html" data-book-page-id="8891">用 buffer 读取文件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.6" disabled data-book-page-rel-url="" data-book-page-id="8892">12.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.6.html" title="用切片读写文件" data-book-page-rel-url="eBook/12.6.html" data-book-page-id="8893">用切片读写文件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.7" disabled data-book-page-rel-url="" data-book-page-id="8894">12.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.7.html" title="用 defer 关闭文件" data-book-page-rel-url="eBook/12.7.html" data-book-page-id="8895">用 defer 关闭文件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.8" disabled data-book-page-rel-url="" data-book-page-id="8896">12.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.8.html" title="使用接口的实际例子：fmt.Fprintf" data-book-page-rel-url="eBook/12.8.html" data-book-page-id="8897">使用接口的实际例子：fmt.Fprintf</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.9" disabled data-book-page-rel-url="" data-book-page-id="8898">12.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.9.html" title="格式化 JSON 数据" data-book-page-rel-url="eBook/12.9.html" data-book-page-id="8899">格式化 JSON 数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.10" disabled data-book-page-rel-url="" data-book-page-id="8900">12.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.10.html" title="XML 数据格式" data-book-page-rel-url="eBook/12.10.html" data-book-page-id="8901">XML 数据格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.11" disabled data-book-page-rel-url="" data-book-page-id="8902">12.11</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.11.html" title="用 Gob 传输数据" data-book-page-rel-url="eBook/12.11.html" data-book-page-id="8903">用 Gob 传输数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.12" disabled data-book-page-rel-url="" data-book-page-id="8904">12.12</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/12.12.html" title="Go 中的密码学" data-book-page-rel-url="eBook/12.12.html" data-book-page-id="8905">Go 中的密码学</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第13章：" disabled data-book-page-rel-url="" data-book-page-id="8906">第13章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.0.html" title="错误处理与测试" data-book-page-rel-url="eBook/13.0.html" data-book-page-id="8907">错误处理与测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.1" disabled data-book-page-rel-url="" data-book-page-id="8908">13.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.1.html" title="错误处理" data-book-page-rel-url="eBook/13.1.html" data-book-page-id="8909">错误处理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.2" disabled data-book-page-rel-url="" data-book-page-id="8910">13.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.2.html" title="运行时异常和 panic" data-book-page-rel-url="eBook/13.2.html" data-book-page-id="8911">运行时异常和 panic</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.3" disabled data-book-page-rel-url="" data-book-page-id="8912">13.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.3.html" title="从 panic 中恢复（Recover）" data-book-page-rel-url="eBook/13.3.html" data-book-page-id="8913">从 panic 中恢复（Recover）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.4" disabled data-book-page-rel-url="" data-book-page-id="8914">13.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.4.html" title="自定义包中的错误处理和 panicking" data-book-page-rel-url="eBook/13.4.html" data-book-page-id="8915">自定义包中的错误处理和 panicking</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.5" disabled data-book-page-rel-url="" data-book-page-id="8916">13.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.5.html" title="一种用闭包处理错误的模式" data-book-page-rel-url="eBook/13.5.html" data-book-page-id="8917">一种用闭包处理错误的模式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.6" disabled data-book-page-rel-url="" data-book-page-id="8918">13.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.6.html" title="启动外部命令和程序" data-book-page-rel-url="eBook/13.6.html" data-book-page-id="8919">启动外部命令和程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.7" disabled data-book-page-rel-url="" data-book-page-id="8920">13.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.7.html" title="Go 中的单元测试和基准测试" data-book-page-rel-url="eBook/13.7.html" data-book-page-id="8921">Go 中的单元测试和基准测试</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.8" disabled data-book-page-rel-url="" data-book-page-id="8922">13.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.8.html" title="测试的具体例子" data-book-page-rel-url="eBook/13.8.html" data-book-page-id="8923">测试的具体例子</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.9" disabled data-book-page-rel-url="" data-book-page-id="8924">13.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.9.html" title="用（测试数据）表驱动测试" data-book-page-rel-url="eBook/13.9.html" data-book-page-id="8925">用（测试数据）表驱动测试</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.10" disabled data-book-page-rel-url="" data-book-page-id="8926">13.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/13.10.html" title="性能调试：分析并优化 Go 程序" data-book-page-rel-url="eBook/13.10.html" data-book-page-id="8927">性能调试：分析并优化 Go 程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第14章：" disabled data-book-page-rel-url="" data-book-page-id="8928">第14章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.0.html" title="协程（goroutine）与通道（channel）" data-book-page-rel-url="eBook/14.0.html" data-book-page-id="8929">协程（goroutine）与通道（channel）</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.1" disabled data-book-page-rel-url="" data-book-page-id="8930">14.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.1.html" title="并发、并行和协程" data-book-page-rel-url="eBook/14.1.html" data-book-page-id="8931">并发、并行和协程</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.2" disabled data-book-page-rel-url="" data-book-page-id="8932">14.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.2.html" title="使用通道进行协程间通信" data-book-page-rel-url="eBook/14.2.html" data-book-page-id="8933">使用通道进行协程间通信</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.3" disabled data-book-page-rel-url="" data-book-page-id="8934">14.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.3.html" title="协程同步：关闭通道-对阻塞的通道进行测试" data-book-page-rel-url="eBook/14.3.html" data-book-page-id="8935">协程同步：关闭通道-对阻塞的通道进行测试</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.4" disabled data-book-page-rel-url="" data-book-page-id="8936">14.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.4.html" title="使用 select 切换协程" data-book-page-rel-url="eBook/14.4.html" data-book-page-id="8937">使用 select 切换协程</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.5" disabled data-book-page-rel-url="" data-book-page-id="8938">14.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.5.html" title="通道，超时和计时器（Ticker）" data-book-page-rel-url="eBook/14.5.html" data-book-page-id="8939">通道，超时和计时器（Ticker）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.6" disabled data-book-page-rel-url="" data-book-page-id="8940">14.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.6.html" title="协程和恢复（recover）" data-book-page-rel-url="eBook/14.6.html" data-book-page-id="8941">协程和恢复（recover）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.7" disabled data-book-page-rel-url="" data-book-page-id="8942">14.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.7.html" title="新旧模型对比：任务和worker" data-book-page-rel-url="eBook/14.7.html" data-book-page-id="8943">新旧模型对比：任务和worker</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.8" disabled data-book-page-rel-url="" data-book-page-id="8944">14.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.8.html" title="惰性生成器的实现" data-book-page-rel-url="eBook/14.8.html" data-book-page-id="8945">惰性生成器的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.9" disabled data-book-page-rel-url="" data-book-page-id="8946">14.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/14.9.html" title="实现 Futures 模式" data-book-page-rel-url="eBook/14.9.html" data-book-page-id="8947">实现 Futures 模式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第15章：" disabled data-book-page-rel-url="" data-book-page-id="8948">第15章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/15.0.html" title="网络、模版与网页应用" data-book-page-rel-url="eBook/15.0.html" data-book-page-id="8949">网络、模版与网页应用</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.1" disabled data-book-page-rel-url="" data-book-page-id="8950">15.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/15.1.html" title="tcp服务器" data-book-page-rel-url="eBook/15.1.html" data-book-page-id="8951">tcp服务器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.2" disabled data-book-page-rel-url="" data-book-page-id="8952">15.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/15.2.html" title="一个简单的web服务器" data-book-page-rel-url="eBook/15.2.html" data-book-page-id="8953">一个简单的web服务器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.3" disabled data-book-page-rel-url="" data-book-page-id="8954">15.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/15.3.html" title="访问并读取页面数据" data-book-page-rel-url="eBook/15.3.html" data-book-page-id="8955">访问并读取页面数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.4" disabled data-book-page-rel-url="" data-book-page-id="8956">15.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/15.4.html" title="写一个简单的网页应用" data-book-page-rel-url="eBook/15.4.html" data-book-page-id="8957">写一个简单的网页应用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第16章：" disabled data-book-page-rel-url="" data-book-page-id="8958">第16章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.0.html" title="常见的陷阱与错误" data-book-page-rel-url="eBook/16.0.html" data-book-page-id="8959">常见的陷阱与错误</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.1" disabled data-book-page-rel-url="" data-book-page-id="8960">16.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.1.html" title="误用短声明导致变量覆盖" data-book-page-rel-url="eBook/16.1.html" data-book-page-id="8961">误用短声明导致变量覆盖</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.2" disabled data-book-page-rel-url="" data-book-page-id="8962">16.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.2.html" title="误用字符串" data-book-page-rel-url="eBook/16.2.html" data-book-page-id="8963">误用字符串</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.3" disabled data-book-page-rel-url="" data-book-page-id="8964">16.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.3.html" title="发生错误时使用defer关闭一个文件" data-book-page-rel-url="eBook/16.3.html" data-book-page-id="8965">发生错误时使用defer关闭一个文件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.4" disabled data-book-page-rel-url="" data-book-page-id="8966">16.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.4.html" title="何时使用new()和make()" data-book-page-rel-url="eBook/16.4.html" data-book-page-id="8967">何时使用new()和make()</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.5" disabled data-book-page-rel-url="" data-book-page-id="8968">16.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.5.html" title="不需要将一个指向切片的指针传递给函数" data-book-page-rel-url="eBook/16.5.html" data-book-page-id="8969">不需要将一个指向切片的指针传递给函数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.6" disabled data-book-page-rel-url="" data-book-page-id="8970">16.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.6.html" title="使用指针指向接口类型" data-book-page-rel-url="eBook/16.6.html" data-book-page-id="8971">使用指针指向接口类型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.7" disabled data-book-page-rel-url="" data-book-page-id="8972">16.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.7.html" title="使用值类型时误用指针" data-book-page-rel-url="eBook/16.7.html" data-book-page-id="8973">使用值类型时误用指针</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.8" disabled data-book-page-rel-url="" data-book-page-id="8974">16.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.8.html" title="误用协程和通道" data-book-page-rel-url="eBook/16.8.html" data-book-page-id="8975">误用协程和通道</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.9" disabled data-book-page-rel-url="" data-book-page-id="8976">16.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.9.html" title="闭包和协程的使用" data-book-page-rel-url="eBook/16.9.html" data-book-page-id="8977">闭包和协程的使用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.10" disabled data-book-page-rel-url="" data-book-page-id="8978">16.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/16.10.html" title="糟糕的错误处理" data-book-page-rel-url="eBook/16.10.html" data-book-page-id="8979">糟糕的错误处理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第17章：" disabled data-book-page-rel-url="" data-book-page-id="8980">第17章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/17.0.html" title="模式" data-book-page-rel-url="eBook/17.0.html" data-book-page-id="8981">模式</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="17.1" disabled data-book-page-rel-url="" data-book-page-id="8982">17.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/17.1.html" title="关于逗号ok模式" data-book-page-rel-url="eBook/17.1.html" data-book-page-id="8983">关于逗号ok模式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第18章：" disabled data-book-page-rel-url="" data-book-page-id="8984">第18章：</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.0.html" title="出于性能考虑的实用代码片段" data-book-page-rel-url="eBook/18.0.html" data-book-page-id="8985">出于性能考虑的实用代码片段</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.1" disabled data-book-page-rel-url="" data-book-page-id="8986">18.1</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.1.html" title="字符串" data-book-page-rel-url="eBook/18.1.html" data-book-page-id="8987">字符串</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.2" disabled data-book-page-rel-url="" data-book-page-id="8988">18.2</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.2.html" title="数组和切片" data-book-page-rel-url="eBook/18.2.html" data-book-page-id="8989">数组和切片</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.3" disabled data-book-page-rel-url="" data-book-page-id="8990">18.3</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.3.html" title="映射" data-book-page-rel-url="eBook/18.3.html" data-book-page-id="8991">映射</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.4" disabled data-book-page-rel-url="" data-book-page-id="8992">18.4</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.4.html" title="结构体" data-book-page-rel-url="eBook/18.4.html" data-book-page-id="8993">结构体</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.5" disabled data-book-page-rel-url="" data-book-page-id="8994">18.5</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.5.html" title="接口" data-book-page-rel-url="eBook/18.5.html" data-book-page-id="8995">接口</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.6" disabled data-book-page-rel-url="" data-book-page-id="8996">18.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.6.html" title="函数" data-book-page-rel-url="eBook/18.6.html" data-book-page-id="8997">函数</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.7" disabled data-book-page-rel-url="" data-book-page-id="8998">18.7</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.7.html" title="文件" data-book-page-rel-url="eBook/18.7.html" data-book-page-id="8999">文件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.8" disabled data-book-page-rel-url="" data-book-page-id="9000">18.8</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.8.html" title="协程（goroutine）与通道（channel）" data-book-page-rel-url="eBook/18.8.html" data-book-page-id="9001">协程（goroutine）与通道（channel）</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.9" disabled data-book-page-rel-url="" data-book-page-id="9002">18.9</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.9.html" title="网络和网页应用" data-book-page-rel-url="eBook/18.9.html" data-book-page-id="9003">网络和网页应用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.10" disabled data-book-page-rel-url="" data-book-page-id="9004">18.10</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.10.html" title="其他" data-book-page-rel-url="eBook/18.10.html" data-book-page-id="9005">其他</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="18.11" disabled data-book-page-rel-url="" data-book-page-id="9006">18.11</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/14/eBook/18.11.html" title="出于性能考虑的最佳实践和建议" data-book-page-rel-url="eBook/18.11.html" data-book-page-id="9007">出于性能考虑的最佳实践和建议</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =14;var bookPageId =8933;var bookPageRelUrl ='eBook/14.2.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

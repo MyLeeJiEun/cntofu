@@ -1,0 +1,865 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>中断处理-Linux 内核揭密</title>
+<meta content='中断处理,Linux 内核揭密' name='keywords'>
+<meta content='中断处理,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Interrupts/interrupts-3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">初步中断处理</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Interrupts/interrupts-5.html">
+<span class="">异常处理的实现</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="interrupts-and-interrupt-handling-part-4">Interrupts and Interrupt Handling. Part 4.</h1>
+<h2 id="initialization-of-non-early-interrupt-gates">Initialization of non-early interrupt gates</h2>
+<p>This is fourth part about an interrupts and exceptions handling in the Linux kernel and in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a> we saw first early <code>#DB</code> and <code>#BP</code> exceptions handlers from the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/kernel/traps.c">arch/x86/kernel/traps.c</a>. We stopped on the right after the <code>early_trap_init</code> function that called in the <code>setup_arch</code> function which defined in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/kernel/setup.c">arch/x86/kernel/setup.c</a>. In this part we will continue to dive into an interrupts and exceptions handling in the Linux kernel for <code>x86_64</code> and continue to do it from the place where we left off in the last part. First thing which is related to the interrupts and exceptions handling is the setup of the <code>#PF</code> or <a href="https://en.wikipedia.org/wiki/Page_fault">page fault</a> handler with the <code>early_trap_pf_init</code> function. Let's start from it.</p>
+<h2 id="early-page-fault-handler">Early page fault handler</h2>
+<p>The <code>early_trap_pf_init</code> function defined in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/kernel/traps.c">arch/x86/kernel/traps.c</a>. It uses <code>set_intr_gate</code> macro that fills <a href="https://en.wikipedia.org/wiki/Interrupt_descriptor_table">Interrupt Descriptor Table</a> with the given entry:</p>
+<pre><code class="language-C">void __init early_trap_pf_init(void)
+{
+#ifdef CONFIG_X86_64
+         set_intr_gate(X86_TRAP_PF, page_fault);
+#endif
+}
+</code></pre>
+<p>This macro defined in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/include/asm/desc.h">arch/x86/include/asm/desc.h</a>. We already saw macros like this in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a> - <code>set_system_intr_gate</code> and <code>set_intr_gate_ist</code>. This macro checks that given vector number is not greater than <code>255</code> (maximum vector number) and calls <code>_set_gate</code> function as <code>set_system_intr_gate</code> and <code>set_intr_gate_ist</code> did it:</p>
+<pre><code class="language-C">#define set_intr_gate(n, addr)                                  \
+do {                                                            \
+        BUG_ON((unsigned)n &gt; 0xFF);                             \
+        _set_gate(n, GATE_INTERRUPT, (void *)addr, 0, 0,        \
+                  __KERNEL_CS);                                 \
+        _trace_set_gate(n, GATE_INTERRUPT, (void *)trace_##addr,\
+                        0, 0, __KERNEL_CS);                     \
+} while (0)
+</code></pre>
+<p>The <code>set_intr_gate</code> macro takes two parameters:</p>
+<ul>
+<li>vector number of a interrupt;</li>
+<li>address of an interrupt handler;</li>
+</ul>
+<p>In our case they are:</p>
+<ul>
+<li><code>X86_TRAP_PF</code> - <code>14</code>;</li>
+<li><code>page_fault</code> - the interrupt handler entry point.</li>
+</ul>
+<p>The <code>X86_TRAP_PF</code> is the element of enum which defined in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/include/asm/traprs.h">arch/x86/include/asm/traprs.h</a>:</p>
+<pre><code class="language-C">enum {
+	...
+	...
+	...
+	...
+	X86_TRAP_PF,            /* 14, Page Fault */
+	...
+	...
+	...
+}
+</code></pre>
+<p>When the <code>early_trap_pf_init</code> will be called, the <code>set_intr_gate</code> will be expanded to the call of the <code>_set_gate</code> which will fill the <code>IDT</code> with the handler for the page fault. Now let's look on the implementation of the <code>page_fault</code> handler. The <code>page_fault</code> handler defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/kernel/entry_64.S">arch/x86/kernel/entry_64.S</a> assembly source code file as all exceptions handlers. Let's look on it:</p>
+<pre><code class="language-assembly">trace_idtentry page_fault do_page_fault has_error_code=1
+</code></pre>
+<p>We saw in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a> how <code>#DB</code> and <code>#BP</code> handlers defined. They were defined with the <code>idtentry</code> macro, but here we can see <code>trace_idtentry</code>. This macro defined in the same source code file and depends on the <code>CONFIG_TRACING</code> kernel configuration option:</p>
+<pre><code class="language-assembly">#ifdef CONFIG_TRACING
+.macro trace_idtentry sym do_sym has_error_code:req
+idtentry trace(\sym) trace(\do_sym) has_error_code=\has_error_code
+idtentry \sym \do_sym has_error_code=\has_error_code
+.endm
+#else
+.macro trace_idtentry sym do_sym has_error_code:req
+idtentry \sym \do_sym has_error_code=\has_error_code
+.endm
+#endif
+</code></pre>
+<p>We will not dive into exceptions <a href="https://en.wikipedia.org/wiki/Tracing_%28software%29">Tracing</a> now. If <code>CONFIG_TRACING</code> is not set, we can see that <code>trace_idtentry</code> macro just expands to the normal <code>idtentry</code>. We already saw implementation of the <code>idtentry</code> macro in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a>, so let's start from the <code>page_fault</code> exception handler.</p>
+<p>As we can see in the <code>idtentry</code> definition, the handler of the <code>page_fault</code> is <code>do_page_fault</code> function which defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/mm/fault.c">arch/x86/mm/fault.c</a> and as all exceptions handlers it takes two arguments:</p>
+<ul>
+<li><code>regs</code> - <code>pt_regs</code> structure that holds state of an interrupted process;</li>
+<li><code>error_code</code> - error code of the page fault exception.</li>
+</ul>
+<p>Let's look inside this function. First of all we read content of the <a href="https://en.wikipedia.org/wiki/Control_register">cr2</a> control register:</p>
+<pre><code class="language-C">dotraplinkage void notrace
+do_page_fault(struct pt_regs *regs, unsigned long error_code)
+{
+	unsigned long address = read_cr2();
+	...
+	...
+	...
+}
+</code></pre>
+<p>This register contains a linear address which caused <code>page fault</code>. In the next step we make a call of the <code>exception_enter</code> function from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/include/context_tracking.h">include/linux/context_tracking.h</a>. The <code>exception_enter</code> and <code>exception_exit</code> are functions from context tracking subsystem in the Linux kernel used by the <a href="https://en.wikipedia.org/wiki/Read-copy-update">RCU</a> to remove its dependency on the timer tick while a processor runs in userspace. Almost in the every exception handler we will see similar code:</p>
+<pre><code class="language-C">enum ctx_state prev_state;
+prev_state = exception_enter();
+...
+... // exception handler here
+...
+exception_exit(prev_state);
+</code></pre>
+<p>The <code>exception_enter</code> function checks that <code>context tracking</code> is enabled with the <code>context_tracking_is_enabled</code> and if it is in enabled state, we get previous context with the <code>this_cpu_read</code> (more about <code>this_cpu_*</code> operations you can read in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/Documentation/this_cpu_ops.txt">Documentation</a>). After this it calls <code>context_tracking_user_exit</code> function which informs the context tracking that the processor is exiting userspace mode and entering the kernel:</p>
+<pre><code class="language-C">static inline enum ctx_state exception_enter(void)
+{
+        enum ctx_state prev_ctx;
+
+        if (!context_tracking_is_enabled())
+                return 0;
+
+        prev_ctx = this_cpu_read(context_tracking.state);
+        context_tracking_user_exit();
+
+        return prev_ctx;
+}
+</code></pre>
+<p>The state can be one of the:</p>
+<pre><code class="language-C">enum ctx_state {
+    IN_KERNEL = 0,
+	IN_USER,
+} state;
+</code></pre>
+<p>And in the end we return previous context. Between the <code>exception_enter</code> and <code>exception_exit</code> we call actual page fault handler:</p>
+<pre><code class="language-C">__do_page_fault(regs, error_code, address);
+</code></pre>
+<p>The <code>__do_page_fault</code> is defined in the same source code file as <code>do_page_fault</code> - <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/mm/fault.c">arch/x86/mm/fault.c</a>. In the beginning of the <code>__do_page_fault</code> we check state of the <a href="https://www.kernel.org/doc/Documentation/kmemcheck.txt">kmemcheck</a> checker. The <code>kmemcheck</code> detects warns about some uses of uninitialized memory. We need to check it because page fault can be caused by kmemcheck:</p>
+<pre><code class="language-C">if (kmemcheck_active(regs))
+		kmemcheck_hide(regs);
+	prefetchw(&amp;mm-&gt;mmap_sem);
+</code></pre>
+<p>After this we can see the call of the <code>prefetchw</code> which executes instruction with the same <a href="http://www.felixcloutier.com/x86/PREFETCHW.html">name</a> which fetches <a href="https://en.wikipedia.org/?title=3DNow!">X86_FEATURE_3DNOW</a> to get exclusive <a href="https://en.wikipedia.org/wiki/CPU_cache">cache line</a>. The main purpose of prefetching is to hide the latency of a memory access. In the next step we check that we got page fault not in the kernel space with the following condition:</p>
+<pre><code class="language-C">if (unlikely(fault_in_kernel_space(address))) {
+...
+...
+...
+}
+</code></pre>
+<p>where <code>fault_in_kernel_space</code> is:</p>
+<pre><code class="language-C">static int fault_in_kernel_space(unsigned long address)
+{
+        return address &gt;= TASK_SIZE_MAX;
+}
+</code></pre>
+<p>The <code>TASK_SIZE_MAX</code> macro expands to the:</p>
+<pre><code class="language-C">#define TASK_SIZE_MAX   ((1UL &lt;&lt; 47) - PAGE_SIZE)
+</code></pre>
+<p>or <code>0x00007ffffffff000</code>. Pay attention on <code>unlikely</code> macro. There are two macros in the Linux kernel:</p>
+<pre><code class="language-C">#define likely(x)      __builtin_expect(!!(x), 1)
+#define unlikely(x)    __builtin_expect(!!(x), 0)
+</code></pre>
+<p>You can <a href="http://lxr.free-electrons.com/ident?i=unlikely">often</a> find these macros in the code of the Linux kernel. Main purpose of these macros is optimization. Sometimes this situation is that we need to check the condition of the code and we know that it will rarely be <code>true</code> or <code>false</code>. With these macros we can tell to the compiler about this. For example</p>
+<pre><code class="language-C">static int proc_root_readdir(struct file *file, struct dir_context *ctx)
+{
+        if (ctx-&gt;pos &lt; FIRST_PROCESS_ENTRY) {
+                int error = proc_readdir(file, ctx);
+                if (unlikely(error &lt;= 0))
+                        return error;
+...
+...
+...
+}
+</code></pre>
+<p>Here we can see <code>proc_root_readdir</code> function which will be called when the Linux <a href="https://en.wikipedia.org/wiki/Virtual_file_system">VFS</a> needs to read the <code>root</code> directory contents. If condition marked with <code>unlikely</code>, compiler can put <code>false</code> code right after branching. Now let's back to the our address check. Comparison between the given address and the <code>0x00007ffffffff000</code> will give us to know, was page fault in the kernel mode or user mode. After this check we know it. After this <code>__do_page_fault</code> routine will try to understand the problem that provoked page fault exception and then will pass address to the appropriate routine. It can be <code>kmemcheck</code> fault, spurious fault, <a href="https://www.kernel.org/doc/Documentation/kprobes.txt">kprobes</a> fault and etc. Will not dive into implementation details of the page fault exception handler in this part, because we need to know many different concepts which are provided by the Linux kernel, but will see it in the chapter about the <a href="http://0xax.gitbooks.io/linux-insides/content/mm/index.html">memory management</a> in the Linux kernel.</p>
+<h2 id="back-to-start-kernel">Back to start_kernel</h2>
+<p>There are many different function calls after the <code>early_trap_pf_init</code> in the <code>setup_arch</code> function from different kernel subsystems, but there are no one interrupts and exceptions handling related. So, we have to go back where we came from - <code>start_kernel</code> function from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/init/main.c#L492">init/main.c</a>. The first things after the <code>setup_arch</code> is the <code>trap_init</code> function from the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/kernel/traps.c">arch/x86/kernel/traps.c</a>. This function makes initialization of the remaining exceptions handlers (remember that we already setup 3 handlers for the <code>#DB</code> - debug exception, <code>#BP</code> - breakpoint exception and <code>#PF</code> - page fault exception). The <code>trap_init</code> function starts from the check of the <a href="https://en.wikipedia.org/wiki/Extended_Industry_Standard_Architecture">Extended Industry Standard Architecture</a>:</p>
+<pre><code class="language-C">#ifdef CONFIG_EISA
+        void __iomem *p = early_ioremap(0x0FFFD9, 4);
+
+        if (readl(p) == 'E' + ('I'&lt;&lt;8) + ('S'&lt;&lt;16) + ('A'&lt;&lt;24))
+                EISA_bus = 1;
+        early_iounmap(p, 4);
+#endif
+</code></pre>
+<p>Note that it depends on the <code>CONFIG_EISA</code> kernel configuration parameter which represents <code>EISA</code> support. Here we use <code>early_ioremap</code> function to map <code>I/O</code> memory on the page tables. We use <code>readl</code> function to read first <code>4</code> bytes from the mapped region and if they are equal to <code>EISA</code> string we set <code>EISA_bus</code> to one. In the end we just unmap previously mapped region. More about <code>early_ioremap</code> you can read in the part which describes <a href="http://0xax.gitbooks.io/linux-insides/content/mm/linux-mm-2.html">Fix-Mapped Addresses and ioremap</a>.</p>
+<p>After this we start to fill the <code>Interrupt Descriptor Table</code> with the different interrupt gates. First of all we set <code>#DE</code> or <code>Divide Error</code> and <code>#NMI</code> or <code>Non-maskable Interrupt</code>:</p>
+<pre><code class="language-C">set_intr_gate(X86_TRAP_DE, divide_error);
+set_intr_gate_ist(X86_TRAP_NMI, &amp;nmi, NMI_STACK);
+</code></pre>
+<p>We use <code>set_intr_gate</code> macro to set the interrupt gate for the <code>#DE</code> exception and <code>set_intr_gate_ist</code> for the <code>#NMI</code>. You can remember that we already used these macros when we have set the interrupts gates for the page fault handler, debug handler and etc, you can find explanation of it in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a>. After this we setup exception gates for the following exceptions:</p>
+<pre><code class="language-C">set_system_intr_gate(X86_TRAP_OF, &amp;overflow);
+set_intr_gate(X86_TRAP_BR, bounds);
+set_intr_gate(X86_TRAP_UD, invalid_op);
+set_intr_gate(X86_TRAP_NM, device_not_available);
+</code></pre>
+<p>Here we can see:</p>
+<ul>
+<li><code>#OF</code> or <code>Overflow</code> exception. This exception indicates that an overflow trap occurred when an special <a href="http://x86.renejeschke.de/html/file_module_x86_id_142.html">INTO</a> instruction was executed;</li>
+<li><code>#BR</code> or <code>BOUND Range exceeded</code> exception. This exception indicates that a <code>BOUND-range-exceed</code> fault occurred when a <a href="http://pdos.csail.mit.edu/6.828/2005/readings/i386/BOUND.htm">BOUND</a> instruction was executed;</li>
+<li><code>#UD</code> or <code>Invalid Opcode</code> exception. Occurs when a processor attempted to execute invalid or reserved <a href="https://en.wikipedia.org/?title=Opcode">opcode</a>, processor attempted to execute instruction with invalid operand(s) and etc;</li>
+<li><code>#NM</code> or <code>Device Not Available</code> exception. Occurs when the processor tries to execute <code>x87 FPU</code> floating point instruction while <code>EM</code> flag in the <a href="https://en.wikipedia.org/wiki/Control_register#CR0">control register</a> <code>cr0</code> was set.</li>
+</ul>
+<p>In the next step we set the interrupt gate for the <code>#DF</code> or <code>Double fault</code> exception:</p>
+<pre><code class="language-C">set_intr_gate_ist(X86_TRAP_DF, &amp;double_fault, DOUBLEFAULT_STACK);
+</code></pre>
+<p>This exception occurs when processor detected a second exception while calling an exception handler for a prior exception. In usual way when the processor detects another exception while trying to call an exception handler, the two exceptions can be handled serially. If the processor cannot handle them serially, it signals the double-fault or <code>#DF</code> exception.</p>
+<p>The following set of the interrupt gates is:</p>
+<pre><code class="language-C">set_intr_gate(X86_TRAP_OLD_MF, &amp;coprocessor_segment_overrun);
+set_intr_gate(X86_TRAP_TS, &amp;invalid_TSS);
+set_intr_gate(X86_TRAP_NP, &amp;segment_not_present);
+set_intr_gate_ist(X86_TRAP_SS, &amp;stack_segment, STACKFAULT_STACK);
+set_intr_gate(X86_TRAP_GP, &amp;general_protection);
+set_intr_gate(X86_TRAP_SPURIOUS, &amp;spurious_interrupt_bug);
+set_intr_gate(X86_TRAP_MF, &amp;coprocessor_error);
+set_intr_gate(X86_TRAP_AC, &amp;alignment_check);
+</code></pre>
+<p>Here we can see setup for the following exception handlers:</p>
+<ul>
+<li><code>#CSO</code> or <code>Coprocessor Segment Overrun</code> - this exception indicates that math <a href="https://en.wikipedia.org/wiki/Coprocessor">coprocessor</a> of an old processor detected a page or segment violation. Modern processors do not generate this exception</li>
+<li><code>#TS</code> or <code>Invalid TSS</code> exception - indicates that there was an error related to the <a href="https://en.wikipedia.org/wiki/Task_state_segment">Task State Segment</a>.</li>
+<li><code>#NP</code> or <code>Segment Not Present</code> exception indicates that the <code>present flag</code> of a segment or gate descriptor is clear during attempt to load one of <code>cs</code>, <code>ds</code>, <code>es</code>, <code>fs</code>, or <code>gs</code> register.</li>
+<li><code>#SS</code> or <code>Stack Fault</code> exception indicates one of the stack related conditions was detected, for example a not-present stack segment is detected when attempting to load the <code>ss</code> register.</li>
+<li><code>#GP</code> or <code>General Protection</code> exception indicates that the processor detected one of a class of protection violations called general-protection violations. There are many different conditions that can cause general-protection exception. For example loading the <code>ss</code>, <code>ds</code>, <code>es</code>, <code>fs</code>, or <code>gs</code> register with a segment selector for a system segment, writing to a code segment or a read-only data segment, referencing an entry in the <code>Interrupt Descriptor Table</code> (following an interrupt or exception) that is not an interrupt, trap, or task gate and many many more.</li>
+<li><code>Spurious Interrupt</code> - a hardware interrupt that is unwanted.</li>
+<li><code>#MF</code> or <code>x87 FPU Floating-Point Error</code> exception caused when the <a href="https://en.wikipedia.org/wiki/X86_instruction_listings#x87_floating-point_instructions">x87 FPU</a> has detected a floating point error.</li>
+<li><code>#AC</code> or <code>Alignment Check</code> exception Indicates that the processor detected an unaligned memory operand when alignment checking was enabled.</li>
+</ul>
+<p>After that we setup this exception gates, we can see setup of the <code>Machine-Check</code> exception:</p>
+<pre><code class="language-C">#ifdef CONFIG_X86_MCE
+	set_intr_gate_ist(X86_TRAP_MC, &amp;machine_check, MCE_STACK);
+#endif
+</code></pre>
+<p>Note that it depends on the <code>CONFIG_X86_MCE</code> kernel configuration option and indicates that the processor detected an internal <a href="https://en.wikipedia.org/wiki/Machine-check_exception">machine error</a> or a bus error, or that an external agent detected a bus error. The next exception gate is for the <a href="https://en.wikipedia.org/?title=SIMD">SIMD</a> Floating-Point exception:</p>
+<pre><code class="language-C">set_intr_gate(X86_TRAP_XF, &amp;simd_coprocessor_error);
+</code></pre>
+<p>which indicates the processor has detected an <code>SSE</code> or <code>SSE2</code> or <code>SSE3</code> SIMD floating-point exception. There are six classes of numeric exception conditions that can occur while executing an SIMD floating-point instruction:</p>
+<ul>
+<li>Invalid operation</li>
+<li>Divide-by-zero</li>
+<li>Denormal operand</li>
+<li>Numeric overflow</li>
+<li>Numeric underflow</li>
+<li>Inexact result (Precision)</li>
+</ul>
+<p>In the next step we fill the <code>used_vectors</code> array which defined in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/include/asm/desc.h">arch/x86/include/asm/desc.h</a> header file and represents <code>bitmap</code>:</p>
+<pre><code class="language-C">DECLARE_BITMAP(used_vectors, NR_VECTORS);
+</code></pre>
+<p>of the first <code>32</code> interrupts (more about bitmaps in the Linux kernel you can read in the part which describes <a href="http://0xax.gitbooks.io/linux-insides/content/Concepts/cpumask.html">cpumasks and bitmaps</a>)</p>
+<pre><code class="language-C">for (i = 0; i &lt; FIRST_EXTERNAL_VECTOR; i++)
+	set_bit(i, used_vectors)
+</code></pre>
+<p>where <code>FIRST_EXTERNAL_VECTOR</code> is:</p>
+<pre><code class="language-C">#define FIRST_EXTERNAL_VECTOR           0x20
+</code></pre>
+<p>After this we setup the interrupt gate for the <code>ia32_syscall</code> and add <code>0x80</code> to the <code>used_vectors</code> bitmap:</p>
+<pre><code class="language-C">#ifdef CONFIG_IA32_EMULATION
+        set_system_intr_gate(IA32_SYSCALL_VECTOR, ia32_syscall);
+        set_bit(IA32_SYSCALL_VECTOR, used_vectors);
+#endif
+</code></pre>
+<p>There is <code>CONFIG_IA32_EMULATION</code> kernel configuration option on <code>x86_64</code> Linux kernels. This option provides ability to execute 32-bit processes in compatibility-mode. In the next parts we will see how it works, in the meantime we need only to know that there is yet another interrupt gate in the <code>IDT</code> with the vector number <code>0x80</code>. In the next step we maps <code>IDT</code> to the fixmap area:</p>
+<pre><code class="language-C">__set_fixmap(FIX_RO_IDT, __pa_symbol(idt_table), PAGE_KERNEL_RO);
+idt_descr.address = fix_to_virt(FIX_RO_IDT);
+</code></pre>
+<p>and write its address to the <code>idt_descr.address</code> (more about fix-mapped addresses you can read in the second part of the <a href="http://0xax.gitbooks.io/linux-insides/content/mm/linux-mm-2.html">Linux kernel memory management</a> chapter). After this we can see the call of the <code>cpu_init</code> function that defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/kernel/cpu/common.c">arch/x86/kernel/cpu/common.c</a>. This function makes initialization of the all <code>per-cpu</code> state. In the beginning of the <code>cpu_init</code> we do the following things: First of all we wait while current cpu is initialized and than we call the <code>cr4_init_shadow</code> function which stores shadow copy of the <code>cr4</code> control register for the current cpu and load CPU microcode if need with the following function calls:</p>
+<pre><code class="language-C">wait_for_master_cpu(cpu);
+cr4_init_shadow();
+load_ucode_ap();
+</code></pre>
+<p>Next we get the <code>Task State Segment</code> for the current cpu and <code>orig_ist</code> structure which represents origin <code>Interrupt Stack Table</code> values with the:</p>
+<pre><code class="language-C">t = &amp;per_cpu(cpu_tss, cpu);
+oist = &amp;per_cpu(orig_ist, cpu);
+</code></pre>
+<p>As we got values of the <code>Task State Segment</code> and <code>Interrupt Stack Table</code> for the current processor, we clear following bits in the <code>cr4</code> control register:</p>
+<pre><code class="language-C">cr4_clear_bits(X86_CR4_VME|X86_CR4_PVI|X86_CR4_TSD|X86_CR4_DE);
+</code></pre>
+<p>with this we disable <code>vm86</code> extension, virtual interrupts, timestamp (<a href="https://en.wikipedia.org/wiki/Time_Stamp_Counter">RDTSC</a> can only be executed with the highest privilege) and debug extension. After this we reload the <code>Global Descriptor Table</code> and <code>Interrupt Descriptor table</code> with the:</p>
+<pre><code class="language-C">	switch_to_new_gdt(cpu);
+	loadsegment(fs, 0);
+	load_current_idt();
+</code></pre>
+<p>After this we setup array of the Thread-Local Storage Descriptors, configure <a href="https://en.wikipedia.org/wiki/NX_bit">NX</a> and load CPU microcode. Now is time to setup and load <code>per-cpu</code> Task State Segments. We are going in a loop through the all exception stack which is <code>N_EXCEPTION_STACKS</code> or <code>4</code> and fill it with <code>Interrupt Stack Tables</code>:</p>
+<pre><code class="language-C">	if (!oist-&gt;ist[0]) {
+		char *estacks = per_cpu(exception_stacks, cpu);
+
+		for (v = 0; v &lt; N_EXCEPTION_STACKS; v++) {
+			estacks += exception_stack_sizes[v];
+			oist-&gt;ist[v] = t-&gt;x86_tss.ist[v] =
+					(unsigned long)estacks;
+			if (v == DEBUG_STACK-1)
+				per_cpu(debug_stack_addr, cpu) = (unsigned long)estacks;
+		}
+	}
+</code></pre>
+<p>As we have filled <code>Task State Segments</code> with the <code>Interrupt Stack Tables</code> we can set <code>TSS</code> descriptor for the current processor and load it with the:</p>
+<pre><code class="language-C">set_tss_desc(cpu, t);
+load_TR_desc();
+</code></pre>
+<p>where <code>set_tss_desc</code> macro from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/include/asm/desc.h">arch/x86/include/asm/desc.h</a> writes given descriptor to the <code>Global Descriptor Table</code> of the given processor:</p>
+<pre><code class="language-C">#define set_tss_desc(cpu, addr) __set_tss_desc(cpu, GDT_ENTRY_TSS, addr)
+static inline void __set_tss_desc(unsigned cpu, unsigned int entry, void *addr)
+{
+        struct desc_struct *d = get_cpu_gdt_table(cpu);
+        tss_desc tss;
+        set_tssldt_descriptor(&amp;tss, (unsigned long)addr, DESC_TSS,
+                              IO_BITMAP_OFFSET + IO_BITMAP_BYTES +
+                              sizeof(unsigned long) - 1);
+        write_gdt_entry(d, entry, &amp;tss, DESC_TSS);
+}
+</code></pre>
+<p>and <code>load_TR_desc</code> macro expands to the <code>ltr</code> or <code>Load Task Register</code> instruction:</p>
+<pre><code class="language-C">#define load_TR_desc()                          native_load_tr_desc()
+static inline void native_load_tr_desc(void)
+{
+        asm volatile("ltr %w0"::"q" (GDT_ENTRY_TSS*8));
+}
+</code></pre>
+<p>In the end of the <code>trap_init</code> function we can see the following code:</p>
+<pre><code class="language-C">set_intr_gate_ist(X86_TRAP_DB, &amp;debug, DEBUG_STACK);
+set_system_intr_gate_ist(X86_TRAP_BP, &amp;int3, DEBUG_STACK);
+...
+...
+...
+#ifdef CONFIG_X86_64
+        memcpy(&amp;nmi_idt_table, &amp;idt_table, IDT_ENTRIES * 16);
+        set_nmi_gate(X86_TRAP_DB, &amp;debug);
+        set_nmi_gate(X86_TRAP_BP, &amp;int3);
+#endif
+</code></pre>
+<p>Here we copy <code>idt_table</code> to the <code>nmi_dit_table</code> and setup exception handlers for the <code>#DB</code> or <code>Debug exception</code> and <code>#BR</code> or <code>Breakpoint exception</code>. You can remember that we already set these interrupt gates in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">part</a>, so why do we need to setup it again? We setup it again because when we initialized it before in the <code>early_trap_init</code> function, the <code>Task State Segment</code> was not ready yet, but now it is ready after the call of the <code>cpu_init</code> function.</p>
+<p>That's all. Soon we will consider all handlers of these interrupts/exceptions.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>It is the end of the fourth part about interrupts and interrupt handling in the Linux kernel. We saw the initialization of the <a href="https://en.wikipedia.org/wiki/Task_state_segment">Task State Segment</a> in this part and initialization of the different interrupt handlers as <code>Divide Error</code>, <code>Page Fault</code> exception and etc. You can note that we saw just initialization stuff, and will dive into details about handlers for these exceptions. In the next part we will start to do it.</p>
+<p>If you have any questions or suggestions write me a comment or ping me at <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/0xAX/linux-insides">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Page_fault">page fault</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_descriptor_table">Interrupt Descriptor Table</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Tracing_%28software%29">Tracing</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Control_register">cr2</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Read-copy-update">RCU</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/Documentation/this_cpu_ops.txt">this_cpu_* operations</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/kmemcheck.txt">kmemcheck</a></li>
+<li><a href="http://www.felixcloutier.com/x86/PREFETCHW.html">prefetchw</a></li>
+<li><a href="https://en.wikipedia.org/?title=3DNow!">3DNow</a></li>
+<li><a href="https://en.wikipedia.org/wiki/CPU_cache">CPU caches</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Virtual_file_system">VFS</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/mm/index.html">Linux kernel memory management</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/mm/linux-mm-2.html">Fix-Mapped Addresses and ioremap</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Extended_Industry_Standard_Architecture">Extended Industry Standard Architecture</a></li>
+<li><a href="https://en.wikipedia.org/wiki/INT_%28x86_instruction%29">INT isntruction</a></li>
+<li><a href="http://x86.renejeschke.de/html/file_module_x86_id_142.html">INTO</a></li>
+<li><a href="http://pdos.csail.mit.edu/6.828/2005/readings/i386/BOUND.htm">BOUND</a></li>
+<li><a href="https://en.wikipedia.org/?title=Opcode">opcode</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Control_register#CR0">control register</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86_instruction_listings#x87_floating-point_instructions">x87 FPU</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Machine-check_exception">MCE exception</a></li>
+<li><a href="https://en.wikipedia.org/?title=SIMD">SIMD</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/Concepts/cpumask.html">cpumasks and bitmaps</a></li>
+<li><a href="https://en.wikipedia.org/wiki/NX_bit">NX</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Task_state_segment">Task State Segment</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/interrupts-3.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/181/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/4/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/4/index.html">Redux 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/4.html">camsong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">69页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2786个">2786</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/154/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/154/index.html">Python 学习总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/86.html">itroger</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/15/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/15/index.html">Go语言标准库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/11.html">polaris1119</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3356个">3356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7480;var bookPageRelUrl ='Interrupts/interrupts-4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

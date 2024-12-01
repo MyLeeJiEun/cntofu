@@ -1,0 +1,654 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>定时器-Go语言标准库(The Golang Standard Library by Example)</title>
+<meta content='定时器,Go语言标准库,The Golang Standard Library by Example' name='keywords'>
+<meta content='定时器,Go语言标准库,The Golang Standard Library by Example' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/15/chapter04/04.3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Time类型详解</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/15/chapter05/05.1.html">
+<span class="">math — 基本数学..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/15/index.html">Go语言标准库 (The Golang Standard Library by Example)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/polaris1119/The-Golang-Standard-Library-by-Example" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="44-定时器">4.4 定时器</h1>
+<p>定时器是进程规划自己在未来某一时刻接获通知的一种机制。本节介绍两种定时器：<code>Timer</code>（到达指定时间触发且只触发一次）和 <code>Ticker</code>（间隔特定时间触发）。</p>
+<h2 id="timer">Timer</h2>
+<h3 id="内部实现源码分析">内部实现源码分析</h3>
+<p><code>Timer</code> 类型代表单次时间事件。当 <code>Timer</code> 到期时，当时的时间会被发送给 C (channel)，除非 <code>Timer</code> 是被 <code>AfterFunc</code> 函数创建的。</p>
+<p>注意：<code>Timer</code> 的实例必须通过 <code>NewTimer</code> 或 <code>AfterFunc</code> 获得。</p>
+<p>类型定义如下：</p>
+<pre><code>type Timer struct {
+	C &lt;-chan Time	 // The channel on which the time is delivered.
+	r runtimeTimer
+}
+</code></pre>
+<p>C 已经解释了，我们看看 <code>runtimeTimer</code>。它定义在 sleep.go 文件中，必须和 <code>runtime</code> 包中 <code>time.go</code> 文件中的 <code>timer</code> 必须保持一致：</p>
+<pre><code>type timer struct {
+	i int // heap index
+
+	// Timer wakes up at when, and then at when+period, ... (period &gt; 0 only)
+	// each time calling f(now, arg) in the timer goroutine, so f must be
+	// a well-behaved function and not block.
+	when   int64
+	period int64
+	f      func(interface{}, uintptr)
+	arg    interface{}
+	seq    uintptr
+}
+</code></pre>
+<p>我们通过 <code>NewTimer()</code> 来看这些字段都怎么赋值，是什么用途。</p>
+<pre><code>// NewTimer creates a new Timer that will send
+// the current time on its channel after at least duration d.
+func NewTimer(d Duration) *Timer {
+	c := make(chan Time, 1)
+	t := &amp;Timer{
+		C: c,
+		r: runtimeTimer{
+			when: when(d),
+			f:    sendTime,
+			arg:  c,
+		},
+	}
+	startTimer(&amp;t.r)
+	return t
+}
+</code></pre>
+<p>在 <code>when</code> 表示的时间到时，会往 Timer.C 中发送当前时间。<code>when</code> 表示的时间是纳秒时间，正常通过 <code>runtimeNano() + int64(d)</code> 赋值。跟上一节中讲到的 <code>now()</code> 类似，<code>runtimeNano()</code> 也在 <code>runtime</code> 中实现（<code>runtime·nanotime</code>）：</p>
+<ul>
+<li>调用系统调用 <code>clock_gettime</code> 获取时钟值（这是 POSIX 时钟）。其中 clockid_t 时钟类型是 CLOCK_MONOTONIC，也就是不可设定的恒定态时钟。具体的是什么时间，SUSv3 规定始于未予规范的过去某一点，Linux 上，始于系统启动。</li>
+<li>如果 <code>clock_gettime</code> 不存在，则使用精度差些的系统调用 <code>gettimeofday</code>。</li>
+</ul>
+<p><code>f</code> 参数的值是 <code>sendTime</code>，定时器时间到时，会调用 f，并将 <code>arg</code> 和 <code>seq</code> 传给 <code>f</code>。</p>
+<p>因为 <code>Timer</code> 是一次性的，所以 <code>period</code> 保留默认值 0。</p>
+<p>定时器的具体实现逻辑，都在 <code>runtime</code> 中的 <code>time.go</code> 中，它的实现，没有采用经典 Unix 间隔定时器 <code>setitimer</code> 系统调用，也没有 采用 POSIX 间隔式定时器（相关系统调用：<code>timer_create</code>、<code>timer_settime</code> 和 <code>timer_delete</code>），而是通过四叉树堆(heep)实现的（<code>runtimeTimer</code> 结构中的 <code>i</code> 字段，表示在堆中的索引）。通过构建一个最小堆，保证最快拿到到期了的定时器执行。定时器的执行，在专门的 <code>goroutine</code> 中进行的：<code>go timerproc()</code>。有兴趣的同学，可以阅读 <code>runtime/time.go</code> 的源码。</p>
+<h3 id="timer-相关函数或方法的使用">Timer 相关函数或方法的使用</h3>
+<p><strong>通过 <code>time.After</code> 模拟超时：</strong></p>
+<pre><code>c := make(chan int)
+
+go func() {
+	// time.Sleep(1 * time.Second)
+	time.Sleep(3 * time.Second)
+	&lt;-c
+}()
+
+select {
+case c &lt;- 1:
+	fmt.Println("channel...")
+case &lt;-time.After(2 * time.Second):
+	close(c)
+	fmt.Println("timeout...")
+}
+</code></pre>
+<p><strong><code>time.Stop</code> 停止定时器 或 <code>time.Reset</code> 重置定时器</strong></p>
+<pre><code>start := time.Now()
+timer := time.AfterFunc(2*time.Second, func() {
+	fmt.Println("after func callback, elaspe:", time.Now().Sub(start))
+})
+
+time.Sleep(1 * time.Second)
+// time.Sleep(3*time.Second)
+// Reset 在 Timer 还未触发时返回 true；触发了或Stop了，返回false
+if timer.Reset(3 * time.Second) {
+	fmt.Println("timer has not trigger!")
+} else {
+	fmt.Println("timer had expired or stop!")
+}
+
+time.Sleep(10 * time.Second)
+
+// output:
+// timer has not trigger!
+// after func callback, elaspe: 4.00026461s
+</code></pre>
+<p>如果定时器还未触发，<code>Stop</code> 会将其移除，并返回 true；否则返回 false；后续再对该 <code>Timer</code> 调用 <code>Stop</code>，直接返回 false。</p>
+<p><code>Reset</code> 会先调用 <code>stopTimer</code> 再调用 <code>startTimer</code>，类似于废弃之前的定时器，重新启动一个定时器。返回值和 <code>Stop</code> 一样。</p>
+<h3 id="sleep-的内部实现">Sleep 的内部实现</h3>
+<p>查看 <code>runtime/time.go</code> 文件中的 <code>timeSleep</code> 可知，<code>Sleep</code> 的是通过 <code>Timer</code> 实现的，把当前 goroutine 作为 <code>arg</code> 参数（<code>getg()</code>)。</p>
+<h2 id="ticker-相关函数或方法的使用">Ticker 相关函数或方法的使用</h2>
+<p><code>Ticker</code> 和 <code>Timer</code> 类似，区别是：<code>Ticker</code> 中的<code>runtimeTimer</code> 字段的 <code>period</code> 字段会赋值为 <code>NewTicker(d Duration)</code> 中的 <code>d</code>，表示每间隔 <code>d</code> 纳秒，定时器就会触发一次。</p>
+<p>除非程序终止前定时器一直需要触发，否则，不需要时应该调用 <code>Ticker.Stop</code> 来释放相关资源。</p>
+<p>如果程序终止前需要定时器一直触发，可以使用更简单方便的 <code>time.Tick</code> 函数，因为 <code>Ticker</code> 实例隐藏起来了，因此，该函数启动的定时器无法停止。</p>
+<h2 id="定时器的实际应用">定时器的实际应用</h2>
+<p>在实际开发中，定时器用的较多的会是 <code>Timer</code>，如模拟超时，而需要类似 <code>Tiker</code> 的功能时，可以使用实现了 <code>cron spec</code> 的库 <a href="https://github.com/robfig/cron">cron</a>，感兴趣的可以参考文章：<a href="http://blog.studygolang.com/2014/02/go_crontab/">《Go语言版crontab》</a>。</p>
+<h1 id="导航">导航</h1>
+<ul>
+<li>上一节：<a href="04.3.html">Time类型详解</a></li>
+<li>下一节：<a href="04.5.html">Unix 时间相关系统调用</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/3/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/19/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/19/index.html">Go命令教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/14.html">hyper0x</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1478个">1478</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/134/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/github_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/134/index.html">GitHub 漫游指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="github">github</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3472个">3472</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/184/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/12/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/swift_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/12/index.html">Swift 官方教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/8.html">numbbbbb</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="swift">swift</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 18022个">18022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/15/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="1282">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.0.html" title="第一章 输入输出 (Input/Output)" data-book-page-rel-url="chapter01/01.0.html" data-book-page-id="1283">第一章 输入输出 (Input/Output)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.1" disabled data-book-page-rel-url="" data-book-page-id="1284">1.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.1.html" title="io — 基本的 IO 接口" data-book-page-rel-url="chapter01/01.1.html" data-book-page-id="1285">io — 基本的 IO 接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.2" disabled data-book-page-rel-url="" data-book-page-id="1286">1.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.2.html" title="ioutil — 方便的 IO 操作函数集" data-book-page-rel-url="chapter01/01.2.html" data-book-page-id="1287">ioutil — 方便的 IO 操作函数集</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.3" disabled data-book-page-rel-url="" data-book-page-id="1288">1.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.3.html" title="fmt — 格式化 IO" data-book-page-rel-url="chapter01/01.3.html" data-book-page-id="1289">fmt — 格式化 IO</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.4" disabled data-book-page-rel-url="" data-book-page-id="1290">1.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.4.html" title="bufio — 缓存 IO" data-book-page-rel-url="chapter01/01.4.html" data-book-page-id="1291">bufio — 缓存 IO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.0.html" title="第二章 文本" data-book-page-rel-url="chapter02/02.0.html" data-book-page-id="1292">第二章 文本</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.1" disabled data-book-page-rel-url="" data-book-page-id="1293">2.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.1.html" title="strings — 字符串操作" data-book-page-rel-url="chapter02/02.1.html" data-book-page-id="1294">strings — 字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.2" disabled data-book-page-rel-url="" data-book-page-id="1295">2.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.2.html" title="bytes — byte slice 便利操作" data-book-page-rel-url="chapter02/02.2.html" data-book-page-id="1296">bytes — byte slice 便利操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.3" disabled data-book-page-rel-url="" data-book-page-id="1297">2.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.3.html" title="strconv — 字符串和基本数据类型之间转换" data-book-page-rel-url="chapter02/02.3.html" data-book-page-id="1298">strconv — 字符串和基本数据类型之间转换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.4" disabled data-book-page-rel-url="" data-book-page-id="1299">2.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.4.html" title="regexp — 正则表达式" data-book-page-rel-url="chapter02/02.4.html" data-book-page-id="1300">regexp — 正则表达式</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.5" disabled data-book-page-rel-url="" data-book-page-id="1301">2.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.5.html" title="unicode — Unicode 码点、UTF-8/16 编码" data-book-page-rel-url="chapter02/02.5.html" data-book-page-id="1302">unicode — Unicode 码点、UTF-8/16 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.0.html" title="第三章 数据结构与算法" data-book-page-rel-url="chapter03/03.0.html" data-book-page-id="1303">第三章 数据结构与算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.1" disabled data-book-page-rel-url="" data-book-page-id="1304">3.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.1.html" title="sort — 排序算法" data-book-page-rel-url="chapter03/03.1.html" data-book-page-id="1305">sort — 排序算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.3" disabled data-book-page-rel-url="" data-book-page-id="1306">3.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.3.html" title="container — 容器数据类型：heap、list 和 ring" data-book-page-rel-url="chapter03/03.3.html" data-book-page-id="1307">container — 容器数据类型：heap、list 和 ring</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.0.html" title="第四章 日期与时间" data-book-page-rel-url="chapter04/04.0.html" data-book-page-id="1308">第四章 日期与时间</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1" disabled data-book-page-rel-url="" data-book-page-id="1309">4.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.1.html" title="主要类型概述" data-book-page-rel-url="chapter04/04.1.html" data-book-page-id="1310">主要类型概述</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2" disabled data-book-page-rel-url="" data-book-page-id="1311">4.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.2.html" title="时区" data-book-page-rel-url="chapter04/04.2.html" data-book-page-id="1312">时区</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3" disabled data-book-page-rel-url="" data-book-page-id="1313">4.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.3.html" title="Time类型详解" data-book-page-rel-url="chapter04/04.3.html" data-book-page-id="1314">Time类型详解</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4" disabled data-book-page-rel-url="" data-book-page-id="1315">4.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.4.html" title="定时器" data-book-page-rel-url="chapter04/04.4.html" data-book-page-id="1316">定时器</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.1" disabled data-book-page-rel-url="" data-book-page-id="1317">5.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter05/05.1.html" title="math — 基本数学函数" data-book-page-rel-url="chapter05/05.1.html" data-book-page-id="1318">math — 基本数学函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.0.html" title="第六章 文件系统" data-book-page-rel-url="chapter06/06.0.html" data-book-page-id="1319">第六章 文件系统</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.1" disabled data-book-page-rel-url="" data-book-page-id="1320">6.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.1.html" title="os — 平台无关的操作系统功能实现" data-book-page-rel-url="chapter06/06.1.html" data-book-page-id="1321">os — 平台无关的操作系统功能实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.2" disabled data-book-page-rel-url="" data-book-page-id="1322">6.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.2.html" title="path/filepath — 操作路径" data-book-page-rel-url="chapter06/06.2.html" data-book-page-id="1323">path/filepath — 操作路径</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.0.html" title="第七章 数据持久存储与交换" data-book-page-rel-url="chapter07/07.0.html" data-book-page-id="1324">第七章 数据持久存储与交换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.1" disabled data-book-page-rel-url="" data-book-page-id="1325">7.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.1.html" title="database/sql — SQL/SQL-Like 数据库操作接口" data-book-page-rel-url="chapter07/07.1.html" data-book-page-id="1326">database/sql — SQL/SQL-Like 数据库操作接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.0.html" title="第八章 数据压缩与归档" data-book-page-rel-url="chapter08/08.0.html" data-book-page-id="1327">第八章 数据压缩与归档</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.1" disabled data-book-page-rel-url="" data-book-page-id="1328">8.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.1.html" title="flate - DEFLATE 压缩算法" data-book-page-rel-url="chapter08/08.1.html" data-book-page-id="1329">flate - DEFLATE 压缩算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.0.html" title="第九章 测试" data-book-page-rel-url="chapter09/09.0.html" data-book-page-id="1330">第九章 测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.1" disabled data-book-page-rel-url="" data-book-page-id="1331">9.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.1.html" title="testing - 单元测试" data-book-page-rel-url="chapter09/09.1.html" data-book-page-id="1332">testing - 单元测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.2" disabled data-book-page-rel-url="" data-book-page-id="1333">9.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.2.html" title="testing - 基准测试" data-book-page-rel-url="chapter09/09.2.html" data-book-page-id="1334">testing - 基准测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.3" disabled data-book-page-rel-url="" data-book-page-id="1335">9.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.3.html" title="testing - 子测试" data-book-page-rel-url="chapter09/09.3.html" data-book-page-id="1336">testing - 子测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.4" disabled data-book-page-rel-url="" data-book-page-id="1337">9.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.4.html" title="testing - 运行并验证示例" data-book-page-rel-url="chapter09/09.4.html" data-book-page-id="1338">testing - 运行并验证示例</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.5" disabled data-book-page-rel-url="" data-book-page-id="1339">9.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.5.html" title="testing - 其他功能" data-book-page-rel-url="chapter09/09.5.html" data-book-page-id="1340">testing - 其他功能</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.6" disabled data-book-page-rel-url="" data-book-page-id="1341">9.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.6.html" title="httptest - HTTP 测试辅助工具" data-book-page-rel-url="chapter09/09.6.html" data-book-page-id="1342">httptest - HTTP 测试辅助工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.7" disabled data-book-page-rel-url="" data-book-page-id="1343">9.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.7.html" title="总结" data-book-page-rel-url="chapter09/09.7.html" data-book-page-id="1344">总结</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.0.html" title="第十章 进程、线程与 goroutine" data-book-page-rel-url="chapter10/10.0.html" data-book-page-id="1345">第十章 进程、线程与 goroutine</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.1" disabled data-book-page-rel-url="" data-book-page-id="1346">10.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.1.html" title="创建进程" data-book-page-rel-url="chapter10/10.1.html" data-book-page-id="1347">创建进程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.2" disabled data-book-page-rel-url="" data-book-page-id="1348">10.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.2.html" title="进程属性和控制" data-book-page-rel-url="chapter10/10.2.html" data-book-page-id="1349">进程属性和控制</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.3" disabled data-book-page-rel-url="" data-book-page-id="1350">10.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.3.html" title="线程" data-book-page-rel-url="chapter10/10.3.html" data-book-page-id="1351">线程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.4" disabled data-book-page-rel-url="" data-book-page-id="1352">10.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.4.html" title="进程间通信" data-book-page-rel-url="chapter10/10.4.html" data-book-page-id="1353">进程间通信</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.0.html" title="第十三章 应用构建 与 debug" data-book-page-rel-url="chapter13/13.0.html" data-book-page-id="1354">第十三章 应用构建 与 debug</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.1" disabled data-book-page-rel-url="" data-book-page-id="1355">13.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.1.html" title="flag - 命令行参数解析" data-book-page-rel-url="chapter13/13.1.html" data-book-page-id="1356">flag - 命令行参数解析</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.2" disabled data-book-page-rel-url="" data-book-page-id="1357">13.2</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="log - 日志记录" disabled data-book-page-rel-url="chapter13/13.2.html" data-book-page-id="1358">log - 日志记录</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.3" disabled data-book-page-rel-url="" data-book-page-id="1359">13.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.3.html" title="expvar - 公共变量的标准化接口" data-book-page-rel-url="chapter13/13.3.html" data-book-page-id="1360">expvar - 公共变量的标准化接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.4" disabled data-book-page-rel-url="" data-book-page-id="1361">13.4</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="runtime/debug - 运行时的调试工具" disabled data-book-page-rel-url="chapter13/13.4.html" data-book-page-id="1362">runtime/debug - 运行时的调试工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.2" disabled data-book-page-rel-url="" data-book-page-id="1363">15.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter15/15.02.html" title="unsafe — 非类型安全操作" data-book-page-rel-url="chapter15/15.02.html" data-book-page-id="1364">unsafe — 非类型安全操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.1" disabled data-book-page-rel-url="" data-book-page-id="1365">16.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.01.html" title="sync - 处理同步需求" data-book-page-rel-url="chapter16/16.01.html" data-book-page-id="1366">sync - 处理同步需求</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.2" disabled data-book-page-rel-url="" data-book-page-id="1367">16.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.02.html" title="sync/atomic - 原子操作" data-book-page-rel-url="chapter16/16.02.html" data-book-page-id="1368">sync/atomic - 原子操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.3" disabled data-book-page-rel-url="" data-book-page-id="1369">16.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.03.html" title="os/signal - 信号" data-book-page-rel-url="chapter16/16.03.html" data-book-page-id="1370">os/signal - 信号</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =15;var bookPageId =1316;var bookPageRelUrl ='chapter04/04.4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

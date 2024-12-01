@@ -1,0 +1,545 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>第十五章 爬取维基百科-数据结构思维</title>
+<meta content='第十五章 爬取维基百科,数据结构思维' name='keywords'>
+<meta content='第十五章 爬取维基百科,数据结构思维' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/23/14.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">第十四章 持久化</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/23/16.html">
+<span class="">第十六章 布尔搜索</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/23/index.html">数据结构思维</a>
+<a target="_blank" rel="nofollow" href="https://github.com/wizardforcel/think-dast-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="第十五章-爬取维基百科">第十五章 爬取维基百科</h1>
+<blockquote>
+<p>原文：<a href="http://greenteapress.com/thinkdast/html/thinkdast016.html">Chapter 15 Crawling Wikipedia</a></p>
+</blockquote>
+<blockquote>
+<p>译者：<a href="https://github.com/wizardforcel">飞龙</a></p>
+</blockquote>
+<blockquote>
+<p>协议：<a href="http://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
+</blockquote>
+<blockquote>
+<p>自豪地采用<a href="https://translate.google.cn/">谷歌翻译</a></p>
+</blockquote>
+<p>在本章中，我展示了上一个练习的解决方案，并分析了 Web 索引算法的性能。然后我们构建一个简单的 Web 爬虫。</p>
+<h2 id="151-基于-redis-的索引器">15.1 基于 Redis 的索引器</h2>
+<p>在我的解决方案中，我们在 Redis 中存储两种结构：</p>
+<ul>
+<li>对于每个检索词，我们有一个<code>URLSet</code>，它是一个 Redis 集合，包含检索词的 URL。</li>
+<li>对于每个网址，我们有一个<code>TermCounter</code>，这是一个 Redis 哈希表，将每个检索词映射到它出现的次数。</li>
+</ul>
+<p>我们在上一章讨论了这些数据类型。你还可以在 <a href="http://thinkdast.com/redistypes">http://thinkdast.com/redistypes</a> 上阅读 Redis <code>Set和</code>Hash`的信息</p>
+<p>在<code>JedisIndex</code>中，我提供了一个方法，它可以接受一个检索词并返回 Redis 中它的<code>URLSet</code>的键：</p>
+<pre><code class="language-java">private String urlSetKey(String term) {
+    return "URLSet:" + term;
+}
+</code></pre>
+<p>以及一个方法，接受 URL 并返回 Redis 中它的<code>TermCounter</code>的键。</p>
+<pre><code class="language-java">private String termCounterKey(String url) {
+    return "TermCounter:" + url;
+}
+</code></pre>
+<p>这里是<code>indexPage</code>的实现。</p>
+<pre><code class="language-java">public void indexPage(String url, Elements paragraphs) {
+    System.out.println("Indexing " + url);
+
+    // make a TermCounter and count the terms in the paragraphs
+    TermCounter tc = new TermCounter(url);
+    tc.processElements(paragraphs);
+
+    // push the contents of the TermCounter to Redis
+    pushTermCounterToRedis(tc);
+}
+</code></pre>
+<p>为了索引页面，我们：</p>
+<ul>
+<li>为页面内容创建一个 Java 的<code>TermCounter</code>，使用上一个练习中的代码。</li>
+<li>将<code>TermCounter</code>的内容推送到 Redis。</li>
+</ul>
+<p>以下是将<code>TermCounter</code>的内容推送到 Redis 的新代码：</p>
+<pre><code class="language-java">public List&lt;Object&gt; pushTermCounterToRedis(TermCounter tc) {
+    Transaction t = jedis.multi();
+
+    String url = tc.getLabel();
+    String hashname = termCounterKey(url);
+
+    // if this page has already been indexed, delete the old hash
+    t.del(hashname);
+
+    // for each term, add an entry in the TermCounter and a new
+    // member of the index
+    for (String term: tc.keySet()) {
+        Integer count = tc.get(term);
+        t.hset(hashname, term, count.toString());
+        t.sadd(urlSetKey(term), url);
+    }
+    List&lt;Object&gt; res = t.exec();
+    return res;
+}
+</code></pre>
+<p>该方法使用<code>Transaction</code>来收集操作，并将它们一次性发送到服务器，这比发送一系列较小操作要快得多。</p>
+<p>它遍历<code>TermCounter</code>中的检索词。对于每一个，它：</p>
+<ul>
+<li>在 Redis 上寻找或者创建<code>TermCounter</code>，然后为新的检索词添加字段。</li>
+<li>在 Redis 上寻找或创建<code>URLSet</code>，然后添加当前的 URL。</li>
+</ul>
+<p>如果页面已被索引，则<code>TermCounter</code>在推送新内容之前删除旧页面 。</p>
+<p>新的页面的索引就是这样。</p>
+<p>练习的第二部分要求你编写<code>getCounts</code>，它需要一个检索词，并从该词出现的每个网址返回一个映射。这是我的解决方案：</p>
+<pre><code class="language-java">    public Map&lt;String, Integer&gt; getCounts(String term) {
+        Map&lt;String, Integer&gt; map = new HashMap&lt;String, Integer&gt;();
+        Set&lt;String&gt; urls = getURLs(term);
+        for (String url: urls) {
+            Integer count = getCount(url, term);
+            map.put(url, count);
+        }
+        return map;
+    }
+</code></pre>
+<p>此方法使用两种辅助方法：</p>
+<ul>
+<li><code>getURLs</code>接受检索词并返回该字词出现的网址集合。</li>
+<li><code>getCount</code>接受 URL 和检索词，并返回该检索词在给定 URL 处显示的次数。</li>
+</ul>
+<p>以下是实现：</p>
+<pre><code class="language-java">    public Set&lt;String&gt; getURLs(String term) {
+        Set&lt;String&gt; set = jedis.smembers(urlSetKey(term));
+        return set;
+    }
+
+    public Integer getCount(String url, String term) {
+        String redisKey = termCounterKey(url);
+        String count = jedis.hget(redisKey, term);
+        return new Integer(count);
+    }
+</code></pre>
+<p>由于我们设计索引的方式，这些方法简单而高效。</p>
+<h2 id="152-查找的分析">15.2 查找的分析</h2>
+<p>假设我们索引了<code>N</code>个页面，并发现了<code>M</code>个唯一的检索词。检索词的查询需要多长时间？在继续之前，先考虑一下你的答案。</p>
+<p>要查找一个检索词，我们调用<code>getCounts</code>，其中：</p>
+<ul>
+<li>创建映射。</li>
+<li>调用<code>getURLs</code>来获取 URL 的集合。</li>
+<li>对于集合中的每个 URL，调用<code>getCount</code>并将条目添加到<code>HashMap</code>。</li>
+</ul>
+<p><code>getURLs</code>所需时间与包含检索词的网址数成正比。对于罕见的检索词，这可能是一个很小的数字，但是对于常见检索词，它可能和<code>N</code>一样大。</p>
+<p>在循环中，我们调用了<code>getCount</code>，它在 Redis 上寻找<code>TermCounter</code>，查找一个检索词，并向<code>HashMap</code>添加一个条目。那些都是常数时间的操作，所以在最坏的情况下，<code>getCounts</code>的整体复杂度是<code>O(N)</code>。然而实际上，运行时间正比于包含检索词的页面数量，通常比<code>N</code>小得多。</p>
+<p>这个算法根据复杂性是有效的，但是它非常慢，因为它向 Redis 发送了许多较小的操作。你可以使用<code>Transaction</code>来加快速度 。你可能留作一个练习，或者你可以在<code>RedisIndex.java</code>中查看我的解决方案。</p>
+<h2 id="153-索引的分析">15.3 索引的分析</h2>
+<p>使用我们设计的数据结构，页面的索引需要多长时间？再次考虑你的答案，然后再继续。</p>
+<p>为了索引页面，我们遍历其 DOM 树，找到所有<code>TextNode</code>对象，并将字符串拆分成检索词。这一切都与页面上的单词数成正比。</p>
+<p>对于每个检索词，我们在<code>HashMap</code>中增加一个计数器，这是一个常数时间的操作。所以创建<code>TermCounter</code>的所需时间与页面上的单词数成正比。</p>
+<p>将<code>TermCounter</code>推送到 Redis ，需要删除<code>TermCounter</code>，对于唯一检索词的数量是线性的。那么对于每个检索词，我们必须：</p>
+<ul>
+<li>向<code>URLSet</code>添加元素，并且</li>
+<li>向 Redis<code>TermCounter</code>添加元素。</li>
+</ul>
+<p>这两个都是常数时间的操作，所以推送<code>TermCounter</code>的总时间对于唯一检索词的数量是线性的。</p>
+<p>总之，<code>TermCounter</code>的创建与页面上的单词数成正比。向 Redis 推送<code>TermCounter</code>与唯一检索词的数量成正比。</p>
+<p>由于页面上的单词数量通常超过唯一检索词的数量，因此整体复杂度与页面上的单词数成正比。理论上，一个页面可能包含索引中的所有检索词，因此最坏的情况是<code>O(M)</code>，但实际上我们并不期待看到更糟糕的情况。</p>
+<p>这个分析提出了一种提高效率的方法：我们应该避免索引很常见的词语。首先，他们占用了大量的时间和空间，因为它们出现在几乎每一个<code>URLSet</code>和<code>TermCounter</code>中。此外，它们不是很有用，因为它们不能帮助识别相关页面。</p>
+<p>大多数搜索引擎避免索引常用单词，这在本文中称为停止词（<a href="http://thinkdast.com/stopword">http://thinkdast.com/stopword</a>）。</p>
+<h2 id="154-图的遍历">15.4 图的遍历</h2>
+<p>如果你在第七章中完成了“到达哲学”练习，你已经有了一个程序，它读取维基百科页面，找到第一个链接，使用链接加载下一页，然后重复。这个程序是一种专用的爬虫，但是当人们说“网络爬虫”时，他们通常意味着一个程序：</p>
+<p>加载起始页面并对内容进行索引， 查找页面上的所有链接，并将链接的 URL 添加到集合中 通过收集，加载和索引页面，以及添加新的 URL，来按照它的方式工作。 如果它找到已经被索引的 URL，会跳过它。</p>
+<p>你可以将 Web 视为图，其中每个页面都是一个节点，每个链接都是从一个节点到另一个节点的有向边。如果你不熟悉图，可以阅读 <a href="http://thinkdast.com/graph">http://thinkdast.com/graph</a>。</p>
+<p>从源节点开始，爬虫程序遍历该图，访问每个可达节点一次。</p>
+<p>我们用于存储 URL 的集合决定了爬虫程序执行哪种遍历：</p>
+<ul>
+<li>如果它是先进先出（FIFO）的队列，则爬虫程序将执行广度优先遍历。</li>
+<li>如果它是后进先出（LIFO）的栈，则爬虫程序将执行深度优先遍历。</li>
+<li>更通常来说，集合中的条目可能具有优先级。例如，我们可能希望对尚未编入索引的页面给予较高的优先级。</li>
+</ul>
+<p>你可以在 <a href="http://thinkdast.com/graphtrav">http://thinkdast.com/graphtrav</a> 上阅读图的遍历的更多信息 。</p>
+<h2 id="155-练习-12">15.5 练习 12</h2>
+<p>现在是时候写爬虫了。在本书的仓库中，你将找到此练习的源文件：</p>
+<ul>
+<li><code>WikiCrawler.java</code>，包含你的爬虫的其实代码。</li>
+<li><code>WikiCrawlerTest.java</code>，包含<code>WikiCrawler</code>的测试代码。</li>
+<li><code>JedisIndex.java</code>，这是我以前的练习的解决方案。</li>
+</ul>
+<p>你还需要一些我们以前练习中使用过的辅助类：</p>
+<ul>
+<li><code>JedisMaker.java</code></li>
+<li><code>WikiFetcher.java</code></li>
+<li><code>TermCounter.java</code></li>
+<li><code>WikiNodeIterable.java</code></li>
+</ul>
+<p>在运行<code>JedisMaker</code>之前，你必须提供一个文件，关于你的 Redis 服务器信息。如果你在上一个练习中这样做，你应该全部配置好了。否则，你可以在 14.3 节中找到说明。</p>
+<p>运行<code>ant build</code>来编译源文件，然后运行<code>ant JedisMaker</code>来确保它配置为连接到你的 Redis 服务器。</p>
+<p>现在运行<code>ant WikiCrawlerTest</code>。它应该失败，因为你有工作要做！</p>
+<p>这是我提供的<code>WikiCrawler</code>类的起始：</p>
+<pre><code class="language-java">public class WikiCrawler {
+
+    public final String source;
+    private JedisIndex index;
+    private Queue&lt;String&gt; queue = new LinkedList&lt;String&gt;();
+    final static WikiFetcher wf = new WikiFetcher();
+
+    public WikiCrawler(String source, JedisIndex index) {
+        this.source = source;
+        this.index = index;
+        queue.offer(source);
+    }
+
+    public int queueSize() {
+        return queue.size();
+    }
+</code></pre>
+<p>实例变量是：</p>
+<ul>
+<li><code>source</code>是我们开始抓取的网址。</li>
+<li><code>index</code>是<code>JedisIndex</code>，结果应该放进这里。</li>
+<li><code>queue</code>是<code>LinkedList</code>，这里面我们跟踪已发现但尚未编入索引的网址。</li>
+<li><code>wf</code>是<code>WikiFetcher</code>，我们用来读取和解析网页。</li>
+</ul>
+<p>你的工作是填写<code>crawl</code>。这是原型：</p>
+<pre><code class="language-java">public String crawl(boolean testing) throws IOException {}
+</code></pre>
+<p>当这个方法在<code>WikiCrawlerTest</code>中调用时，<code>testing</code>参数为<code>true</code>，否则为<code>false</code>。</p>
+<p>如果<code>testing</code>是<code>true</code>，<code>crawl</code>方法应该：</p>
+<ul>
+<li>以 FIFO 的顺序从队列中选择并移除一个 URL。</li>
+<li>使用<code>WikiFetcher.readWikipedia</code>读取页面的内容，它读取仓库中包含的，页面的缓存副本来进行测试（如果维基百科的版本更改，则避免出现问题）。</li>
+<li>它应该索引页面，而不管它们是否已经被编入索引。</li>
+<li>它应该找到页面上的所有内部链接，并按他们出现的顺序将它们添加到队列中。“内部链接”是指其他维基百科页面的链接。</li>
+<li>它应该返回其索引的页面的 URL。</li>
+</ul>
+<p>如果<code>testing</code>是<code>false</code>，这个方法应该：</p>
+<ul>
+<li>以 FIFO 的顺序从队列中选择并移除一个 URL。</li>
+<li>如果 URL 已经被编入索引，它不应该再次索引，并应该返回<code>null</code>。</li>
+<li>否则它应该使用<code>WikiFetcher.fetchWikipedia</code>读取页面内容，从 Web 中读取当前内容。</li>
+<li>然后，它应该对页面进行索引，将链接添加到队列，并返回其索引的页面的 URL。</li>
+</ul>
+<p><code>WikiCrawlerTest</code>加载具有大约<code>200</code>个链接的队列，然后调用<code>crawl</code>三次。每次调用后，它将检查队列的返回值和新长度。</p>
+<p>当你的爬虫按规定工作时，此测试应通过。祝你好运！</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/24/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/24/index.html">复杂性思维第二版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/17.html">Kivy Developers From China</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">16页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 83个">83</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/150/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/150/index.html">C/C++面向WebAssembly编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/82.html">3dgen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 476个">476</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/22/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/22/index.html">计算与推断思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/17.html">Kivy Developers From China</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 243个">243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/30/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/atom_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/30/index.html">Atom飞行手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="atom">atom</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 45个">45</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/181/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/69/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/69/index.html">Android 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1046个">1046</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/23/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/README.html" title="数据结构思维中文版" data-book-page-rel-url="README.html" data-book-page-id="1712">数据结构思维中文版</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/0.html" title="前言" data-book-page-rel-url="0.html" data-book-page-id="1713">前言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/1.html" title="第一章 接口" data-book-page-rel-url="1.html" data-book-page-id="1714">第一章 接口</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/2.html" title="第二章 算法分析" data-book-page-rel-url="2.html" data-book-page-id="1715">第二章 算法分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/3.html" title="第三章 `ArrayList`" data-book-page-rel-url="3.html" data-book-page-id="1716">第三章 `ArrayList`</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/4.html" title="第四章 `LinkedList`" data-book-page-rel-url="4.html" data-book-page-id="1717">第四章 `LinkedList`</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/5.html" title="第五章 双链表" data-book-page-rel-url="5.html" data-book-page-id="1718">第五章 双链表</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/6.html" title="第六章 树的遍历" data-book-page-rel-url="6.html" data-book-page-id="1719">第六章 树的遍历</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/7.html" title="第七章 到达哲学" data-book-page-rel-url="7.html" data-book-page-id="1720">第七章 到达哲学</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/8.html" title="第八章 索引器" data-book-page-rel-url="8.html" data-book-page-id="1721">第八章 索引器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/9.html" title="第九章 `Map`接口" data-book-page-rel-url="9.html" data-book-page-id="1722">第九章 `Map`接口</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/10.html" title="第十章 哈希" data-book-page-rel-url="10.html" data-book-page-id="1723">第十章 哈希</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/11.html" title="第十一章 `HashMap`" data-book-page-rel-url="11.html" data-book-page-id="1724">第十一章 `HashMap`</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/12.html" title="第十二章 `TreeMap`" data-book-page-rel-url="12.html" data-book-page-id="1725">第十二章 `TreeMap`</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/13.html" title="第十三章 二叉搜索树" data-book-page-rel-url="13.html" data-book-page-id="1726">第十三章 二叉搜索树</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/14.html" title="第十四章 持久化" data-book-page-rel-url="14.html" data-book-page-id="1727">第十四章 持久化</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/15.html" title="第十五章 爬取维基百科" data-book-page-rel-url="15.html" data-book-page-id="1728">第十五章 爬取维基百科</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/16.html" title="第十六章 布尔搜索" data-book-page-rel-url="16.html" data-book-page-id="1729">第十六章 布尔搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/23/17.html" title="第十七章 排序" data-book-page-rel-url="17.html" data-book-page-id="1730">第十七章 排序</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =23;var bookPageId =1728;var bookPageRelUrl ='15.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

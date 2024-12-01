@@ -1,0 +1,953 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>内核解压缩-Linux 内核揭密</title>
+<meta content='内核解压缩,Linux 内核揭密' name='keywords'>
+<meta content='内核解压缩,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Booting/linux-bootstrap-4.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">过渡到 64 位模式</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Initialization/README.html">
+<span class="">初始化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="kernel-booting-process-part-5">Kernel booting process. Part 5.</h1>
+<h2 id="kernel-decompression">Kernel decompression</h2>
+<p>This is the fifth part of the <code>Kernel booting process</code> series. We saw transition to the 64-bit mode in the previous <a href="https://github.com/0xAX/linux-insides/blob/master/Booting/linux-bootstrap-4.html#transition-to-the-long-mode">part</a> and we will continue from this point in this part. We will see the last steps before we jump to the kernel code as preparation for kernel decompression, relocation and directly kernel decompression. So... let's start to dive in the kernel code again.</p>
+<h2 id="preparation-before-kernel-decompression">Preparation before kernel decompression</h2>
+<p>We stopped right before the jump on the 64-bit entry point - <code>startup_64</code> which is located in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/head_64.S">arch/x86/boot/compressed/head_64.S</a> source code file. We already saw the jump to the <code>startup_64</code> in the <code>startup_32</code>:</p>
+<pre><code class="language-assembly">	pushl	$__KERNEL_CS
+	leal	startup_64(%ebp), %eax
+	...
+	...
+	...
+	pushl	%eax
+	...
+	...
+	...
+	lret
+</code></pre>
+<p>in the previous part, <code>startup_64</code> starts to work. Since we loaded the new Global Descriptor Table and there was CPU transition in other mode (64-bit mode in our case), we can see the setup of the data segments:</p>
+<pre><code class="language-assembly">	.code64
+	.org 0x200
+ENTRY(startup_64)
+	xorl	%eax, %eax
+	movl	%eax, %ds
+	movl	%eax, %es
+	movl	%eax, %ss
+	movl	%eax, %fs
+	movl	%eax, %gs
+</code></pre>
+<p>in the beginning of the <code>startup_64</code>. All segment registers besides <code>cs</code> now point to the <code>ds</code> which is <code>0x18</code> (if you don't understand why it is <code>0x18</code>, read the previous part).</p>
+<p>The next step is computation of difference between where the kernel was compiled and where it was loaded:</p>
+<pre><code class="language-assembly">#ifdef CONFIG_RELOCATABLE
+	leaq	startup_32(%rip), %rbp
+	movl	BP_kernel_alignment(%rsi), %eax
+	decl	%eax
+	addq	%rax, %rbp
+	notq	%rax
+	andq	%rax, %rbp
+	cmpq	$LOAD_PHYSICAL_ADDR, %rbp
+	jge	1f
+#endif
+	movq	$LOAD_PHYSICAL_ADDR, %rbp
+1:
+	leaq	z_extract_offset(%rbp), %rbx
+</code></pre>
+<p><code>rbp</code> contains the decompressed kernel start address and after this code executes <code>rbx</code> register will contain address to relocate the kernel code for decompression. We already saw code like this in the <code>startup_32</code> ( you can read about it in the previous part - <a href="https://github.com/0xAX/linux-insides/blob/master/Booting/linux-bootstrap-4.html#calculate-relocation-address">Calculate relocation address</a>), but we need to do this calculation again because the bootloader can use 64-bit boot protocol and <code>startup_32</code> just will not be executed in this case.</p>
+<p>In the next step we can see setup of the stack pointer and resetting of the flags register:</p>
+<pre><code class="language-assembly">	leaq	boot_stack_end(%rbx), %rsp
+
+	pushq	$0
+	popfq
+</code></pre>
+<p>As you can see above, the <code>rbx</code> register contains the start address of the kernel decompressor code and we just put this address with <code>boot_stack_end</code> offset to the <code>rsp</code> register which represents pointer to the top of the stack. After this step, the stack will be correct. You can find definition of the <code>boot_stack_end</code> in the end of <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/head_64.S">arch/x86/boot/compressed/head_64.S</a> assembly source code file:</p>
+<pre><code class="language-assembly">	.bss
+	.balign 4
+boot_heap:
+	.fill BOOT_HEAP_SIZE, 1, 0
+boot_stack:
+	.fill BOOT_STACK_SIZE, 1, 0
+boot_stack_end:
+</code></pre>
+<p>It located in the end of the <code>.bss</code> section, right before the <code>.pgtable</code>. If you will look into <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/vmlinux.lds.S">arch/x86/boot/compressed/vmlinux.lds.S</a> linker script, you will find Definition of the <code>.bss</code> and <code>.pgtable</code> there.</p>
+<p>As we set the stack, now we can copy the compressed kernel to the address that we got above, when we calculated the relocation address of the decompressed kernel. Before details, let's look at this assembly code:</p>
+<pre><code class="language-assembly">	pushq	%rsi
+	leaq	(_bss-8)(%rip), %rsi
+	leaq	(_bss-8)(%rbx), %rdi
+	movq	$_bss, %rcx
+	shrq	$3, %rcx
+	std
+	rep	movsq
+	cld
+	popq	%rsi
+</code></pre>
+<p>First of all we push <code>rsi</code> to the stack. We need preserve the value of <code>rsi</code>, because this register now stores a pointer to the <code>boot_params</code> which is real mode structure that contains booting related data (you must remember this structure, we filled it in the start of kernel setup). In the end of this code we'll restore the pointer to the <code>boot_params</code> into <code>rsi</code> again.</p>
+<p>The next two <code>leaq</code> instructions calculates effective addresses of the <code>rip</code> and <code>rbx</code> with <code>_bss - 8</code> offset and put it to the <code>rsi</code> and <code>rdi</code>. Why do we calculate these addresses? Actually the compressed kernel image is located between this copying code (from <code>startup_32</code> to the current code) and the decompression code. You can verify this by looking at the linker script - <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/vmlinux.lds.S">arch/x86/boot/compressed/vmlinux.lds.S</a>:</p>
+<pre><code>	. = 0;
+	.head.text : {
+		_head = . ;
+		HEAD_TEXT
+		_ehead = . ;
+	}
+	.rodata..compressed : {
+		*(.rodata..compressed)
+	}
+	.text :	{
+		_text = .; 	/* Text */
+		*(.text)
+		*(.text.*)
+		_etext = . ;
+	}
+</code></pre>
+<p>Note that <code>.head.text</code> section contains <code>startup_32</code>. You may remember it from the previous part:</p>
+<pre><code class="language-assembly">	__HEAD
+	.code32
+ENTRY(startup_32)
+...
+...
+...
+</code></pre>
+<p>The <code>.text</code> section contains decompression code:</p>
+<pre><code class="language-assembly">	.text
+relocated:
+...
+...
+...
+/*
+ * Do the decompression, and jump to the new kernel..
+ */
+...
+</code></pre>
+<p>And <code>.rodata..compressed</code> contains the compressed kernel image. So <code>rsi</code> will contain the absolute address of <code>_bss - 8</code>, and <code>rdi</code> will contain the relocation relative address of <code>_bss - 8</code>. As we store these addresses in registers, we put the address of <code>_bss</code> in the <code>rcx</code> register. As you can see in the <code>vmlinux.lds.S</code> linker script, it's located at the end of all sections with the setup/kernel code. Now we can start to copy data from <code>rsi</code> to <code>rdi</code>, <code>8</code> bytes at the time, with the <code>movsq</code> instruction.</p>
+<p>Note that there is an <code>std</code> instruction before data copying: it sets the <code>DF</code> flag, which means that <code>rsi</code> and <code>rdi</code> will be decremented. In other words, we will copy the bytes backwards. At the end, we clear the <code>DF</code> flag with the <code>cld</code> instruction, and restore <code>boot_params</code> structure to <code>rsi</code>.</p>
+<p>Now we have the address of the <code>.text</code> section address after relocation, and we can jump to it:</p>
+<pre><code class="language-assembly">	leaq	relocated(%rbx), %rax
+	jmp	*%rax
+</code></pre>
+<h2 id="last-preparation-before-kernel-decompression">Last preparation before kernel decompression</h2>
+<p>In the previous paragraph we saw that the <code>.text</code> section starts with the <code>relocated</code> label. The first thing it does is clearing the <code>bss</code> section with:</p>
+<pre><code class="language-assembly">	xorl	%eax, %eax
+	leaq    _bss(%rip), %rdi
+	leaq    _ebss(%rip), %rcx
+	subq	%rdi, %rcx
+	shrq	$3, %rcx
+	rep	stosq
+</code></pre>
+<p>We need to initialize the <code>.bss</code> section, because we'll soon jump to <a href="https://en.wikipedia.org/wiki/C_%28programming_language%29">C</a> code. Here we just clear <code>eax</code>, put the address of <code>_bss</code> in <code>rdi</code> and <code>_ebss</code> in <code>rcx</code>, and fill it with zeros with the <code>rep stosq</code> instruction.</p>
+<p>At the end, we can see the call to the <code>decompress_kernel</code> function:</p>
+<pre><code class="language-assembly">	pushq	%rsi
+	movq	$z_run_size, %r9
+	pushq	%r9
+	movq	%rsi, %rdi
+	leaq	boot_heap(%rip), %rsi
+	leaq	input_data(%rip), %rdx
+	movl	$z_input_len, %ecx
+	movq	%rbp, %r8
+	movq	$z_output_len, %r9
+	call	decompress_kernel
+	popq	%r9
+	popq	%rsi
+</code></pre>
+<p>Again we set <code>rdi</code> to a pointer to the <code>boot_params</code> structure and call <code>decompress_kernel</code> from <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/misc.c">arch/x86/boot/compressed/misc.c</a> with seven arguments:</p>
+<ul>
+<li><code>rmode</code> - pointer to the <a href="https://github.com/torvalds/linux/blob/master//arch/x86/include/uapi/asm/bootparam.h#L114">boot_params</a> structure which is filled by bootloader or during early kernel initialization;</li>
+<li><code>heap</code> - pointer to the <code>boot_heap</code> which represents start address of the early boot heap;</li>
+<li><code>input_data</code> - pointer to the start of the compressed kernel or in other words pointer to the <code>arch/x86/boot/compressed/vmlinux.bin.bz2</code>;</li>
+<li><code>input_len</code> - size of the compressed kernel;</li>
+<li><code>output</code> - start address of the future decompressed kernel;</li>
+<li><code>output_len</code> - size of decompressed kernel;</li>
+<li><code>run_size</code> - amount of space needed to run the kernel including <code>.bss</code> and <code>.brk</code> sections.</li>
+</ul>
+<p>All arguments will be passed through the registers according to <a href="http://www.x86-64.org/documentation/abi.pdf">System V Application Binary Interface</a>. We've finished all preparation and can now look at the kernel decompression.</p>
+<h2 id="kernel-decompression-1">Kernel decompression</h2>
+<p>As we saw in previous paragraph, the <code>decompress_kernel</code> function is defined in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/misc.c">arch/x86/boot/compressed/misc.c</a> source code file and takes seven arguments. This function starts with the video/console initialization that we already saw in the previous parts. We need to do this again because we don't know if we started in <a href="https://en.wikipedia.org/wiki/Real_mode">real mode</a> or a bootloader was used, or whether the bootloader used the 32 or 64-bit boot protocol.</p>
+<p>After the first initialization steps, we store pointers to the start of the free memory and to the end of it:</p>
+<pre><code class="language-C">free_mem_ptr     = heap;
+free_mem_end_ptr = heap + BOOT_HEAP_SIZE;
+</code></pre>
+<p>where the <code>heap</code> is the second parameter of the <code>decompress_kernel</code> function which we got in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/head_64.S">arch/x86/boot/compressed/head_64.S</a>:</p>
+<pre><code class="language-assembly">leaq	boot_heap(%rip), %rsi
+</code></pre>
+<p>As you saw above, the <code>boot_heap</code> is defined as:</p>
+<pre><code class="language-assembly">boot_heap:
+	.fill BOOT_HEAP_SIZE, 1, 0
+</code></pre>
+<p>where the <code>BOOT_HEAP_SIZE</code> is macro which expands to <code>0x8000</code> (<code>0x400000</code> in a case of <code>bzip2</code> kernel) and represents the size of the heap.</p>
+<p>After heap pointers initialization, the next step is the call of the <code>choose_random_location</code> function from <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/kaslr.c#L425">arch/x86/boot/compressed/kaslr.c</a> source code file. As we can guess from the function name, it chooses the memory location where the kernel image will be decompressed. It may look weird that we need to find or even <code>choose</code> location where to decompress the compressed kernel image, but the Linux kernel supports <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">kASLR</a> which allows decompression of the kernel into a random address, for security reasons. Let's open the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/kaslr.c#L425">arch/x86/boot/compressed/kaslr.c</a> source code file and look at <code>choose_random_location</code>.</p>
+<p>First, <code>choose_random_location</code> tries to find the <code>kaslr</code> option in the Linux kernel command line if <code>CONFIG_HIBERNATION</code> is set, and <code>nokaslr</code> otherwise:</p>
+<pre><code class="language-C">#ifdef CONFIG_HIBERNATION
+	if (!cmdline_find_option_bool("kaslr")) {
+		debug_putstr("KASLR disabled by default...\n");
+		goto out;
+	}
+#else
+	if (cmdline_find_option_bool("nokaslr")) {
+		debug_putstr("KASLR disabled by cmdline...\n");
+		goto out;
+	}
+#endif
+</code></pre>
+<p>If the <code>CONFIG_HIBERNATION</code> kernel configuration option is enabled during kernel configuration and there is no <code>kaslr</code> option in the Linux kernel command line, it prints <code>KASLR disabled by default...</code> and jumps to the <code>out</code> label:</p>
+<pre><code class="language-C">out:
+	return (unsigned char *)choice;
+</code></pre>
+<p>which just returns the <code>output</code> parameter which we passed to the <code>choose_random_location</code>, unchanged. If the <code>CONFIG_HIBERNATION</code> kernel configuration option is disabled and the <code>nokaslr</code> option is in the kernel command line, we jump to <code>out</code> again.</p>
+<p>For now, let's assume the kernel was configured with randomization enabled and try to understand what <code>kASLR</code> is. We can find information about it in the <a href="https://github.com/torvalds/linux/blob/master/Documentation/kernel-parameters.txt">documentation</a>:</p>
+<pre><code>kaslr/nokaslr [X86]
+
+Enable/disable kernel and module base offset ASLR
+(Address Space Layout Randomization) if built into
+the kernel. When CONFIG_HIBERNATION is selected,
+kASLR is disabled by default. When kASLR is enabled,
+hibernation will be disabled.
+</code></pre>
+<p>It means that we can pass the <code>kaslr</code> option to the kernel's command line and get a random address for the decompressed kernel (you can read more about ASLR <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">here</a>). So, our current goal is to find random address where we can <code>safely</code> to decompress the Linux kernel. I repeat: <code>safely</code>. What does it mean in this context? You may remember that besides the code of decompressor and directly the kernel image, there are some unsafe places in memory. For example, the <a href="https://en.wikipedia.org/wiki/Initrd">initrd</a> image is in memory too, and we must not overlap it with the decompressed kernel.</p>
+<p>The next function will help us to find a safe place where we can decompress kernel. This function is <code>mem_avoid_init</code>. It defined in the same source code <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/kaslr.c">file</a>, and takes four arguments that we already saw in the <code>decompress_kernel</code> function:</p>
+<ul>
+<li><code>input_data</code> - pointer to the start of the compressed kernel, or in other words, the pointer to <code>arch/x86/boot/compressed/vmlinux.bin.bz2</code>;</li>
+<li><code>input_len</code> - the size of the compressed kernel;</li>
+<li><code>output</code> - the start address of the future decompressed kernel;</li>
+<li><code>output_len</code> - the size of decompressed kernel.</li>
+</ul>
+<p>The main point of this function is to fill array of the <code>mem_vector</code> structures:</p>
+<pre><code class="language-C">#define MEM_AVOID_MAX 5
+
+static struct mem_vector mem_avoid[MEM_AVOID_MAX];
+</code></pre>
+<p>where the <code>mem_vector</code> structure contains information about unsafe memory regions:</p>
+<pre><code class="language-C">struct mem_vector {
+	unsigned long start;
+	unsigned long size;
+};
+</code></pre>
+<p>The implementation of the <code>mem_avoid_init</code> is pretty simple. Let's look on the part of this function:</p>
+<pre><code class="language-C">	...
+	...
+	...
+	initrd_start  = (u64)real_mode-&gt;ext_ramdisk_image &lt;&lt; 32;
+	initrd_start |= real_mode-&gt;hdr.ramdisk_image;
+	initrd_size  = (u64)real_mode-&gt;ext_ramdisk_size &lt;&lt; 32;
+	initrd_size |= real_mode-&gt;hdr.ramdisk_size;
+	mem_avoid[1].start = initrd_start;
+	mem_avoid[1].size = initrd_size;
+	...
+	...
+	...
+</code></pre>
+<p>Here we can see calculation of the <a href="http://en.wikipedia.org/wiki/Initrd">initrd</a> start address and size. The <code>ext_ramdisk_image</code> is the high <code>32-bits</code> of the <code>ramdisk_image</code> field from the setup header, and <code>ext_ramdisk_size</code> is the high 32-bits of the <code>ramdisk_size</code> field from the <a href="https://github.com/torvalds/linux/blob/master/Documentation/x86/boot.txt">boot protocol</a>:</p>
+<pre><code>Offset	Proto	Name		Meaning
+/Size
+...
+...
+...
+0218/4	2.00+	ramdisk_image	initrd load address (set by boot loader)
+021C/4	2.00+	ramdisk_size	initrd size (set by boot loader)
+...
+</code></pre>
+<p>And <code>ext_ramdisk_image</code> and <code>ext_ramdisk_size</code> can be found in the <a href="https://github.com/torvalds/linux/blob/master/Documentation/x86/zero-page.txt">Documentation/x86/zero-page.txt</a>:</p>
+<pre><code>Offset	Proto	Name		Meaning
+/Size
+...
+...
+...
+0C0/004	ALL	ext_ramdisk_image ramdisk_image high 32bits
+0C4/004	ALL	ext_ramdisk_size  ramdisk_size high 32bits
+...
+</code></pre>
+<p>So we're taking <code>ext_ramdisk_image</code> and <code>ext_ramdisk_size</code>, shifting them left on <code>32</code> (now they will contain low 32-bits in the high 32-bit bits) and getting start address of the <code>initrd</code> and size of it. After this we store these values in the <code>mem_avoid</code> array.</p>
+<p>The next step after we've collected all unsafe memory regions in the <code>mem_avoid</code> array will be searching for a random address that does not overlap with the unsafe regions, using the <code>find_random_addr</code> function. First of all we can see the alignment of the output address in the <code>find_random_addr</code> function:</p>
+<pre><code class="language-C">minimum = ALIGN(minimum, CONFIG_PHYSICAL_ALIGN);
+</code></pre>
+<p>You can remember <code>CONFIG_PHYSICAL_ALIGN</code> configuration option from the previous part. This option provides the value to which kernel should be aligned and it is <code>0x200000</code> by default. Once we have the aligned output address, we go through the memory regions which we got with the help of the BIOS <a href="https://en.wikipedia.org/wiki/E820">e820</a> service and collect regions suitable for the decompressed kernel image:</p>
+<pre><code class="language-C">for (i = 0; i &lt; real_mode-&gt;e820_entries; i++) {
+	process_e820_entry(&amp;real_mode-&gt;e820_map[i], minimum, size);
+}
+</code></pre>
+<p>Recall that we collected <code>e820_entries</code> in the second part of the <a href="https://github.com/0xAX/linux-insides/blob/master/Booting/linux-bootstrap-2.html#memory-detection">Kernel booting process part 2</a>. The <code>process_e820_entry</code> function does some checks that an <code>e820</code> memory region is not <code>non-RAM</code>, that the start address of the memory region is not bigger than maximum allowed <code>aslr</code> offset, and that the memory region is above the minimum load location:</p>
+<pre><code class="language-C">struct mem_vector region, img;
+
+if (entry-&gt;type != E820_RAM)
+	return;
+
+if (entry-&gt;addr &gt;= CONFIG_RANDOMIZE_BASE_MAX_OFFSET)
+	return;
+
+if (entry-&gt;addr + entry-&gt;size &lt; minimum)
+	return;
+</code></pre>
+<p>After this, we store an <code>e820</code> memory region start address and the size in the <code>mem_vector</code> structure (we saw definition of this structure above):</p>
+<pre><code class="language-C">region.start = entry-&gt;addr;
+region.size = entry-&gt;size;
+</code></pre>
+<p>As we store these values, we align the <code>region.start</code> as we did it in the <code>find_random_addr</code> function and check that we didn't get an address that is outside the original memory region:</p>
+<pre><code class="language-C">region.start = ALIGN(region.start, CONFIG_PHYSICAL_ALIGN);
+
+if (region.start &gt; entry-&gt;addr + entry-&gt;size)
+	return;
+</code></pre>
+<p>In the next step, we reduce the size of the memory region to not include rejected regions at the start, and ensure that the last address in the memory region is smaller than <code>CONFIG_RANDOMIZE_BASE_MAX_OFFSET</code>, so that the end of the kernel image will be less than the maximum <code>aslr</code> offset:</p>
+<pre><code class="language-C">region.size -= region.start - entry-&gt;addr;
+
+if (region.start + region.size &gt; CONFIG_RANDOMIZE_BASE_MAX_OFFSET)
+		region.size = CONFIG_RANDOMIZE_BASE_MAX_OFFSET - region.start;
+</code></pre>
+<p>Finally, we go through all unsafe memory regions and check that the region does not overlap unsafe areas, such as kernel command line, initrd, etc...:</p>
+<pre><code class="language-C">for (img.start = region.start, img.size = image_size ;
+	     mem_contains(&amp;region, &amp;img) ;
+	     img.start += CONFIG_PHYSICAL_ALIGN) {
+		if (mem_avoid_overlap(&amp;img))
+			continue;
+		slots_append(img.start);
+	}
+</code></pre>
+<p>If the memory region does not overlap unsafe regions we call the <code>slots_append</code> function with the start address of the region. <code>slots_append</code> function just collects start addresses of memory regions to the <code>slots</code> array:</p>
+<pre><code class="language-C">slots[slot_max++] = addr;
+</code></pre>
+<p>which is defined as:</p>
+<pre><code class="language-C">static unsigned long slots[CONFIG_RANDOMIZE_BASE_MAX_OFFSET /
+			   CONFIG_PHYSICAL_ALIGN];
+static unsigned long slot_max;
+</code></pre>
+<p>After <code>process_e820_entry</code> is done, we will have an array of addresses that are safe for the decompressed kernel. Then we call <code>slots_fetch_random</code> function to get a random item from this array:</p>
+<pre><code class="language-C">if (slot_max == 0)
+	return 0;
+
+return slots[get_random_long() % slot_max];
+</code></pre>
+<p>where <code>get_random_long</code> function checks different CPU flags as <code>X86_FEATURE_RDRAND</code> or <code>X86_FEATURE_TSC</code> and chooses a method for getting random number (it can be the RDRAND instruction, the time stamp counter, the programmable interval timer, etc...). After retrieving the random address, execution of the <code>choose_random_location</code> is finished.</p>
+<p>Now let's back to <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/misc.c#L404">misc.c</a>. After getting the address for the kernel image, there need to be some checks to be sure that the retrieved random address is correctly aligned and address is not wrong.</p>
+<p>After all these checks we will see the familiar message:</p>
+<pre><code>Decompressing Linux... 
+</code></pre>
+<p>and call the <code>__decompress</code> function which will decompress the kernel. The <code>__decompress</code> function depends on what decompression algorithm was chosen during kernel compilation:</p>
+<pre><code class="language-C">#ifdef CONFIG_KERNEL_GZIP
+#include "../../../../lib/decompress_inflate.c"
+#endif
+
+#ifdef CONFIG_KERNEL_BZIP2
+#include "../../../../lib/decompress_bunzip2.c"
+#endif
+
+#ifdef CONFIG_KERNEL_LZMA
+#include "../../../../lib/decompress_unlzma.c"
+#endif
+
+#ifdef CONFIG_KERNEL_XZ
+#include "../../../../lib/decompress_unxz.c"
+#endif
+
+#ifdef CONFIG_KERNEL_LZO
+#include "../../../../lib/decompress_unlzo.c"
+#endif
+
+#ifdef CONFIG_KERNEL_LZ4
+#include "../../../../lib/decompress_unlz4.c"
+#endif
+</code></pre>
+<p>After kernel is decompressed, the last two functions are <code>parse_elf</code> and <code>handle_relocations</code>. The main point of these functions is to move the uncompressed kernel image to the correct memory place. The fact is that the decompression will decompress <a href="https://en.wikipedia.org/wiki/In-place_algorithm">in-place</a>, and we still need to move kernel to the correct address. As we already know, the kernel image is an <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a> executable, so the main goal of the <code>parse_elf</code> function is to move loadable segments to the correct address. We can see loadable segments in the output of the <code>readelf</code> program:</p>
+<pre><code>readelf -l vmlinux
+
+Elf file type is EXEC (Executable file)
+Entry point 0x1000000
+There are 5 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset             VirtAddr           PhysAddr
+                 FileSiz            MemSiz              Flags  Align
+  LOAD           0x0000000000200000 0xffffffff81000000 0x0000000001000000
+                 0x0000000000893000 0x0000000000893000  R E    200000
+  LOAD           0x0000000000a93000 0xffffffff81893000 0x0000000001893000
+                 0x000000000016d000 0x000000000016d000  RW     200000
+  LOAD           0x0000000000c00000 0x0000000000000000 0x0000000001a00000
+                 0x00000000000152d8 0x00000000000152d8  RW     200000
+  LOAD           0x0000000000c16000 0xffffffff81a16000 0x0000000001a16000
+                 0x0000000000138000 0x000000000029b000  RWE    200000
+</code></pre>
+<p>The goal of the <code>parse_elf</code> function is to load these segments to the <code>output</code> address we got from the <code>choose_random_location</code> function. This function starts with checking the <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a> signature:</p>
+<pre><code class="language-C">Elf64_Ehdr ehdr;
+Elf64_Phdr *phdrs, *phdr;
+
+memcpy(&amp;ehdr, output, sizeof(ehdr));
+
+if (ehdr.e_ident[EI_MAG0] != ELFMAG0 ||
+   ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
+   ehdr.e_ident[EI_MAG2] != ELFMAG2 ||
+   ehdr.e_ident[EI_MAG3] != ELFMAG3) {
+   error("Kernel is not a valid ELF file");
+   return;
+}
+</code></pre>
+<p>and if it's not valid, it prints an error message and halts. If we got a valid <code>ELF</code> file, we go through all program headers from the given <code>ELF</code> file and copy all loadable segments with correct address to the output buffer:</p>
+<pre><code class="language-C">	for (i = 0; i &lt; ehdr.e_phnum; i++) {
+		phdr = &amp;phdrs[i];
+
+		switch (phdr-&gt;p_type) {
+		case PT_LOAD:
+#ifdef CONFIG_RELOCATABLE
+			dest = output;
+			dest += (phdr-&gt;p_paddr - LOAD_PHYSICAL_ADDR);
+#else
+			dest = (void *)(phdr-&gt;p_paddr);
+#endif
+			memcpy(dest,
+			       output + phdr-&gt;p_offset,
+			       phdr-&gt;p_filesz);
+			break;
+		default: /* Ignore other PT_* */ break;
+		}
+	}
+</code></pre>
+<p>That's all. From now on, all loadable segments are in the correct place. The last <code>handle_relocations</code> function adjusts addresses in the kernel image, and is called only if the <code>kASLR</code> was enabled during kernel configuration.</p>
+<p>After the kernel is relocated, we return back from the <code>decompress_kernel</code> to <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/compressed/head_64.S">arch/x86/boot/compressed/head_64.S</a>. The address of the kernel will be in the <code>rax</code> register and we jump to it:</p>
+<pre><code class="language-assembly">jmp	*%rax
+</code></pre>
+<p>That's all. Now we are in the kernel!</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fifth and the last part about linux kernel booting process. We will not see posts about kernel booting anymore (maybe updates to this and previous posts), but there will be many posts about other kernel internals.</p>
+<p>Next chapter will be about kernel initialization and we will see the first steps in the Linux kernel initialization code.</p>
+<p>If you have any questions or suggestions write me a comment or ping me in <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/0xAX/linux-internals">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">address space layout randomization</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Initrd">initrd</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Long_mode">long mode</a></li>
+<li><a href="http://www.bzip.org/">bzip2</a></li>
+<li><a href="http://en.wikipedia.org/wiki/RdRand">RDdRand instruction</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Time_Stamp_Counter">Time Stamp Counter</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Intel_8253">Programmable Interval Timers</a></li>
+<li><a href="https://github.com/0xAX/linux-insides/blob/master/Booting/linux-bootstrap-4.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/186/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/186/index.html">leetcode题解，记录自己的leetcode解题之路</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">92页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8204个">8204</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/70/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/70/index.html">C++ 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1422个">1422</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8071;var bookPageRelUrl ='Booting/linux-bootstrap-5.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

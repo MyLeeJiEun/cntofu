@@ -1,0 +1,1080 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Database——分页原理与源码分析-Laravel 源码详解</title>
+<meta content='Laravel Database——分页原理与源码分析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Database——分页原理与源码分析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Dat..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html">
+<span class="">Laravel Dat..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="paginate-分页">paginate 分页</h2>
+<p><code>laravel</code> 的分页用起来非常简单，只需要对 <code>query</code> 调用 <code>paginate</code> 函数，把返回的对象扔给前端 <code>blade</code> 文件，在 <code>blade</code> 文件调用函数 <code>render</code> 函数或者 <code>link</code> 函数，就可以得到 <code>上一页</code>、<code>下一页</code> 等等分页特效。</p>
+<p>实际上，我们可以简单地把分页服务看作一个前端资源，<code>render</code> 函数或者 <code>link</code> 函数的结果就是分页前端代码。</p>
+<p>如果你还对 <code>laravel</code> 的分页不是很熟悉，请先阅读官方文档 ： <a href="https://d.laravel-china.org/docs/5.5/pagination">分页</a>。</p>
+<h2 id="分页服务的启动">分页服务的启动</h2>
+<p>分页功能也是由一个服务提供者所启动的，<code>PaginationServiceProvider</code> 就是负责注册和启动分页服务的服务提供者：</p>
+<pre><code class="language-php">class PaginationServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        Paginator::viewFactoryResolver(function () {
+            return $this-&gt;app['view'];
+        });
+
+        Paginator::currentPathResolver(function () {
+            return $this-&gt;app['request']-&gt;url();
+        });
+
+        Paginator::currentPageResolver(function ($pageName = 'page') {
+            $page = $this-&gt;app['request']-&gt;input($pageName);
+
+            if (filter_var($page, FILTER_VALIDATE_INT) !== false &amp;&amp; (int) $page &gt;= 1) {
+                return $page;
+            }
+
+            return 1;
+        });
+    }
+}
+</code></pre>
+<p>我们看到，服务提供者的注册函数为 <code>Paginator</code> 设置三个闭包函数：</p>
+<ul>
+<li>viewFactoryResolver 为 <code>Paginator</code> 设置了生成前端资源的类，用于获取分页前端代码。</li>
+<li>currentPathResolver 为 <code>Paginator</code> 设置了 <code>url</code> 的地址。我们知道， <code>上一页</code>、<code>下一页</code> 等等都是可以执行翻页的操作，所以实际上这些按钮必然含有链接，而链接的地址就是当前请求的 <code>url</code> 地址，不同的按钮的链接地址只是 <code>page</code> 的参数不同而已。</li>
+<li>currentPageResolver 为 <code>Paginator</code> 获取了当前的页数。</li>
+</ul>
+<pre><code class="language-php">public function boot()
+{
+    $this-&gt;loadViewsFrom(__DIR__.'/resources/views', 'pagination');
+
+    if ($this-&gt;app-&gt;runningInConsole()) {
+        $this-&gt;publishes([
+            __DIR__.'/resources/views' =&gt; $this-&gt;app-&gt;resourcePath('views/vendor/pagination'),
+        ], 'laravel-pagination');
+    }
+}
+
+protected function loadViewsFrom($path, $namespace)
+{
+    if (is_dir($appPath = $this-&gt;app-&gt;resourcePath().'/views/vendor/'.$namespace)) {
+        $this-&gt;app['view']-&gt;addNamespace($namespace, $appPath);
+    }
+
+    $this-&gt;app['view']-&gt;addNamespace($namespace, $path);
+}
+</code></pre>
+<p>服务的启动函数为分页服务设置了默认的前端分页资源。</p>
+<h2 id="分页服务-paginator">分页服务 paginator</h2>
+<p>分页服务 <code>paginator</code> 函数用于 <code>queryBuilder</code>，用于获取分页的数据库数据：</p>
+<pre><code class="language-php">public function paginate($perPage = 15, $columns = ['*'], $pageName = 'page', $page = null)
+{
+    $page = $page ?: Paginator::resolveCurrentPage($pageName);
+
+    $total = $this-&gt;getCountForPagination($columns);
+
+    $results = $total
+        ? $this-&gt;forPage($page, $perPage)-&gt;get($columns) : collect();
+
+    return $this-&gt;paginator($results, $total, $perPage, $page, [
+        'path' =&gt; Paginator::resolveCurrentPath(),
+        'pageName' =&gt; $pageName,
+    ]);
+}
+
+protected function paginator($items, $total, $perPage, $currentPage, $options)
+{
+    return Container::getInstance()-&gt;makeWith(LengthAwarePaginator::class, compact(
+        'items', 'total', 'perPage', 'currentPage', 'options'
+    ));
+}
+</code></pre>
+<p>也就是说，当我们写下这样的代码时：</p>
+<pre><code class="language-php">DB::table('user')-&gt;select('*')-&gt;where('status',1)-&gt;paginator();
+</code></pre>
+<p>我们可以获取到一个 <code>LengthAwarePaginator</code> 类对象，对这个对象调用 <code>render</code> 函数就可以获取分页前端资源。</p>
+<p>我们先来研究一下 <code>paginator</code> 函数。</p>
+<h3 id="获取当前页">获取当前页</h3>
+<p>我们可以看到，在这个函数中程序先获取当前页数：</p>
+<pre><code class="language-php">public static function resolveCurrentPage($pageName = 'page', $default = 1)
+{
+    if (isset(static::$currentPageResolver)) {
+        return call_user_func(static::$currentPageResolver, $pageName);
+    }
+
+    return $default;
+}
+</code></pre>
+<p>currentPageResolver 就是上一节中 <code>currentPageResolver</code> 设置的闭包函数，这个闭包函数从请求参数中获取当前页：</p>
+<pre><code class="language-php">$page = $this-&gt;app['request']-&gt;input($pageName);
+</code></pre>
+<h3 id="获取数据库总记录数">获取数据库总记录数</h3>
+<p>计算数据库符合搜索条件的总记录数理所当然的是使用聚合函数 <code>count</code> ：</p>
+<pre><code class="language-php">public function getCountForPagination($columns = ['*'])
+{
+    $results = $this-&gt;runPaginationCountQuery($columns);
+
+    if (isset($this-&gt;groups)) {
+        return count($results);
+    } elseif (! isset($results[0])) {
+        return 0;
+    } elseif (is_object($results[0])) {
+        return (int) $results[0]-&gt;aggregate;
+    } else {
+        return (int) array_change_key_case((array) $results[0])['aggregate'];
+    }
+}
+
+protected function runPaginationCountQuery($columns = ['*'])
+{
+    return $this-&gt;cloneWithout(['columns', 'orders', 'limit', 'offset'])
+                -&gt;cloneWithoutBindings(['select', 'order'])
+                -&gt;setAggregate('count', $this-&gt;withoutSelectAliases($columns))
+                -&gt;get()-&gt;all();
+}
+</code></pre>
+<h3 id="获取当前页数据">获取当前页数据</h3>
+<p>获取当前页当然是使用 <code>forPage</code> 函数：</p>
+<pre><code class="language-php">$results = $total
+        ? $this-&gt;forPage($page, $perPage)-&gt;get($columns) : collect();
+</code></pre>
+<h3 id="初始化-lengthawarepaginator">初始化 LengthAwarePaginator</h3>
+<p><code>paginator</code> 函数利用 Ioc 容器来生成 <code>LengthAwarePaginator</code> 实例：</p>
+<pre><code class="language-php">protected function paginator($items, $total, $perPage, $currentPage, $options)
+{
+    return Container::getInstance()-&gt;makeWith(LengthAwarePaginator::class, compact(
+        'items', 'total', 'perPage', 'currentPage', 'options'
+    ));
+}
+</code></pre>
+<p><code>LengthAwarePaginator</code> 的初始化：</p>
+<pre><code class="language-php">public function __construct($items, $total, $perPage, $currentPage = null, array $options = [])
+{
+    foreach ($options as $key =&gt; $value) {
+        $this-&gt;{$key} = $value;
+    }
+
+    $this-&gt;total = $total;
+    $this-&gt;perPage = $perPage;
+    $this-&gt;lastPage = max((int) ceil($total / $perPage), 1);
+    $this-&gt;path = $this-&gt;path !== '/' ? rtrim($this-&gt;path, '/') : $this-&gt;path;
+    $this-&gt;currentPage = $this-&gt;setCurrentPage($currentPage, $this-&gt;pageName);
+    $this-&gt;items = $items instanceof Collection ? $items : Collection::make($items);
+}
+</code></pre>
+<h2 id="分页资源-render">分页资源 render</h2>
+<p>对 <code>LengthAwarePaginator</code> 调用 <code>render</code> 函数会得到分页所需要的前端资源：</p>
+<pre><code class="language-php">public function render($view = null, $data = [])
+{
+    return new HtmlString(static::viewFactory()-&gt;make($view ?: static::$defaultView, array_merge($data, [
+        'paginator' =&gt; $this,
+        'elements' =&gt; $this-&gt;elements(),
+    ]))-&gt;render());
+}
+
+</code></pre>
+<p>当我们使用默认的分页样式的时候，不需要向 <code>render</code> 函数传入 <code>view</code> 参数，此时程序会自动加载默认的前端资源:</p>
+<pre><code class="language-php">public static $defaultView = 'pagination::default';
+</code></pre>
+<p>该资源的默认地址是 <code>illuminate\Pagination\resources\views\default.blade.php</code>:</p>
+<pre><code class="language-php">@if ($paginator-&gt;hasPages())
+    &lt;ul class="pagination"&gt;
+        {{-- Previous Page Link --}}
+        @if ($paginator-&gt;onFirstPage())
+            &lt;li class="disabled"&gt;&lt;span&gt;&lt;&lt;&lt;/span&gt;&lt;/li&gt;
+        @else
+            &lt;li&gt;&lt;a href="{{ $paginator-&gt;previousPageUrl() }}" rel="prev"&gt;&lt;&lt;&lt;/a&gt;&lt;/li&gt;
+        @endif
+
+        {{-- Pagination Elements --}}
+        @foreach ($elements as $element)
+            {{-- "Three Dots" Separator --}}
+            @if (is_string($element))
+                &lt;li class="disabled"&gt;&lt;span&gt;{{ $element }}&lt;/span&gt;&lt;/li&gt;
+            @endif
+
+            {{-- Array Of Links --}}
+            @if (is_array($element))
+                @foreach ($element as $page =&gt; $url)
+                    @if ($page == $paginator-&gt;currentPage())
+                        &lt;li class="active"&gt;&lt;span&gt;{{ $page }}&lt;/span&gt;&lt;/li&gt;
+                    @else
+                        &lt;li&gt;&lt;a href="{{ $url }}"&gt;{{ $page }}&lt;/a&gt;&lt;/li&gt;
+                    @endif
+                @endforeach
+            @endif
+        @endforeach
+
+        {{-- Next Page Link --}}
+        @if ($paginator-&gt;hasMorePages())
+            &lt;li&gt;&lt;a href="{{ $paginator-&gt;nextPageUrl() }}" rel="next"&gt;&gt;&gt;&lt;/a&gt;&lt;/li&gt;
+        @else
+            &lt;li class="disabled"&gt;&lt;span&gt;&gt;&gt;&lt;/span&gt;&lt;/li&gt;
+        @endif
+    &lt;/ul&gt;
+@endif
+</code></pre>
+<p>可以看到，分页效果的代码分为三部分：前一页、后一页、分页元素。</p>
+<h3 id="前一页">前一页</h3>
+<p>如果当前页是第一页的话，<code>前一页</code> 按钮需要置灰：</p>
+<pre><code class="language-php">public function onFirstPage()
+{
+    return $this-&gt;currentPage() &lt;= 1;
+}
+</code></pre>
+<p>否则的话，就要为 <code>前一页</code> 按钮赋予链接：</p>
+<pre><code class="language-php">public function previousPageUrl()
+{
+    if ($this-&gt;currentPage() &gt; 1) {
+        return $this-&gt;url($this-&gt;currentPage() - 1);
+    }
+}
+
+public function url($page)
+{
+    if ($page &lt;= 0) {
+        $page = 1;
+    }
+
+    $parameters = [$this-&gt;pageName =&gt; $page];
+
+    if (count($this-&gt;query) &gt; 0) {
+        $parameters = array_merge($this-&gt;query, $parameters);
+    }
+
+    return $this-&gt;path
+                    .(Str::contains($this-&gt;path, '?') ? '&amp;' : '?')
+                    .http_build_query($parameters, '', '&amp;')
+                    .$this-&gt;buildFragment();
+}
+</code></pre>
+<p>如果列表页中存在一些搜索条件，这些搜索条件会被加载到 <code>$this-&gt;query</code> 成员变量中，生成 <code>url</code> 的时候，这些搜索添加会被加到 <code>request</code> 的参数中。可以使用 <code>append</code> 方法附加查询参数到分页链接中：</p>
+<pre><code class="language-php">public function appends($key, $value = null)
+{
+    if (is_array($key)) {
+        return $this-&gt;appendArray($key);
+    }
+
+    return $this-&gt;addQuery($key, $value);
+}
+
+protected function appendArray(array $keys)
+{
+    foreach ($keys as $key =&gt; $value) {
+        $this-&gt;addQuery($key, $value);
+    }
+
+    return $this;
+}
+</code></pre>
+<h3 id="下一页">下一页</h3>
+<p>与 <code>前一页</code> 类似，如果已经在最后一页，那么 <code>下一页</code> 按钮将会被置灰：</p>
+<pre><code class="language-php">public function hasMorePages()
+{
+    return $this-&gt;currentPage() &lt; $this-&gt;lastPage();
+}
+</code></pre>
+<p>下一页的链接：</p>
+<pre><code class="language-php">public function nextPageUrl()
+{
+    if ($this-&gt;lastPage() &gt; $this-&gt;currentPage()) {
+        return $this-&gt;url($this-&gt;currentPage() + 1);
+    }
+}
+</code></pre>
+<p><code>上一页</code> 与 <code>下一页</code> 按钮的功能比较简单，至于中间的分页特效比较复杂，我们由下一节来说。</p>
+<h2 id="分页-elements">分页 elements</h2>
+<p>我们先说一下不同的分页样式：</p>
+<ul>
+<li>当我们设置两侧页数为 3 时，当前数据总页数小于 8 页时分页效果：</li>
+</ul>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171001-104935@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171001-104935@2x.png" alt=""></a></p>
+<ul>
+<li>总页数大于 6 页，且当前页在前 8 页（2 * 3 + 2）时分页效果：</li>
+</ul>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171001-102833@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171001-102833@2x.png" alt="img"></a></p>
+<ul>
+<li>当前页在前 6 页与后 6 页之间分页效果：</li>
+</ul>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171001-102858@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171001-102858@2x.png" alt="img"></a></p>
+<ul>
+<li>当前页在最后 6 页时分页效果：</li>
+</ul>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171001-102916@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171001-102916@2x.png" alt="img"></a></p>
+<p>分页效果样式的关键来源于 <code>UrlWindow</code>，这个类用于根据总页数与当前页的不同来控制不同的分页样式。</p>
+<pre><code class="language-php">protected function elements()
+{
+    $window = UrlWindow::make($this);
+
+    return array_filter([
+        $window['first'],
+        is_array($window['slider']) ? '...' : null,
+        $window['slider'],
+        is_array($window['last']) ? '...' : null,
+        $window['last'],
+    ]);
+}
+
+public static function make(PaginatorContract $paginator, $onEachSide = 3)
+{
+    return (new static($paginator))-&gt;get($onEachSide);
+}
+
+public function get($onEachSide = 3)
+{
+    if ($this-&gt;paginator-&gt;lastPage() &lt; ($onEachSide * 2) + 6) {
+        return $this-&gt;getSmallSlider();
+    }
+
+    return $this-&gt;getUrlSlider($onEachSide);
+}
+</code></pre>
+<h3 id="小型分页-getsmallslider">小型分页 getSmallSlider</h3>
+<p>如果当前总页数小于 <code>($onEachSide * 2) + 6</code> 的话，就会调用小型分页效果，这种小型分页效果直接将所有页数全部显示：</p>
+<pre><code class="language-php">protected function getSmallSlider()
+{
+    return [
+        'first'  =&gt; $this-&gt;paginator-&gt;getUrlRange(1, $this-&gt;lastPage()),
+        'slider' =&gt; null,
+        'last'   =&gt; null,
+    ];
+}
+
+public function getUrlRange($start, $end)
+{
+    return collect(range($start, $end))-&gt;mapWithKeys(function ($page) {
+        return [$page =&gt; $this-&gt;url($page)];
+    })-&gt;all();
+}
+</code></pre>
+<h3 id="closetobeginning-分页效果">CloseToBeginning 分页效果</h3>
+<p>当前页数位于前 <code>($onEachSide * 2)</code> 页时：</p>
+<pre><code class="language-php">protected function getUrlSlider($onEachSide)
+{
+    $window = $onEachSide * 2;
+
+    if (! $this-&gt;hasPages()) {
+        return ['first' =&gt; null, 'slider' =&gt; null, 'last' =&gt; null];
+    }
+
+    if ($this-&gt;currentPage() &lt;= $window) {
+        return $this-&gt;getSliderTooCloseToBeginning($window);
+    }
+
+    elseif ($this-&gt;currentPage() &gt; ($this-&gt;lastPage() - $window)) {
+        return $this-&gt;getSliderTooCloseToEnding($window);
+    }
+
+    return $this-&gt;getFullSlider($onEachSide);
+}
+
+protected function getSliderTooCloseToBeginning($window)
+{
+    return [
+        'first' =&gt; $this-&gt;paginator-&gt;getUrlRange(1, $window + 2),
+        'slider' =&gt; null,
+        'last' =&gt; $this-&gt;getFinish(),
+    ];
+}
+
+public function getFinish()
+{
+    return $this-&gt;paginator-&gt;getUrlRange(
+        $this-&gt;lastPage() - 1,
+        $this-&gt;lastPage()
+    );
+}
+</code></pre>
+<p>假设我们设置当前两侧页数为 3，当前页为 5，总页数22，函数 <code>getSliderTooCloseToBeginning</code> 返回结果为：</p>
+<pre><code class="language-php">return [
+    'first' =&gt; [
+        1 =&gt; '/www.example.com/example?page=1', 
+        2 =&gt; '/www.example.com/example?page=2'
+        3 =&gt; '/www.example.com/example?page=3'
+        4 =&gt; '/www.example.com/example?page=4'
+        5 =&gt; '/www.example.com/example?page=5'
+        6 =&gt; '/www.example.com/example?page=6'
+        7 =&gt; '/www.example.com/example?page=7'
+        8 =&gt; '/www.example.com/example?page=8'],
+    'slider' =&gt; null,
+    'last' =&gt; [
+        21 =&gt; '/www.example.com/example?page=21',
+        22 =&gt; '/www.example.com/example?page=22'],
+];
+</code></pre>
+<p>这个时候 <code>element</code> 函数返回数据：</p>
+<pre><code class="language-php">protected function elements()
+{
+    $window = UrlWindow::make($this);
+
+    return array_filter([
+        $window['first'],
+        is_array($window['slider']) ? '...' : null,
+        $window['slider'],
+        is_array($window['last']) ? '...' : null,
+        $window['last'],
+    ]);
+}
+
+//返回结果
+[
+    [
+        1 =&gt; '/www.example.com/example?page=1', 
+        2 =&gt; '/www.example.com/example?page=2',
+        3 =&gt; '/www.example.com/example?page=3',
+        4 =&gt; '/www.example.com/example?page=4',
+        5 =&gt; '/www.example.com/example?page=5',
+        6 =&gt; '/www.example.com/example?page=6',
+        7 =&gt; '/www.example.com/example?page=7',
+        8 =&gt; '/www.example.com/example?page=8',
+    ],                                        //$window['first']
+    ‘...’,                                    //is_array($window['last']) ? '...' : null
+    [
+        21 =&gt; '/www.example.com/example?page=21',
+        22 =&gt; '/www.example.com/example?page=22',
+    ],                                        //$window['last']
+]
+</code></pre>
+<h3 id="tooclosetoending-分页效果">TooCloseToEnding 分页效果</h3>
+<p>当前页数位于后 <code>($onEachSide * 2)</code> 页时：</p>
+<pre><code class="language-php">protected function getSliderTooCloseToEnding($window)
+{
+    $last = $this-&gt;paginator-&gt;getUrlRange(
+        $this-&gt;lastPage() - ($window + 2),
+        $this-&gt;lastPage()
+    );
+
+    return [
+        'first' =&gt; $this-&gt;getStart(),
+        'slider' =&gt; null,
+        'last' =&gt; $last,
+    ];
+}
+
+public function getStart()
+{
+    return $this-&gt;paginator-&gt;getUrlRange(1, 2);
+}
+</code></pre>
+<p>假设我们设置当前两侧页数为 3，当前页为 18，总页数22，函数 <code>getSliderTooCloseToEnding</code> 返回结果为：</p>
+<pre><code class="language-php">return [
+    'first' =&gt; [
+        1 =&gt; '/www.example.com/example?page=1', 
+        2 =&gt; '/www.example.com/example?page=2'
+    ],
+    'slider' =&gt; null,
+    'last' =&gt; [
+        15 =&gt; '/www.example.com/example?page=15',
+        16 =&gt; '/www.example.com/example?page=16',
+        17 =&gt; '/www.example.com/example?page=17',
+        18 =&gt; '/www.example.com/example?page=18',
+        19 =&gt; '/www.example.com/example?page=19',
+        20 =&gt; '/www.example.com/example?page=20',
+        21 =&gt; '/www.example.com/example?page=21',
+        22 =&gt; '/www.example.com/example?page=22',
+    ],
+];
+</code></pre>
+<p>这个时候 <code>element</code> 函数返回数据：</p>
+<pre><code class="language-php">[
+	[
+	    1 =&gt; '/www.example.com/example?page=1', 
+	    2 =&gt; '/www.example.com/example?page=2'
+   ],
+   '...',
+   [
+   		15 =&gt; '/www.example.com/example?page=15',
+   		16 =&gt; '/www.example.com/example?page=16',
+   		17 =&gt; '/www.example.com/example?page=17',
+   		18 =&gt; '/www.example.com/example?page=18',
+   		19 =&gt; '/www.example.com/example?page=19',
+   		20 =&gt; '/www.example.com/example?page=20',
+   		21 =&gt; '/www.example.com/example?page=21',
+   		22 =&gt; '/www.example.com/example?page=22',
+   ]
+]
+</code></pre>
+<h3 id="fullslider-分页效果">FullSlider 分页效果</h3>
+<p>当前页数位于中间时：</p>
+<pre><code class="language-php">protected function getFullSlider($onEachSide)
+{
+    return [
+        'first'  =&gt; $this-&gt;getStart(),
+        'slider' =&gt; $this-&gt;getAdjacentUrlRange($onEachSide),
+        'last'   =&gt; $this-&gt;getFinish(),
+    ];
+}
+
+public function getAdjacentUrlRange($onEachSide)
+{
+    return $this-&gt;paginator-&gt;getUrlRange(
+        $this-&gt;currentPage() - $onEachSide,
+        $this-&gt;currentPage() + $onEachSide
+    );
+}
+</code></pre>
+<p>假设我们设置当前两侧页数为 3，当前页为 10，总页数22，函数 <code>getFullSlider</code> 返回结果为：</p>
+<pre><code class="language-php">return [
+    'first' =&gt; [
+        1 =&gt; '/www.example.com/example?page=1', 
+        2 =&gt; '/www.example.com/example?page=2'
+    ],
+    'slider' =&gt; [
+        7 =&gt; '/www.example.com/example?page=7', 
+        8 =&gt; '/www.example.com/example?page=8', 
+        9 =&gt; '/www.example.com/example?page=9',
+        10 =&gt; '/www.example.com/example?page=10', 
+        11 =&gt; '/www.example.com/example?page=11', 
+        12 =&gt; '/www.example.com/example?page=12',
+        13 =&gt; '/www.example.com/example?page=13', 
+    ],
+    'last' =&gt; [
+        21 =&gt; '/www.example.com/example?page=21',
+        22 =&gt; '/www.example.com/example?page=22',
+    ],
+];
+</code></pre>
+<p>这个时候 <code>element</code> 函数返回数据：</p>
+<pre><code class="language-php">[
+	[
+	    1 =&gt; '/www.example.com/example?page=1', 
+	    2 =&gt; '/www.example.com/example?page=2'
+   ],
+   '...',
+   [
+       7 =&gt; '/www.example.com/example?page=7', 
+       8 =&gt; '/www.example.com/example?page=8', 
+       9 =&gt; '/www.example.com/example?page=9',
+       10 =&gt; '/www.example.com/example?page=10', 
+       11 =&gt; '/www.example.com/example?page=11', 
+       12 =&gt; '/www.example.com/example?page=12',
+       13 =&gt; '/www.example.com/example?page=13',
+   ],
+   '...',
+   [
+   		21 =&gt; '/www.example.com/example?page=21',
+   		22 =&gt; '/www.example.com/example?page=22',
+   ]
+]
+</code></pre>
+<h2 id="simplepaginate-简单分页">simplePaginate 简单分页</h2>
+<p>简单分页相比以上的功能来说，精简了 <code>elements</code> 的特效：</p>
+<pre><code class="language-php">public function simplePaginate($perPage = 15, $columns = ['*'], $pageName = 'page', $page = null)
+{
+    $page = $page ?: Paginator::resolveCurrentPage($pageName);
+
+    $this-&gt;skip(($page - 1) * $perPage)-&gt;take($perPage + 1);
+
+    return $this-&gt;simplePaginator($this-&gt;get($columns), $perPage, $page, [
+        'path' =&gt; Paginator::resolveCurrentPath(),
+        'pageName' =&gt; $pageName,
+    ]);
+}
+
+protected function simplePaginator($items, $perPage, $currentPage, $options)
+{
+    return Container::getInstance()-&gt;makeWith(Paginator::class, compact(
+        'items', 'perPage', 'currentPage', 'options'
+    ));
+}
+</code></pre>
+<p>分页服务的类不再使用 <code>LengthAwarePaginator</code> 类，而开始使用 <code>Paginator</code>，这两个类最大的不同在于 <code>render</code> 函数：</p>
+<pre><code class="language-php">public static $defaultSimpleView = 'pagination::simple-default';
+ 
+public function render($view = null, $data = [])
+{
+    return new HtmlString(
+        static::viewFactory()-&gt;make($view ?: static::$defaultSimpleView, array_merge($data, [
+            'paginator' =&gt; $this,
+        ]))-&gt;render()
+    );
+}
+</code></pre>
+<p><code>render</code> 函数调用的前端资源默认地址为 <code>illuminate\Pagination\resources\views\simple-default.blade.php</code>:</p>
+<pre><code class="language-php">@if ($paginator-&gt;hasPages())
+    &lt;ul class="pagination"&gt;
+        {{-- Previous Page Link --}}
+        @if ($paginator-&gt;onFirstPage())
+            &lt;li class="disabled"&gt;&lt;span&gt;@lang('pagination.previous')&lt;/span&gt;&lt;/li&gt;
+        @else
+            &lt;li&gt;&lt;a href="{{ $paginator-&gt;previousPageUrl() }}" rel="prev"&gt;@lang('pagination.previous')&lt;/a&gt;&lt;/li&gt;
+        @endif
+
+        {{-- Next Page Link --}}
+        @if ($paginator-&gt;hasMorePages())
+            &lt;li&gt;&lt;a href="{{ $paginator-&gt;nextPageUrl() }}" rel="next"&gt;@lang('pagination.next')&lt;/a&gt;&lt;/li&gt;
+        @else
+            &lt;li class="disabled"&gt;&lt;span&gt;@lang('pagination.next')&lt;/span&gt;&lt;/li&gt;
+        @endif
+    &lt;/ul&gt;
+@endif
+
+</code></pre>
+<p>可以看到，简单分页只有 <code>上一页</code>、<code>下一页</code> 两个按钮。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/49/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/49/index.html">如何设计计算机操作系统</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/26.html">SamyPesse</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 17175个">17175</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/124/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nginx_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/124/index.html">Nginx学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/66.html">tyloafer</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/204/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/112/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/django_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/112/index.html">从Python到Django入门教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="django">django</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/115/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/115/index.html">ANTLR 4简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/62/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/62/index.html">Google 深度学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/38.html">ahangchen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1243个">1243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7767;var bookPageRelUrl ='Laravel%20Database——分页原理与源码分析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

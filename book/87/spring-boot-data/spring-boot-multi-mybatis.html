@@ -1,0 +1,538 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Spring Boot 多数据源使用 Mybatis-Spring Boot 开源电子书</title>
+<meta content='Spring Boot 多数据源使用 Mybatis,Spring Boot 开源电子书' name='keywords'>
+<meta content='Spring Boot 多数据源使用 Mybatis,Spring Boot 开源电子书' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/87/spring-boot-data/spring-boot-mybatis.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Spring Boot..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/87/spring-boot-data/spring-boot-jpa.html">
+<span class="">Spring Boot..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/87/index.html">Spring Boot 开源电子书</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ityouknow/spring-boot-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<p>说起多数据源，一般都来解决那些问题呢，主从模式或者业务比较复杂需要连接不同的分库来支持业务。我们项目是后者的模式，网上找了很多，大都是根据jpa来做多数据源解决方案，要不就是老的spring多数据源解决方案，还有的是利用aop动态切换，感觉有点小复杂，其实我只是想找一个简单的多数据支持而已，折腾了两个小时整理出来，供大家参考。</p>
+<blockquote>
+<p>废话不多说直接上代码吧</p>
+</blockquote>
+<h2 id="配置文件">配置文件</h2>
+<p>pom包就不贴了比较简单该依赖的就依赖，主要是数据库这边的配置：</p>
+<pre><code class="language-properties">mybatis.config-locations=classpath:mybatis/mybatis-config.xml
+
+spring.datasource.test1.driverClassName = com.mysql.jdbc.Driver
+spring.datasource.test1.url = jdbc:mysql://localhost:3306/test1?useUnicode=true&amp;characterEncoding=utf-8
+spring.datasource.test1.username = root
+spring.datasource.test1.password = root
+
+spring.datasource.test2.driverClassName = com.mysql.jdbc.Driver
+spring.datasource.test2.url = jdbc:mysql://localhost:3306/test2?useUnicode=true&amp;characterEncoding=utf-8
+spring.datasource.test2.username = root
+spring.datasource.test2.password = root
+</code></pre>
+<p>一个test1库和一个test2库，其中test1位主库，在使用的过程中必须指定主库，不然会报错。</p>
+<h2 id="数据源配置">数据源配置</h2>
+<pre><code class="language-java">@Configuration
+@MapperScan(basePackages = "com.neo.mapper.test1", sqlSessionTemplateRef  = "test1SqlSessionTemplate")
+public class DataSource1Config {
+
+    @Bean(name = "test1DataSource")
+    @ConfigurationProperties(prefix = "spring.datasource.test1")
+    @Primary
+    public DataSource testDataSource() {
+        return DataSourceBuilder.create().build();
+    }
+
+    @Bean(name = "test1SqlSessionFactory")
+    @Primary
+    public SqlSessionFactory testSqlSessionFactory(@Qualifier("test1DataSource") DataSource dataSource) throws Exception {
+        SqlSessionFactoryBean bean = new SqlSessionFactoryBean();
+        bean.setDataSource(dataSource);
+        bean.setMapperLocations(new PathMatchingResourcePatternResolver().getResources("classpath:mybatis/mapper/test1/*.xml"));
+        return bean.getObject();
+    }
+
+    @Bean(name = "test1TransactionManager")
+    @Primary
+    public DataSourceTransactionManager testTransactionManager(@Qualifier("test1DataSource") DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
+    }
+
+    @Bean(name = "test1SqlSessionTemplate")
+    @Primary
+    public SqlSessionTemplate testSqlSessionTemplate(@Qualifier("test1SqlSessionFactory") SqlSessionFactory sqlSessionFactory) throws Exception {
+        return new SqlSessionTemplate(sqlSessionFactory);
+    }
+
+}
+</code></pre>
+<p>最关键的地方就是这块了，一层一层注入,首先创建DataSource，然后创建SqlSessionFactory再创建事务，最后包装到SqlSessionTemplate中。其中需要指定分库的mapper文件地址，以及分库dao层代码</p>
+<pre><code class="language-java">@MapperScan(basePackages = "com.neo.mapper.test1", sqlSessionTemplateRef  = "test1SqlSessionTemplate")
+</code></pre>
+<p>这块的注解就是指明了扫描dao层，并且给dao层注入指定的SqlSessionTemplate。所有<code>@Bean</code>都需要按照命名指定正确。</p>
+<h2 id="dao层和xml层">dao层和xml层</h2>
+<p>dao层和xml需要按照库来分在不同的目录，比如：test1库dao层在com.neo.mapper.test1包下，test2库在com.neo.mapper.test1</p>
+<pre><code class="language-java">public interface User1Mapper {
+	
+	List&lt;UserEntity&gt; getAll();
+	
+	UserEntity getOne(Long id);
+
+	void insert(UserEntity user);
+
+	void update(UserEntity user);
+
+	void delete(Long id);
+
+}
+</code></pre>
+<p>xml层</p>
+<pre><code class="language-xml">&lt;?xml version="1.0" encoding="UTF-8" ?&gt;
+&lt;!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" &gt;
+&lt;mapper namespace="com.neo.mapper.test1.User1Mapper" &gt;
+    &lt;resultMap id="BaseResultMap" type="com.neo.entity.UserEntity" &gt;
+        &lt;id column="id" property="id" jdbcType="BIGINT" /&gt;
+        &lt;result column="userName" property="userName" jdbcType="VARCHAR" /&gt;
+        &lt;result column="passWord" property="passWord" jdbcType="VARCHAR" /&gt;
+        &lt;result column="user_sex" property="userSex" javaType="com.neo.enums.UserSexEnum"../../../&gt;
+        &lt;result column="nick_name" property="nickName" jdbcType="VARCHAR" /&gt;
+    &lt;/resultMap&gt;
+    
+    &lt;sql id="Base_Column_List" &gt;
+        id, userName, passWord, user_sex, nick_name
+    &lt;/sql&gt;
+
+    &lt;select id="getAll" resultMap="BaseResultMap"  &gt;
+       SELECT 
+       &lt;include refid="Base_Column_List" /&gt;
+	   FROM users
+    &lt;/select&gt;
+
+    &lt;select id="getOne" parameterType="java.lang.Long" resultMap="BaseResultMap" &gt;
+        SELECT 
+       &lt;include refid="Base_Column_List" /&gt;
+	   FROM users
+	   WHERE id = #{id}
+    &lt;/select&gt;
+
+    &lt;insert id="insert" parameterType="com.neo.entity.UserEntity" &gt;
+       INSERT INTO 
+       		users
+       		(userName,passWord,user_sex) 
+       	VALUES
+       		(#{userName}, #{passWord}, #{userSex})
+    &lt;/insert&gt;
+    
+    &lt;update id="update" parameterType="com.neo.entity.UserEntity" &gt;
+       UPDATE 
+       		users 
+       SET 
+       	&lt;if test="userName != null"&gt;userName = #{userName},&lt;/if&gt;
+       	&lt;if test="passWord != null"&gt;passWord = #{passWord},&lt;/if&gt;
+       	nick_name = #{nickName}
+       WHERE 
+       		id = #{id}
+    &lt;/update&gt;
+    
+    &lt;delete id="delete" parameterType="java.lang.Long" &gt;
+       DELETE FROM
+       		 users 
+       WHERE 
+       		 id =#{id}
+    &lt;/delete&gt;
+
+&lt;/mapper&gt;
+</code></pre>
+<h2 id="测试">测试</h2>
+<p>测试可以使用SpringBootTest,也可以放到Controller中，这里只贴Controller层的使用</p>
+<pre><code class="language-java">@RestController
+public class UserController {
+
+    @Autowired
+    private User1Mapper user1Mapper;
+
+	@Autowired
+	private User2Mapper user2Mapper;
+	
+	@RequestMapping("../../../getUsers")
+	public List&lt;UserEntity&gt; getUsers() {
+		List&lt;UserEntity&gt; users=user1Mapper.getAll();
+		return users;
+	}
+	
+    @RequestMapping("../../../getUser")
+    public UserEntity getUser(Long id) {
+    	UserEntity user=user2Mapper.getOne(id);
+        return user;
+    }
+    
+    @RequestMapping("../../../add")
+    public void save(UserEntity user) {
+        user2Mapper.insert(user);
+    }
+    
+    @RequestMapping(value="update")
+    public void update(UserEntity user) {
+        user2Mapper.update(user);
+    }
+    
+    @RequestMapping(value="../../../delete/{id}")
+    public void delete(@PathVariable("id") Long id) {
+        user1Mapper.delete(id);
+    }
+    
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/79/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/79/index.html">SpringBoot学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/50.html">clsaa</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/81/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/81/index.html">《SpringBoot参考指南》中文翻译 基于1.5.7 RELEASE</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/52.html">wangjingjing</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">100页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/43/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/43/index.html">C 语言编程透视</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 369个">369</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/13/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/13/index.html">Go实战开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2789个">2789</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/56/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/56/index.html">神经网络与深度学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/32.html">tigerneil</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 239个">239</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/134/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/github_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/134/index.html">GitHub 漫游指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="github">github</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3472个">3472</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/87/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="6818">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/about.html" title="关于" data-book-page-rel-url="about.html" data-book-page-id="6819">关于</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 入门" disabled data-book-page-rel-url="spring-boot-start/README.html" data-book-page-id="6820">Spring Boot 入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-start/spring-boot-quick-start.html" title="快速了解 Spring Boot" data-book-page-rel-url="spring-boot-start/spring-boot-quick-start.html" data-book-page-id="6821">快速了解 Spring Boot</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-start/spring-boot-web.html" title="Spring Boot Web 开发入门" data-book-page-rel-url="spring-boot-start/spring-boot-web.html" data-book-page-id="6822">Spring Boot Web 开发入门</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot Web 编程" disabled data-book-page-rel-url="spring-boot-web/README.html" data-book-page-id="6823">Spring Boot Web 编程</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-thymeleaf.html" title="Spring Boot 使用 Thymeleaf" data-book-page-rel-url="spring-boot-web/spring-boot-thymeleaf.html" data-book-page-id="6824">Spring Boot 使用 Thymeleaf</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-jpa-thymeleaf.html" title="Spring Boot Jpa  Thymeleaf 增删改查示例" data-book-page-rel-url="spring-boot-web/spring-boot-jpa-thymeleaf.html" data-book-page-id="6825">Spring Boot Jpa Thymeleaf 增删改查示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-upload-file.html" title="Spring Boot 上传文件" data-book-page-rel-url="spring-boot-web/spring-boot-upload-file.html" data-book-page-id="6826">Spring Boot 上传文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-schedule.html" title="Spring Boot 使用定时任务" data-book-page-rel-url="spring-boot-web/spring-boot-schedule.html" data-book-page-id="6827">Spring Boot 使用定时任务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-mail.html" title="Spring Boot 发送邮件" data-book-page-rel-url="spring-boot-web/spring-boot-mail.html" data-book-page-id="6828">Spring Boot 发送邮件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-shiro.html" title="Spring Boot 使用 Shiro" data-book-page-rel-url="spring-boot-web/spring-boot-shiro.html" data-book-page-id="6829">Spring Boot 使用 Shiro</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 和数据库" disabled data-book-page-rel-url="spring-boot-data/README.html" data-book-page-id="6830">Spring Boot 和数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-mybatis.html" title="Spring Boot 使用 Mybatis" data-book-page-rel-url="spring-boot-data/spring-boot-mybatis.html" data-book-page-id="6831">Spring Boot 使用 Mybatis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-multi-mybatis.html" title="Spring Boot 多数据源使用 Mybatis" data-book-page-rel-url="spring-boot-data/spring-boot-multi-mybatis.html" data-book-page-id="6832">Spring Boot 多数据源使用 Mybatis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-jpa.html" title="Spring Boot 使用 Jpa" data-book-page-rel-url="spring-boot-data/spring-boot-jpa.html" data-book-page-id="6833">Spring Boot 使用 Jpa</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-mongodb.html" title="Spring Boot 使用 MongoDB" data-book-page-rel-url="spring-boot-data/spring-boot-mongodb.html" data-book-page-id="6834">Spring Boot 使用 MongoDB</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 和中间件" disabled data-book-page-rel-url="middleware/README.html" data-book-page-id="6835">Spring Boot 和中间件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-redis.html" title="Spring Boot 使用 Redis" data-book-page-rel-url="middleware/spring-boot-redis.html" data-book-page-id="6836">Spring Boot 使用 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-rabbitmq.html" title="Spring Boot 使用 RabbitMQ" data-book-page-rel-url="middleware/spring-boot-rabbitmq.html" data-book-page-id="6837">Spring Boot 使用 RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-fastdfs.html" title="Spring Boot 使用 FastDFS" data-book-page-rel-url="middleware/spring-boot-fastdfs.html" data-book-page-id="6838">Spring Boot 使用 FastDFS</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="部署监控" disabled data-book-page-rel-url="depoly/depoly.html" data-book-page-id="6839">部署监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-deploy.html" title="Spring Boot 如何测试打包部署" data-book-page-rel-url="depoly/spring-boot-deploy.html" data-book-page-id="6840">Spring Boot 如何测试打包部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-actuator.html" title="Spring Boot Actuator 监控应用" data-book-page-rel-url="depoly/spring-boot-actuator.html" data-book-page-id="6841">Spring Boot Actuator 监控应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-admin.html" title="Spring Boot Admin 监控多个应用" data-book-page-rel-url="depoly/spring-boot-admin.html" data-book-page-id="6842">Spring Boot Admin 监控多个应用</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =87;var bookPageId =6832;var bookPageRelUrl ='spring-boot-data/spring-boot-multi-mybatis.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

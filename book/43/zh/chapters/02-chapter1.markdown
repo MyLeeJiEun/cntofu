@@ -1,0 +1,588 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>把 Vim 打造成源代码编辑器-C 语言编程透视</title>
+<meta content='把 Vim 打造成源代码编辑器,C 语言编程透视' name='keywords'>
+<meta content='把 Vim 打造成源代码编辑器,C 语言编程透视' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/43/zh/preface/01-chapter1.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">前言</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/43/zh/chapters/02-chapter2.markdown">
+<span class="">Gcc 编译的背后</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/43/index.html">C 语言编程透视</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-c-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="把-vim-打造成源代码编辑器">把 Vim 打造成源代码编辑器</h1>
+<ul>
+<li><a href="#toc_1212_1748_1">前言</a></li>
+<li><a href="#toc_1212_1748_2">常规操作</a></li>
+<li><a href="#toc_1212_1748_3">打开文件</a></li>
+<li><a href="#toc_1212_1748_4">编辑文件</a></li>
+<li><a href="#toc_1212_1748_5">保存文件</a></li>
+<li><a href="#toc_1212_1748_6">退出/关闭</a></li>
+<li><a href="#toc_1212_1748_7">命令模式</a></li>
+<li><a href="#toc_1212_1748_8">编码风格与 indent 命令</a></li>
+<li><a href="#toc_1212_1748_9">用 Vim 命令养成良好编码风格</a></li>
+<li><a href="#toc_1212_1748_10">相关小技巧</a></li>
+<li><a href="#toc_1212_1748_11">后记</a></li>
+<li><a href="#toc_1212_1748_12">参考资料</a></li>
+</ul>
+<p><span id="toc_1212_1748_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>程序开发过程中，源代码的编辑主要是为了实现算法，结果则是一些可阅读的、便于检错的、可移植的文本文件。如何产生一份良好的源代码，这不仅需要一些良好的编辑工具，还需要开发人员养成良好的编程修养。</p>
+<p>Linux 下有很多优秀的程序编辑工具，包括专业的文本编辑器和一些集成开发环境（IDE）提供的编辑工具，前者的代表作有 Vim 和 Emacs，后者的代表作则有 Eclipse，Kdevelop，Anjuta 等，这里主要介绍 Vim 的基本使用和配置。</p>
+<p><span id="toc_1212_1748_2"></span></p>
+<h2 id="常规操作">常规操作</h2>
+<p>通过 Vim 进行文本编辑的一般过程包括：文件的打开、编辑、保存、关闭/退出，而编辑则包括插入新内容、替换已有内容、查找内容，还包括复制、粘贴、删除等基本操作。</p>
+<p>该过程如下图：</p>
+<p><a href="https://img.cntofu.com/book/open-c-book/zh/chapters/pic/vim_basic_usage.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/open-c-book/zh/chapters/pic/vim_basic_usage.jpg" alt="Vim基本使用过程"></a></p>
+<p>下面介绍几个主要操作：</p>
+<p><span id="toc_1212_1748_3"></span></p>
+<h3 id="打开文件">打开文件</h3>
+<p>在命令行下输入 <code>vim 文件名</code> 即可打开一个新文件并进入 Vim 的“编辑模式”。</p>
+<p>编辑模式可以切换到命令模式（按下字符 <code>:</code>）和插入模式（按下字母 <code>a/A/i/I/o/O/s/S/c/C</code> 等或者 Insert 键）。</p>
+<p>编辑模式下，Vim 会把键盘输入解释成 Vim 的编辑命令，以便实现诸如字符串查找(按下字母 <code>/</code>)、文本复制（按下字母 <code>yy</code>）、粘贴（按下字母 <code>pp</code>）、删除（按下字母 <code>d</code> 等）、替换（<code>s</code>）等各种操作。</p>
+<p>当按下 <code>a/A/i/I/o/O/s/S/c/C</code> 等字符时，Vim 先执行这些字符对应命令的动作（比如移动光标到某个位置，删除某些字符），然后进入插入模式；进入插入模式后可以通过按下 ESC 键或者是 <code>CTRL+C</code> 返回到编辑模式。</p>
+<p>在编辑模式下输入冒号 <code>:</code> 后可进入命令模式，通过它可以完成一些复杂的编辑功能，比如进行正则表达式匹配替换，执行 Shell 命令（按下 <code>!</code> 命令）等。</p>
+<p>实际上，无论是插入模式还是命令模式都是编辑模式的一种。而编辑模式却并不止它们两个，还有字符串查找、删除、替换等。</p>
+<p>需要提到的是，如果在编辑模式按下字母 <code>v/V</code> 或者是 <code>CTRL+V</code>，可以用光标选择一个区块，进而结合命令模式对这一个区块进行特定的操作。</p>
+<p><span id="toc_1212_1748_4"></span></p>
+<h3 id="编辑文件">编辑文件</h3>
+<p>打开文件以后即可进入编辑模式，这时可以进行各种编辑操作，包括插入、复制、删除、替换字符。其中两种比较重要的模式经常被“独立”出来，即上面提到的插入模式和命令模式。</p>
+<p><span id="toc_1212_1748_5"></span></p>
+<h3 id="保存文件">保存文件</h3>
+<p>在退出之前需切换到命令模式，输入命令 <code>w</code> 以便保存各种编辑后的内容，如果想取消某种操作，可以用 <code>u</code> 命令。如果打开 Vim 编辑器时没有设定文件名，那么在按下 <code>w</code> 命令时会提示没有文件名，此时需要在 <code>w</code> 命令后加上需要保存的文件名。</p>
+<p><span id="toc_1212_1748_6"></span></p>
+<h3 id="退出关闭">退出/关闭</h3>
+<p>保存好内容后就可退出，只需在命令模式下键入字符 <code>q</code>。如果对文件内容进行了编辑，却没有保存，那么 Vim 会提示，如果不想保存之前的编辑动作，那么可按下字符 <code>q</code> 并且在之后跟上一个感叹号<code>!</code>，这样会强制退出，不保存最近的内容变更。</p>
+<p><span id="toc_1212_1748_7"></span></p>
+<h2 id="命令模式">命令模式</h2>
+<p>这里需要着重提到的是 Vim 的命令模式，它是 Vim 扩展各种新功能的接口，用户可以通过它启用和撤销某个功能，开发人员则可通过它为用户提供新的功能。下面主要介绍通过命令模式这个接口定制 Vim 以便我们更好地进行源代码的编辑。</p>
+<p><span id="toc_1212_1748_8"></span></p>
+<h3 id="编码风格与-indent-命令">编码风格与 indent 命令</h3>
+<p>先提一下编码风格。刚学习编程时，代码写得很“难看”（不方便阅读，不方便检错，看不出任何逻辑结构），常常导致心情不好，而且排错也很困难，所以逐渐意识到代码编写需要规范，即养成良好的编码风格，如果换成俗话，那就是代码的排版，让代码好看一些。虽说“编程的“（高雅一些则称开发人员）不一定懂艺术，不过这个应该不是“搞艺术的”（高雅一些应该是文艺工作人员）的特权，而是我们应该具备的专业素养。在 Linux 下，比较流行的“行业”风格有 KR 的编码风格、GNU 的编码风格、Linux 内核的编码风格（基于 KR 的，缩进是 8 个空格）等，它们都可以通过 <code>indent</code> 命令格式化，对应的选项分别是<code>-kr</code>，<code>-gnu</code>，<code>-kr -i8</code>。下面演示用 <code>indent</code> 命令把代码格式化成上面的三种风格。</p>
+<p>这样糟糕的编码风格看着会让人想“哭”，太难阅读啦：</p>
+<pre><code>$ cat &gt; test.c
+/* test.c -- a test program for using indent */
+#include&lt;stdio.h&gt;
+
+int main(int argc, char *argv[])
+{
+ int i=0;
+ if (i != 0) {i++; }
+ else {i--; };
+ for(i=0;i&lt;5;i++)j++;
+ printf("i=%d,j=%d\n",i,j);
+
+ return 0;
+}
+</code></pre>
+<p>格式化成 KR 风格，好看多了：</p>
+<pre><code>$ indent -kr test.c
+$ cat test.c
+/* test.c -- a test program for using indent */
+#include&lt;stdio.h&gt;
+
+int main(int argc, char *argv[])
+{
+    int i = 0;
+    if (i != 0) {
+        i++;
+    } else {
+        i--;
+    };
+    for (i = 0; i &lt; 5; i++)
+        j++;
+    printf("i=%d,j=%d\n", i, j);
+    return 0;
+}
+</code></pre>
+<p>采用 GNU 风格，感觉不如 KR 的风格，处理 <code>if</code> 语句时增加了代码行，却并没明显改进效果：</p>
+<pre><code>$ indent -gnu test.c
+$ cat test.c
+/* test.c -- a test program for using indent */
+#include&lt;stdio.h&gt;
+
+int
+main (int argc, char *argv[])
+{
+  int i = 0;
+  if (i != 0)
+    {
+      i++;
+    }
+  else
+    {
+      i--;
+    };
+  for (i = 0; i &lt; 5; i++)
+    j++;
+  printf ("i=%d,j=%d\n", i, j);
+  return 0;
+}
+</code></pre>
+<p>实际上 <code>indent</code> 命令有时候会不靠谱，也不建议“先污染再治理”，而是从一开始就坚持“可持续发展”的观念，在写代码时就逐步养成良好的风格。</p>
+<p>需要提到地是，Linux 的编码风格描述文件为内核源码下的 <a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/plain/Documentation/CodingStyle">Documentation/CodingStyle</a>，而相应命令为 <a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/plain/scripts/Lindent">scripts/Lindent</a>。</p>
+<p><span id="toc_1212_1748_9"></span></p>
+<h3 id="用-vim-命令养成良好编码风格">用 Vim 命令养成良好编码风格</h3>
+<p>从演示中可看出编码风格真地很重要，但是如何养成良好的编码风格呢？经常练习，遵守某个编码风格，一如既往。不过这还不够，如果没有一个好编辑器，习惯也很难养成。而 Vim 提供了很多辅助我们养成良好编码习惯的功能，这些都通过它的命令模式提供。现在分开介绍几个功能；</p>
+<table>
+<thead>
+<tr>
+<th>Vim 命令</th>
+<th>功效</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:syntax on</code></td>
+<td>语法加“靓”（亮）</td>
+</tr>
+<tr>
+<td><code>:syntax off</code></td>
+<td>语法不加“靓”（亮）</td>
+</tr>
+<tr>
+<td><code>:set cindent</code></td>
+<td>C 语言自动缩进（可简写为<code>set cin</code>）</td>
+</tr>
+<tr>
+<td><code>:set sw=8</code></td>
+<td>自动缩进宽度（需要<code>set cin</code>才有用）</td>
+</tr>
+<tr>
+<td><code>:set ts=8</code></td>
+<td>设定 TAB 宽度</td>
+</tr>
+<tr>
+<td><code>:set number</code></td>
+<td>显示行号</td>
+</tr>
+<tr>
+<td><code>:set nonumber</code></td>
+<td>不显示行号</td>
+</tr>
+<tr>
+<td><code>:setsm</code></td>
+<td>括号自动匹配</td>
+</tr>
+</tbody>
+</table>
+<p>这几个命令对代码编写来说非常有用，可以考虑把它们全部写到 <code>~/.vimrc</code> 文件（Vim 启动时会去加载这个文件里头的内容）中，如：</p>
+<pre><code>$ cat ~/.vimrc
+:set number
+:set sw=8
+:set ts=8
+:set sm
+:set cin
+:syntax on
+</code></pre>
+<p><span id="toc_1212_1748_10"></span></p>
+<h2 id="相关小技巧">相关小技巧</h2>
+<p>需要补充的几个技巧有；</p>
+<ul>
+<li> <p>对注释自动断行</p>
+<ul>
+<li>在编辑模式下，可通过 <code>gqap</code> 命令对注释自动断行（每行字符个数可通过命令模式下的 <code>set textwidth=个数</code> 设定）</li>
+</ul> </li>
+<li> <p>跳到指定行</p>
+<ul>
+<li>命令模式下输入数字可以直接跳到指定行，也可在打开文件时用<code>vim +数字 文件名</code>实现相同的功能。</li>
+</ul> </li>
+<li> <p>把 C 语言输出为 html</p>
+<ul>
+<li>命令模式下的<code>TOhtml</code>命令可把 C 语言输出为 html 文件，结合 <code>syntax on</code>，可产生比较好的网页把代码发布出去。</li>
+</ul> </li>
+<li> <p>注释掉代码块</p>
+<ul>
+<li>先切换到可视模式（编辑模式下按字母 <code>v</code> 可切换过来），用光标选中一片代码，然后通过命令模式下的命令 <code>s#^#//#g</code> 把某这片代码注释掉，这非常方便调试某一片代码的功能。</li>
+</ul> </li>
+<li> <p>切换到粘贴模式解决 Insert 模式自动缩进的问题</p>
+<ul>
+<li>命令模式下的 <code>set paste</code> 可解决复制本来已有缩进的代码的自动缩进问题，后可执行 <code>set nopaste</code> 恢复自动缩进。</li>
+</ul> </li>
+<li> <p>使用 Vim 最新特性</p>
+<ul>
+<li>为了使用最新的 Vim 特性，可用 <code>set nocp</code> 取消与老版本的 Vi 的兼容。</li>
+</ul> </li>
+<li> <p>全局替换某个变量名</p>
+<ul>
+<li>如发现变量命名不好，想在整个代码中修改，可在命令模式下用 <code>%s#old_variable#new_variable#g</code> 全局替换。替换的时注意变量名是其他变量一部分的情况。如果希望将变量"abc"全部替换成"xyz"又不希望把"abcd"错误替换成"xyzd",则可以在查找时指定边界:<code>%s#\&lt;old_variable\&gt;#new_variable#g</code>。</li>
+</ul> </li>
+<li> <p>把缩进和 TAB 键都替换为空格</p>
+<ul>
+<li>可考虑设置 <code>expandtab</code>，即 <code>set et</code>，如果要把以前编写的代码中的缩进和 TAB 键都替换掉，可以用 <code>retab</code>。</li>
+</ul> </li>
+<li> <p>关键字自动补全</p>
+<ul>
+<li>输入一部分字符后，按下 <code>CTRL+P</code> 或者 <code>CTRL+N</code> 即可。比如先输入 <code>prin</code>，然后按下 <code>CTRL+P/N</code> 就可以补全了。</li>
+</ul> </li>
+<li> <p>在编辑模式下查看手册</p>
+<ul>
+<li>可把光标定位在某个函数，按下 <code>Shift+k</code> 就可以调出 <code>man</code>，很有用。</li>
+</ul> </li>
+<li> <p>删除空行</p>
+<ul>
+<li>在命令模式下输入 <code>g/^$/d</code>，前面 <code>g</code> 命令是扩展到全局，中间是匹配空行，后面 <code>d</code> 命令是执行删除动作。用替换也可以实现，键入 <code>%s#^\n##g</code>，意思是把所有以换行开头的行全部替换为空。类似地，如果要把多个空行转换为一个可以输入 <code>g/^\n$/d</code> 或者 <code>%s#^\n$##g</code>。</li>
+</ul> </li>
+<li> <p>创建与使用代码交叉引用</p>
+<ul>
+<li>注意利用一些有用的插件，比如 <code>ctags</code>, <code>cscope</code> 等，可以提高代码阅读、分析的效率。特别是开放的软件。</li>
+</ul> </li>
+<li> <p>回到原位置</p>
+<ul>
+<li>在用 <code>ctags</code> 或 <code>cscope</code> 时，当找到某个标记后，又想回到原位置，可按下 <code>CTRL+T</code>。</li>
+</ul> </li>
+</ul>
+<p>这里特别提到 <code>cscope</code>，为了加速代码的阅读，还可以类似上面在 <code>~/.vimrc</code> 文件中通过 <code>map</code> 命令预定义一些快捷方式，例如：</p>
+<pre><code>if has("cscope")
+          set csprg=/usr/bin/cscope
+          set csto=0
+          set cst
+          set nocsverb
+          " add any database in current directory
+          if filereadable("cscope.out")
+            cs add cscope.out
+          " else add database pointed to by environment
+          elseif $CSCOPE_DB != ""
+            cs add $CSCOPE_DB
+          endif
+          set csverb
+:map \ :cs find g &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+:map s :cs find s &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+:map t :cs find t &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+:map c :cs find c &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+:map C :cs find d &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+:map f :cs find f &lt;C-R&gt;=expand("&lt;cword&gt;")&lt;CR&gt;&lt;CR&gt;
+endif
+</code></pre>
+<p>因为 <code>s,t,c,C,f</code> 这几个 Vim 的默认快捷键用得不太多，所以就把它们给作为快捷方式映射了，如果已经习惯它们作为其他的快捷方式就换别的字符吧。</p>
+<p><strong>注</strong> 上面很多技巧中用到了正则表达式，关于这部分请参考：<a href="http://deerchao.net/tutorials/regex/regex.htm">正则表达式 30 分钟入门教程</a>。</p>
+<p>更多的技巧可以看看后续资料。</p>
+<p><span id="toc_1212_1748_11"></span></p>
+<h2 id="后记">后记</h2>
+<p>实际上，在源代码编写时还有很多需要培养的“素质”，例如源文件的开头注释、函数的注释，变量的命名等。这方面建议看看参考资料里的编程修养、内核编码风格、网络上流传的《华为编程规范》，以及《<a href="https://en.wikipedia.org/wiki/C_Traps_and_Pitfalls">C Traps &amp; Pitfalls</a>》, 《<a href="http://c-faq.com/">C-FAQ</a>》等。</p>
+<p><span id="toc_1212_1748_12"></span></p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li>Vim 官方教程，在命令行下键入 vimtutor 即可</li>
+<li>vim 实用技术序列
+<ul>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-tip-vim1/">实用技巧</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-tip-vim2/">常用插件</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-tip-vim3/">定制 Vim</a></li>
+</ul> </li>
+<li><a href="http://www.viemu.com/a_vi_vim_graphical_cheat_sheet_tutorial.html">Graphical vi-vim Cheat Sheet and Tutorial</a></li>
+<li><a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/plain/Documentation/CodingStyle">Documentation/CodingStyle</a></li>
+<li><a href="https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/plain/scripts/Lindent">scripts/Lindent</a>。</li>
+<li><a href="http://deerchao.net/tutorials/regex/regex.htm">正则表达式 30 分钟入门教程</a></li>
+<li><a href="http://www.tinylab.org/talk-about-c-language-programming-style/">也谈 C 语言编程风格：完成从程序员到工程师的蜕变</a></li>
+<li>Vim 高级命令集锦</li>
+<li>编程修养</li>
+<li>C Traps &amp; Pitfalls</li>
+<li>C FAQ</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/102/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/102/index.html">C 语言进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">32页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/193/index.html">
+<img class="uk-book-cover" src="/static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/193/index.html">Pixi教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/109.html">Zainking</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2020年5月17日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/45/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/59/index.html">
+<img class="uk-book-cover" src="/static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/59/index.html">TensorFlow 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/35.html">jikexueyuanwiki</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8767个">8767</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/56/index.html">
+<img class="uk-book-cover" src="/static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/56/index.html">神经网络与深度学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/32.html">tigerneil</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 239个">239</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/43/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2868">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2869">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2870">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter1.markdown" title="把 Vim 打造成源代码编辑器" data-book-page-rel-url="zh/chapters/02-chapter1.markdown" data-book-page-id="2871">把 Vim 打造成源代码编辑器</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter2.markdown" title="Gcc 编译的背后" data-book-page-rel-url="zh/chapters/02-chapter2.markdown" data-book-page-id="2872">Gcc 编译的背后</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter3.markdown" title="程序执行的一刹那" data-book-page-rel-url="zh/chapters/02-chapter3.markdown" data-book-page-id="2873">程序执行的一刹那</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter4.markdown" title="动态符号链接的细节" data-book-page-rel-url="zh/chapters/02-chapter4.markdown" data-book-page-id="2874">动态符号链接的细节</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter5.markdown" title="缓冲区溢出与注入分析" data-book-page-rel-url="zh/chapters/02-chapter5.markdown" data-book-page-id="2875">缓冲区溢出与注入分析</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter6.markdown" title="进程的内存映像" data-book-page-rel-url="zh/chapters/02-chapter6.markdown" data-book-page-id="2876">进程的内存映像</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter7.markdown" title="进程和进程的基本操作" data-book-page-rel-url="zh/chapters/02-chapter7.markdown" data-book-page-id="2877">进程和进程的基本操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter8.markdown" title="打造史上最小可执行ELF文件(45字节)" data-book-page-rel-url="zh/chapters/02-chapter8.markdown" data-book-page-id="2878">打造史上最小可执行ELF文件(45字节)</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter9.markdown" title="代码测试、调试与优化" data-book-page-rel-url="zh/chapters/02-chapter9.markdown" data-book-page-id="2879">代码测试、调试与优化</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =43;var bookPageId =2871;var bookPageRelUrl ='zh/chapters/02-chapter1.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,851 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Linux 内核如何运行程序-Linux 内核揭密</title>
+<meta content='Linux 内核如何运行程序,Linux 内核揭密' name='keywords'>
+<meta content='Linux 内核如何运行程序,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/SysCall/syscall-3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">vsyscall an..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Timers/README.html">
+<span class="">定时器和时钟管理</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="system-calls-in-the-linux-kernel-part-4">System calls in the Linux kernel. Part 4.</h1>
+<h2 id="how-does-the-linux-kernel-run-a-program">How does the Linux kernel run a program</h2>
+<p>This is the fourth part of the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/index.html">chapter</a> that describes <a href="https://en.wikipedia.org/wiki/System_call">system calls</a> in the Linux kernel and as I wrote in the conclusion of the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-3.html">previous</a> - this part will be last in this chapter. In the previous part we stopped at the two new concepts:</p>
+<ul>
+<li><code>vsyscall</code>;</li>
+<li><code>vDSO</code>;</li>
+</ul>
+<p>that are related and very similar on system call concept.</p>
+<p>This part will be last part in this chapter and as you can understand from the part's title - we will see what does occur in the Linux kernel when we run our programs. So, let's start.</p>
+<h2 id="how-do-we-launch-our-programs">how do we launch our programs?</h2>
+<p>There are many different ways to launch an application from an user perspective. For example we can run a program from the <a href="https://en.wikipedia.org/wiki/Unix_shell">shell</a> or double-click on the application icon. It does not matter. The Linux kernel handles application launch regardless how we do launch this application.</p>
+<p>In this part we will consider the way when we just launch an application from the shell. As you know, the standard way to launch an application from shell is the following: We just launch a <a href="https://en.wikipedia.org/wiki/Terminal_emulator">terminal emulator</a> application and just write the name of the program and pass or not arguments to our program, for example:</p>
+<p><a href="http://s14.postimg.org/d6jgidc7l/Screenshot_from_2015_09_07_17_31_55.png" data-uk-lightbox><img src="http://s14.postimg.org/d6jgidc7l/Screenshot_from_2015_09_07_17_31_55.png" alt="ls shell"></a></p>
+<p>Let's consider what does occur when we launch an application from the shell, what does shell do when we write program name, what does Linux kernel do etc. But before we will start to consider these interesting things, I want to warn that this book is about the Linux kernel. That's why we will see Linux kernel insides related stuff mostly in this part. We will not consider in details what does shell do, we will not consider complex cases, for example subshells etc.</p>
+<p>My default shell is - <a href="https://en.wikipedia.org/wiki/Bash_%28Unix_shell%29">bash</a>, so I will consider how do bash shell launches a program. So let's start. The <code>bash</code> shell as well as any program that written with <a href="https://en.wikipedia.org/wiki/C_%28programming_language%29">C</a> programming language starts from the <a href="https://en.wikipedia.org/wiki/Entry_point">main</a> function. If you will look on the source code of the <code>bash</code> shell, you will find the <code>main</code> function in the <a href="https://github.com/bminor/bash/blob/master/shell.c#L357">shell.c</a> source code file. This function makes many different things before the main thread loop of the <code>bash</code> started to work. For example this function:</p>
+<ul>
+<li>checks and tries to open <code>/dev/tty</code>;</li>
+<li>check that shell running in debug mode;</li>
+<li>parses command line arguments;</li>
+<li>reads shell environment;</li>
+<li>loads <code>.bashrc</code>, <code>.profile</code> and other configuration files;</li>
+<li>and many many more.</li>
+</ul>
+<p>After all of these operations we can see the call of the <code>reader_loop</code> function. This function defined in the <a href="https://github.com/bminor/bash/blob/master/eval.c#L67">eval.c</a> source code file and represents main thread loop or in other words it reads and executes commands. As the <code>reader_loop</code> function made all checks and read the given program name and arguments, it calls the <code>execute_command</code> function from the <a href="https://github.com/bminor/bash/blob/master/execute_cmd.c#L378">execute_cmd.c</a> source code file. The <code>execute_command</code> function through the chain of the functions calls:</p>
+<pre><code>execute_command
+--&gt; execute_command_internal
+----&gt; execute_simple_command
+------&gt; execute_disk_command
+--------&gt; shell_execve
+</code></pre>
+<p>makes different checks like do we need to start <code>subshell</code>, was it builtin <code>bash</code> function or not etc. As I already wrote above, we will not consider all details about things that are not related to the Linux kernel. In the end of this process, the <code>shell_execve</code> function calls the <code>execve</code> system call:</p>
+<pre><code class="language-C">execve (command, args, env);
+</code></pre>
+<p>The <code>execve</code> system call has the following signature:</p>
+<pre><code>int execve(const char *filename, char *const argv [], char *const envp[]);   
+</code></pre>
+<p>and executes a program by the given filename, with the given arguments and <a href="https://en.wikipedia.org/wiki/Environment_variable">environment variables</a>. This system call is the first in our case and only, for example:</p>
+<pre><code>$ strace ls
+execve("../../../bin/ls", ["ls"], [/* 62 vars */]) = 0
+
+$ strace echo
+execve("../../../bin/echo", ["echo"], [/* 62 vars */]) = 0
+
+$ strace uname
+execve("../../../bin/uname", ["uname"], [/* 62 vars */]) = 0
+</code></pre>
+<p>So, an user application (<code>bash</code> in our case) calls the system call and as we already know the next step is Linux kernel.</p>
+<h2 id="execve-system-call">execve system call</h2>
+<p>We saw preparation before a system call called by an user application and after a system call handler finished its work in the second <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-2.html">part</a> of this chapter. We stopped at the call of the <code>execve</code> system call in the previous paragraph. This system call defined in the <a href="https://github.com/torvalds/linux/blob/master/fs/exec.c">fs/exec.c</a> source code file and as we already know it takes three arguments:</p>
+<pre><code>SYSCALL_DEFINE3(execve,
+		const char __user *, filename,
+		const char __user *const __user *, argv,
+		const char __user *const __user *, envp)
+{
+	return do_execve(getname(filename), argv, envp);
+}
+</code></pre>
+<p>Implementation of the <code>execve</code> is pretty simple here, as we can see it just returns the result of the <code>do_execve</code> function. The <code>do_execve</code> function defined in the same source code file and do the following things:</p>
+<ul>
+<li>Initialize two pointers on a userspace data with the given arguments and environment variables;</li>
+<li>return the result of the <code>do_execveat_common</code>.</li>
+</ul>
+<p>We can see its implementation:</p>
+<pre><code class="language-C">struct user_arg_ptr argv = { .ptr.native = __argv };
+struct user_arg_ptr envp = { .ptr.native = __envp };
+return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+</code></pre>
+<p>The <code>do_execveat_common</code> function does main work - it executes a new program. This function takes similar set of arguments, but as you can see it takes five arguments instead of three. The first argument is the file descriptor that represent directory with our application, in our case the <code>AT_FDCWD</code> means that the given pathname is interpreted relative to the current working directory of the calling process. The fifth argument is flags. In our case we passed <code>0</code> to the <code>do_execveat_common</code>. We will check in a next step, so will see it latter.</p>
+<p>First of all the <code>do_execveat_common</code> function checks the <code>filename</code> pointer and returns if it is <code>NULL</code>. After this we check flags of the current process that limit of running processes is not exceed:</p>
+<pre><code class="language-C">if (IS_ERR(filename))
+	return PTR_ERR(filename);
+
+if ((current-&gt;flags &amp; PF_NPROC_EXCEEDED) &amp;&amp;
+	atomic_read(&amp;current_user()-&gt;processes) &gt; rlimit(RLIMIT_NPROC)) {
+	retval = -EAGAIN;
+	goto out_ret;
+}
+
+current-&gt;flags &amp;= ~PF_NPROC_EXCEEDED;
+</code></pre>
+<p>If these two checks were successful we unset <code>PF_NPROC_EXCEEDED</code> flag in the flags of the current process to prevent fail of the <code>execve</code>. You can see that in the next step we call the <code>unshare_files</code> function that defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/fork.c">kernel/fork.c</a> and unshares the files of the current task and check the result of this function:</p>
+<pre><code class="language-C">retval = unshare_files(&amp;displaced);
+if (retval)
+	goto out_ret;
+</code></pre>
+<p>We need to call this function to eliminate potential leak of the execve'd binary's <a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a>. In the next step we start preparation of the <code>bprm</code> that represented by the <code>struct linux_binprm</code> structure (defined in the <a href="https://github.com/torvalds/linux/blob/master/linux/binfmts.h">include/linux/binfmts.h</a> header file). The <code>linux_binprm</code> structure is used to hold the arguments that are used when loading binaries. For example it contains <code>vma</code> field which has <code>vm_area_struct</code> type and represents single memory area over a contiguous interval in a given address space where our application will be loaded, <code>mm</code> field which is memory descriptor of the binary, pointer to the top of memory and many other different fields.</p>
+<p>First of all we allocate memory for this structure with the <code>kzalloc</code> function and check the result of the allocation:</p>
+<pre><code class="language-C">bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
+if (!bprm)
+	goto out_files;
+</code></pre>
+<p>After this we start to prepare the <code>binprm</code> credentials with the call of the <code>prepare_bprm_creds</code> function:</p>
+<pre><code class="language-C">retval = prepare_bprm_creds(bprm);
+	if (retval)
+		goto out_free;
+
+check_unsafe_exec(bprm);
+current-&gt;in_execve = 1;
+</code></pre>
+<p>Initialization of the <code>binprm</code> credentials in other words is initialization of the <code>cred</code> structure that stored inside of the <code>linux_binprm</code> structure. The <code>cred</code> structure contains the security context of a task for example <a href="https://en.wikipedia.org/wiki/User_identifier#Real_user_ID">real uid</a> of the task, real <a href="https://en.wikipedia.org/wiki/Globally_unique_identifier">guid</a> of the task, <code>uid</code> and <code>guid</code> for the <a href="https://en.wikipedia.org/wiki/Virtual_file_system">virtual file system</a> operations etc. In the next step as we executed preparation of the <code>bprm</code> credentials we check that now we can safely execute a program with the call of the <code>check_unsafe_exec</code> function and set the current process to the <code>in_execve</code> state.</p>
+<p>After all of these operations we call the <code>do_open_execat</code> function that checks the flags that we passed to the <code>do_execveat_common</code> function (remember that we have <code>0</code> in the <code>flags</code>) and searches and opens executable file on disk, checks that our we will load a binary file from <code>noexec</code> mount points (we need to avoid execute a binary from filesystems that do not contain executable binaries like <a href="https://en.wikipedia.org/wiki/Procfs">proc</a> or <a href="https://en.wikipedia.org/wiki/Sysfs">sysfs</a>), intializes <code>file</code> structure and returns pointer on this structure. Next we can see the call the <code>sched_exec</code> after this:</p>
+<pre><code class="language-C">file = do_open_execat(fd, filename, flags);
+retval = PTR_ERR(file);
+if (IS_ERR(file))
+	goto out_unmark;
+
+sched_exec();
+</code></pre>
+<p>The <code>sched_exec</code> function is used to determine the least loaded processor that can execute the new program and to migrate the current process to it.</p>
+<p>After this we need to check <a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a> of the give executable binary. We try to check does the name of the our binary file starts from the <code>/</code> symbol or does the path of the given executable binary is interpreted relative to the current working directory of the calling process or in other words file descriptor is <code>AT_FDCWD</code> (read above about this).</p>
+<p>If one of these checks is successfull we set the binary parameter filename:</p>
+<pre><code class="language-C">bprm-&gt;file = file;
+
+if (fd == AT_FDCWD || filename-&gt;name[0] == '/') {
+	bprm-&gt;filename = filename-&gt;name;
+}
+</code></pre>
+<p>Otherwise if the filename is empty we set the binary parameter filename to the <code>/dev/fd/%d</code> or <code>/dev/fd/%d/%s</code> depends on the filename of the given executable binary which means that we will execute the file to which the file descriptor refers:</p>
+<pre><code class="language-C">} else {
+	if (filename-&gt;name[0] == '\0')
+		pathbuf = kasprintf(GFP_TEMPORARY, "../../../dev/fd/%d", fd);
+	else
+		pathbuf = kasprintf(GFP_TEMPORARY, "../../../dev/fd/%d/%s",
+		                    fd, filename-&gt;name);
+	if (!pathbuf) {
+		retval = -ENOMEM;
+		goto out_unmark;
+	}
+
+	bprm-&gt;filename = pathbuf;
+}
+
+bprm-&gt;interp = bprm-&gt;filename;
+</code></pre>
+<p>Note that we set not only the <code>bprm-&gt;filename</code> but also <code>bprm-&gt;interp</code> that will contain name of the program interpreter. For now we just write the same name there, but later it will be updated with the real name of the program interpreter depends on binary format of a program. You can read above that we already prepared <code>cred</code> for the <code>linux_binprm</code>. The next step is initalization of other fields of the <code>linux_binprm</code>. First of all we call the <code>bprm_mm_init</code> function and pass the <code>bprm</code> to it:</p>
+<pre><code class="language-C">retval = bprm_mm_init(bprm);
+if (retval)
+	goto out_unmark;
+</code></pre>
+<p>The <code>bprm_mm_init</code> defined in the same source code file and as we can understand from the function's name, it makes initialization of the memory descriptor or in other words the <code>bprm_mm_init</code> function initializes <code>mm_struct</code> structure. This structure defined in the <a href="https://github.com/torvalds/linux/blob/master/include/mm_types.h">include/linux/mm_types.h</a> header file and represents address space of a process. We will not consider implementation of the <code>bprm_mm_init</code> function because we do not know many important stuff related to the Linux kernel memory manager, but we just need to know that this function initializes <code>mm_struct</code> and populate it with a temporary stack <code>vm_area_struct</code>.</p>
+<p>After this we calculate the count of the command line arguments which are were passed to the our executable binary, the count of the environment variables and set it to the <code>bprm-&gt;argc</code> and <code>bprm-&gt;envc</code> respectively:</p>
+<pre><code class="language-C">bprm-&gt;argc = count(argv, MAX_ARG_STRINGS);
+if ((retval = bprm-&gt;argc) &lt; 0)
+	goto out;
+
+bprm-&gt;envc = count(envp, MAX_ARG_STRINGS);
+if ((retval = bprm-&gt;envc) &lt; 0)
+	goto out;
+</code></pre>
+<p>As you can see we do this operations with the help of the <code>count</code> function that defined in the <a href="https://github.com/torvalds/linux/blob/master/fs/exec.c">same</a> source code file and calculates the count of strings in the <code>argv</code> array. The <code>MAX_ARG_STRINGS</code> macro defined in the <a href="https://github.com/torvalds/linux/blob/master/include/uapi/linux/binfmts.h">include/uapi/linux/binfmts.h</a> header file and as we can understand from the macro's name, it represents maximum number of strings that were passed to the <code>execve</code> system call. The value of the <code>MAX_ARG_STRINGS</code>:</p>
+<pre><code class="language-C">#define MAX_ARG_STRINGS 0x7FFFFFFF
+</code></pre>
+<p>After we calculated the number of the command line arguments and environment variables, we call the <code>prepare_binprm</code> function. We already call the function with the similar name before this moment. This function is called <code>prepare_binprm_cred</code> and we remember that this function initializes <code>cred</code> structure in the <code>linux_bprm</code>. Now the <code>prepare_binprm</code> function:</p>
+<pre><code class="language-C">retval = prepare_binprm(bprm);
+if (retval &lt; 0)
+	goto out;
+</code></pre>
+<p>fills the <code>linux_binprm</code> structure with the <code>uid</code> from <a href="https://en.wikipedia.org/wiki/Inode">inode</a> and read <code>128</code> bytes from the binary executable file. We read only first <code>128</code> from the executable file because we need to check a type of our executable. We will read the rest of the executable file in the later step. After the preparation of the <code>linux_bprm</code> structure we copy the filename of the executable binary file, command line arguments and enviroment variables to the <code>linux_bprm</code> with the call of the <code>copy_strings_kernel</code> function:</p>
+<pre><code class="language-C">retval = copy_strings_kernel(1, &amp;bprm-&gt;filename, bprm);
+if (retval &lt; 0)
+	goto out;
+
+retval = copy_strings(bprm-&gt;envc, envp, bprm);
+if (retval &lt; 0)
+	goto out;
+
+retval = copy_strings(bprm-&gt;argc, argv, bprm);
+if (retval &lt; 0)
+	goto out;
+</code></pre>
+<p>And set the pointer to the top of new program's stack that we set in the <code>bprm_mm_init</code> function:</p>
+<pre><code class="language-C">bprm-&gt;exec = bprm-&gt;p;
+</code></pre>
+<p>The top of the stack will contain the program filename and we store this fileneme tothe <code>exec</code> field of the <code>linux_bprm</code> structure.</p>
+<p>Now we have filled <code>linux_bprm</code> structure, we call the <code>exec_binprm</code> function:</p>
+<pre><code class="language-C">retval = exec_binprm(bprm);
+if (retval &lt; 0)
+	goto out;
+</code></pre>
+<p>First of all we store the <a href="https://en.wikipedia.org/wiki/Process_identifier">pid</a> and <code>pid</code> that seen from the <a href="https://en.wikipedia.org/wiki/Cgroups">namespace</a> of the current task in the <code>exec_binprm</code>:</p>
+<pre><code class="language-C">old_pid = current-&gt;pid;
+rcu_read_lock();
+old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current-&gt;parent));
+rcu_read_unlock();
+</code></pre>
+<p>and call the:</p>
+<pre><code class="language-C">search_binary_handler(bprm);
+</code></pre>
+<p>function. This function goes through the list of handlers that contains different binary formats. Currently the Linux kernel supports following binary formats:</p>
+<ul>
+<li><code>binfmt_script</code> - support for interpreted scripts that are starts from the <a href="https://en.wikipedia.org/wiki/Shebang_%28Unix%29">#!</a> line;</li>
+<li><code>binfmt_misc</code> - support differnt binary formats, according to runtime configuration of the Linux kernel;</li>
+<li><code>binfmt_elf</code> - support <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">elf</a> format;</li>
+<li><code>binfmt_aout</code> - support <a href="https://en.wikipedia.org/wiki/A.out">a.out</a> format;</li>
+<li><code>binfmt_flat</code> - support for <a href="https://en.wikipedia.org/wiki/Binary_file#Structure">flat</a> format;</li>
+<li><code>binfmt_elf_fdpic</code> - Support for <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">elf</a> <a href="http://elinux.org/UClinux_Shared_Library#FDPIC_ELF">FDPIC</a> binaries;</li>
+<li><code>binfmt_em86</code> - support for Intel <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">elf</a> binaries running on <a href="https://en.wikipedia.org/wiki/DEC_Alpha">Alpha</a> machines.</li>
+</ul>
+<p>So, the search-binary_handler tries to call the <code>load_binary</code> function and pass <code>linux_binprm</code> to it. If the binary handler supports the given executable file format, it starts to prepare the executable binary for execution:</p>
+<pre><code class="language-C">int search_binary_handler(struct linux_binprm *bprm)
+{
+	...
+	...
+	...
+	list_for_each_entry(fmt, &amp;formats, lh) {
+		retval = fmt-&gt;load_binary(bprm);
+		if (retval &lt; 0 &amp;&amp; !bprm-&gt;mm) {
+			force_sigsegv(SIGSEGV, current);
+			return retval;
+		}
+	}
+	
+	return retval;	
+</code></pre>
+<p>Where the <code>load_binary</code> for example for the <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">elf</a> checks the magic number (each <code>elf</code> binary file contains magic number in the header) in the <code>linux_bprm</code> buffer (remember that we read first <code>128</code> bytes from the executable binary file): and exit if it is not <code>elf</code> binary:</p>
+<pre><code class="language-C">static int load_elf_binary(struct linux_binprm *bprm)
+{
+	...
+	...
+	...
+	loc-&gt;elf_ex = *((struct elfhdr *)bprm-&gt;buf);
+
+	if (memcmp(elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
+		goto out;
+</code></pre>
+<p>If the given executable file is in <code>elf</code> format, the <code>load_elf_binary</code> continues to execute. The <code>load_elf_binary</code> does many different things to prepare on execution executable file. For example it checks the architecture and type of the executable file:</p>
+<pre><code class="language-C">if (loc-&gt;elf_ex.e_type != ET_EXEC &amp;&amp; loc-&gt;elf_ex.e_type != ET_DYN)
+	goto out;
+if (!elf_check_arch(&amp;loc-&gt;elf_ex))
+	goto out;
+</code></pre>
+<p>and exit if there is wrong architecture and executable file non executable non shared. Tries to load the <code>program header table</code>:</p>
+<pre><code class="language-C">elf_phdata = load_elf_phdrs(&amp;loc-&gt;elf_ex, bprm-&gt;file);
+if (!elf_phdata)
+	goto out;
+</code></pre>
+<p>that describes <a href="https://en.wikipedia.org/wiki/Memory_segmentation">segments</a>. Read the <code>program interpreter</code> and libraries that linked with the our executable binary file from disk and load it to memory. The <code>program interpreter</code> specified in the <code>.interp</code> section of the executable file and as you can read in the part that describes <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Misc/linkers.html">Linkers</a> it is - <code>/lib64/ld-linux-x86-64.so.2</code> for the <code>x86_64</code>. It setups the stack and map <code>elf</code> binary into the correct location in memory. It maps the <a href="https://en.wikipedia.org/wiki/.bss">bss</a> and the <a href="http://man7.org/linux/man-pages/man2/sbrk.2.html">brk</a> sections and does many many other different things to prepare executable file to execute.</p>
+<p>In the end of the execution of the <code>load_elf_binary</code> we call the <code>start_thread</code> function and pass three arguments to it:</p>
+<pre><code class="language-C">	start_thread(regs, elf_entry, bprm-&gt;p);
+	retval = 0;
+out:
+	kfree(loc);
+out_ret:
+	return retval;
+</code></pre>
+<p>These arguments are:</p>
+<ul>
+<li>Set of <a href="https://en.wikipedia.org/wiki/Processor_register">registers</a> for the new task;</li>
+<li>Address of the entry point of the new task;</li>
+<li>Address of the top of the stack for the new task.</li>
+</ul>
+<p>As we can understand from the function's name, it starts new thread, but it is not so. The <code>start_thread</code> function just prepares new task's registers to be ready to run. Let's look on the implementation of this function:</p>
+<pre><code class="language-C">void
+start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)
+{
+        start_thread_common(regs, new_ip, new_sp,
+                            __USER_CS, __USER_DS, 0);
+}
+</code></pre>
+<p>As we can see the <code>start_thread</code> function just makes a call of the <code>start_thread_common</code> function that will do all for us:</p>
+<pre><code class="language-C">static void
+start_thread_common(struct pt_regs *regs, unsigned long new_ip,
+                    unsigned long new_sp,
+                    unsigned int _cs, unsigned int _ss, unsigned int _ds)
+{
+        loadsegment(fs, 0);
+        loadsegment(es, _ds);
+        loadsegment(ds, _ds);
+        load_gs_index(0);
+        regs-&gt;ip                = new_ip;
+        regs-&gt;sp                = new_sp;
+        regs-&gt;cs                = _cs;
+        regs-&gt;ss                = _ss;
+        regs-&gt;flags             = X86_EFLAGS_IF;
+        force_iret();
+}
+</code></pre>
+<p>The <code>start_thread_common</code> function fills <code>fs</code> segment register with zero and <code>es</code> and <code>ds</code> with the value of the data segment register. After this we set new values to the <a href="https://en.wikipedia.org/wiki/Program_counter">instruction pointer</a>, <code>cs</code> segments etc. In the end of the <code>start_thread_common</code> function we can see the <code>force_iret</code> macro that force a system call return via <code>iret</code> instruction. Ok, we prepared new thread to run in userspace and now we can return from the <code>exec_binprm</code> and now we are in the <code>do_execveat_common</code> again. After the <code>exec_binprm</code> will finish its execution we release memory for structures that was allocated before and return.</p>
+<p>After we returned from the <code>execve</code> system call handler, execution of our program will be started. We can do it, because all context related information already configured for this purpose. As we saw the <code>execve</code> system call does not return control to a process, but code, data and other segments of the caller process are just overwritten of the program segments. The exit from our application will be implemented through the <code>exit</code> system call.</p>
+<p>That's all. From this point our programm will be executed.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fourth and last part of the about the system calls concept in the Linux kernel. We saw almost all related stuff to the <code>system call</code> concept in these four parts. We started from the understanding of the <code>system call</code> concept, we have learned what is it and why do users applications need in this concept. Next we saw how does the Linux handle a system call from an user application. We met two similar concepts to the <code>system call</code> concept, they are <code>vsyscall</code> and <code>vDSO</code> and finally we saw how does Linux kernel run an user program.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/System_call">System call</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Unix_shell">shell</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Bash_%28Unix_shell%29">bash</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Entry_point">entry point</a></li>
+<li><a href="https://en.wikipedia.org/wiki/C_%28programming_language%29">C</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Environment_variable">environment variables</a></li>
+<li><a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a></li>
+<li><a href="https://en.wikipedia.org/wiki/User_identifier#Real_user_ID">real uid</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Virtual_file_system">virtual file system</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Procfs">procfs</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Sysfs">sysfs</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Inode">inode</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Process_identifier">pid</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Cgroups">namespace</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Shebang_%28Unix%29">#!</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">elf</a></li>
+<li><a href="https://en.wikipedia.org/wiki/A.out">a.out</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Binary_file#Structure">flat</a></li>
+<li><a href="https://en.wikipedia.org/wiki/DEC_Alpha">Alpha</a></li>
+<li><a href="http://elinux.org/UClinux_Shared_Library#FDPIC_ELF">FDPIC</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Memory_segmentation">segments</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Misc/linkers.html">Linkers</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Processor_register">Processor register</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Program_counter">instruction pointer</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-3.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/73/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/73/index.html">Go语言高级编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/44.html">chai2010</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2423个">2423</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/116/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/116/index.html">Protocol Buffer 3学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/42/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/docker_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/42/index.html">Docker-從入門到實踐</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="docker">docker</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">82页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7491;var bookPageRelUrl ='SysCall/syscall-4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

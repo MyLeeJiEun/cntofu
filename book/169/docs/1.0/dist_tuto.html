@@ -1,0 +1,880 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Writing Distributed Applications with PyTorch-PyTorch 1.0 中文文档 & 教程</title>
+<meta content='Writing Distributed Applications with PyTorch,PyTorch 1.0 中文文档 & 教程' name='keywords'>
+<meta content='Writing Distributed Applications with PyTorch,PyTorch 1.0 中文文档 & 教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/169/docs/1.0/tut_production_usage.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">生产性使用</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/169/docs/1.0/aws_distributed_training_tutorial.html">
+<span class="">使用 Amazon A..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/169/index.html">PyTorch 1.0 中文文档 & 教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/apachecn/pytorch-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="使用pytorch编写分布式应用程序">使用PyTorch编写分布式应用程序</h1>
+<blockquote>
+<p>译者：<a href="https://github.com/firdameng">firdameng</a></p>
+</blockquote>
+<p><strong>作者</strong>：<a href="http://soumith.ch">Soumith Chintala</a></p>
+<p>在这个简短的教程中，我们将讨论PyTorch的分布式软件包。 我们将看到如何设置分布式设置，使用不同的通信策略，并查看包的内部部分。</p>
+<h2 id="开始">开始</h2>
+<p>PyTorch中包含的分布式软件包（即torch.distributed）使研究人员和从业人员能够轻松地跨进程和计算机集群并行化他们的计算。 为此，它利用消息传递语义，允许每个进程将数据传递给任何其他进程。 与多处理（torch.multiprocessing）包相反，进程可以使用不同的通信后端，并且不限于在同一台机器上执行。</p>
+<p>开始我们需要能够同时运行多个进程。 如果您有权访问计算群集，则应使用本地sysadmin进行检查，或使用您喜欢的协调工具。 （例如，pdsh，clustershell或其他）为了本教程的目的，我们将使用单个机器并使用以下模板建立多个进程。</p>
+<pre><code class="language-python">"""run.py:"""
+#!/usr/bin/env python
+import os
+import torch
+import torch.distributed as dist
+from torch.multiprocessing import Process
+
+def run(rank, size):
+    """ Distributed function to be implemented later. """
+    pass
+
+def init_processes(rank, size, fn, backend='tcp'):
+    """ Initialize the distributed environment. """
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'
+    dist.init_process_group(backend, rank=rank, world_size=size)
+    fn(rank, size)
+
+if __name__ == "__main__":
+    size = 2
+    processes = []
+    for rank in range(size):
+        p = Process(target=init_processes, args=(rank, size, run))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+</code></pre>
+<p>上面的脚本产生了两个进程，每个进程将设置分布式环境，初始化进程组（dist.init_process_group），最后执行给定的运行函数。</p>
+<p>我们来看看init_processes函数。 它确保每个进程都能够使用相同的IP地址和端口通过主站进行协调。 请注意，我们使用了TCP后端，但我们可以使用MPI或Gloo。 （参见5.1节）我们将在本教程结束时讨论dist.init_process_group中产生的特效，但它实质上允许进程通过共享其位置来相互通信。</p>
+<h2 id="点对点通信">点对点通信</h2>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/f29264b289639882a61fb5c3447b1ecc.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/f29264b289639882a61fb5c3447b1ecc.jpg" alt="https://pytorch.org/tutorials/_images/send_recv.png"></a></p>
+<p>发送与接收</p>
+<p>将数据从一个进程传输到另一个进程称为点对点通信。 这些是通过send和recv函数或它们的直接对应部分isend和irecv实现的。</p>
+<pre><code class="language-python">"""Blocking point-to-point communication."""
+
+def run(rank, size):
+    tensor = torch.zeros(1)
+    if rank == 0:
+        tensor += 1
+        # Send the tensor to process 1
+        dist.send(tensor=tensor, dst=1)
+    else:
+        # Receive tensor from process 0
+        dist.recv(tensor=tensor, src=0)
+    print('Rank ', rank, ' has data ', tensor[0])
+</code></pre>
+<p>在上面的例子中，两个进程都以零张量开始，然后进程0递增张量并将其发送到进程1，以便它们都以1.0结束。 请注意，进程1需要分配内存以存储它将接收的数据。</p>
+<p>另请注意，send / recv正在阻塞：两个进程都会停止，直到通信完成。 另一方面，immediates是非阻塞的; 脚本继续执行，方法返回一个DistributedRequest对象，我们可以选择wait（）。</p>
+<pre><code class="language-python">"""Non-blocking point-to-point communication."""
+
+def run(rank, size):
+    tensor = torch.zeros(1)
+    req = None
+    if rank == 0:
+        tensor += 1
+        # Send the tensor to process 1
+        req = dist.isend(tensor=tensor, dst=1)
+        print('Rank 0 started sending')
+    else:
+        # Receive tensor from process 0
+        req = dist.irecv(tensor=tensor, src=0)
+        print('Rank 1 started receiving')
+    req.wait()
+    print('Rank ', rank, ' has data ', tensor[0])
+</code></pre>
+<p>当使用immediates时，我们必须小心使用发送和接收的张量。 由于我们不知道何时将数据传递给另一个进程，因此我们不应该在req.wait（）完成之前修改发送的张量或访问接收的张量。 换一种说法，</p>
+<ul>
+<li>在dist.isend（）之后写入张量将导致未定义的行为。</li>
+<li>在dist.irecv（）之后读取张量将导致未定义的行为。</li>
+</ul>
+<p>但是，在执行req.wait（）之后，我们保证发生通信，并且存储在tensor [0]中的值为1.0。</p>
+<p>当我们想要对流程的通信进行细粒度控制时，点对点通信非常有用。 它们可用于实现奇妙的算法，例如百度DeepSpeech或Facebook的大规模实验中使用的算法。（参见4.1节）</p>
+<h2 id="集体通信">集体通信</h2>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/3aa3584628cb0526c8b0e9d02b15d876.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/3aa3584628cb0526c8b0e9d02b15d876.jpg" alt="https://pytorch.org/tutorials/_images/scatter.png"></a></p>
+<p><strong>Scatter</strong></p>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/7e8670a3b7cdc7848394514ef1da090a.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/7e8670a3b7cdc7848394514ef1da090a.jpg" alt="https://pytorch.org/tutorials/_images/gather.png"></a></p>
+<p><strong>Gather</strong></p>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/1c451df4406aea85e640d1ae7df6df31.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/1c451df4406aea85e640d1ae7df6df31.jpg" alt="https://pytorch.org/tutorials/_images/reduce.png"></a></p>
+<p><strong>Reduce</strong></p>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/0ef9693f0008d5a75aa5ac2b542b83ac.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/0ef9693f0008d5a75aa5ac2b542b83ac.jpg" alt="https://pytorch.org/tutorials/_images/all_reduce.png"></a></p>
+<p><strong>All-Reduce</strong></p>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/525847c9d4b48933cb231204a2d13e0e.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/525847c9d4b48933cb231204a2d13e0e.jpg" alt="https://pytorch.org/tutorials/_images/broadcast.png"></a></p>
+<p><strong>Broadcast</strong></p>
+<p><a href="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/4a48977cd9545f897942a4a4ef1175ac.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/pytorch-doc-zh/docs/1.0/img/4a48977cd9545f897942a4a4ef1175ac.jpg" alt="https://pytorch.org/tutorials/_images/all_gather.png"></a></p>
+<p><strong>All_gather</strong></p>
+<p>与点对点通信相反，在集体中允许通信模式跨越组中所有进程。 组是我们所有进程的子集。 要创建组，我们可以将队列列表传递给dist.new_group（组）。 默认情况下，集合体在所有进程（也称为world）上执行。 例如，为了获得所有过程中所有张量的总和，我们可以使用dist.all_reduce（tensor，op，group）集合。</p>
+<pre><code class="language-python">""" All-Reduce example."""
+def run(rank, size):
+    """ Simple point-to-point communication. """
+    group = dist.new_group([0, 1])
+    tensor = torch.ones(1)
+    dist.all_reduce(tensor, op=dist.reduce_op.SUM, group=group)
+    print('Rank ', rank, ' has data ', tensor[0])
+</code></pre>
+<p>由于我们想要组中所有张量的总和，我们使用dist.reduce_op.SUM作为reduce运算符。 一般而言，任何可交换的数学运算都可以用作运算符。 开箱即用，PyTorch带有4个这样的运算符，所有运算符都在元素级别上运行：</p>
+<ul>
+<li><code>dist.reduce_op.SUM</code>,</li>
+<li><code>dist.reduce_op.PRODUCT</code>,</li>
+<li><code>dist.reduce_op.MAX</code>,</li>
+<li><code>dist.reduce_op.MIN</code>.</li>
+</ul>
+<p>除了dist.all_reduce（tensor，op，group）之外，PyTorch目前共有6个集体。</p>
+<ul>
+<li><code>dist.broadcast(tensor, src, group)</code>: Copies <code>tensor</code> from <code>src</code> to all other processes.</li>
+<li><code>dist.reduce(tensor, dst, op, group)</code>: Applies <code>op</code> to all <code>tensor</code> and stores the result in <code>dst</code>.</li>
+<li><code>dist.all_reduce(tensor, op, group)</code>: Same as reduce, but the result is stored in all processes.</li>
+<li><code>dist.scatter(tensor, src, scatter_list, group)</code>: Copies the <code>\(i^{\text{th}}\)</code> tensor <code>scatter_list[i]</code> to the <code>\(i^{\text{th}}\)</code> process.</li>
+<li><code>dist.gather(tensor, dst, gather_list, group)</code>: Copies <code>tensor</code> from all processes in <code>dst</code>.</li>
+<li><code>dist.all_gather(tensor_list, tensor, group)</code>: Copies <code>tensor</code> from all processes to <code>tensor_list</code>, on all processes.</li>
+<li><code>dist.barrier(group)</code>: block all processes in <code>group</code> until each one has entered this function.</li>
+</ul>
+<h2 id="分布式训练">分布式训练</h2>
+<p>注意：您可以在此GitHub存储库中找到此部分的 <a href="https://github.com/seba-1511/dist_tuto.pth/">示例脚本</a></p>
+<p>现在我们已经了解了分布式模块的工作原理，让我们编写一些有用的东西。 我们的目标是复制<a href="https://pytorch.org/docs/stable/nn.html#torch.nn.parallel.DistributedDataParallel">DistributedDataParallel</a>的功能。 当然，这将是一个教学示例，在现实世界中，您应该使用上面链接的官方，经过良好测试和优化的版本。</p>
+<p>很简单，我们想要实现随机梯度下降的分布式版本。 我们的脚本将允许所有进程在其批量数据上计算其模型的梯度，然后平均其渐变。 为了在更改进程数时确保类似的收敛结果，我们首先必须对数据集进行分区。 （您也可以使用<a href="https://github.com/pytorch/tnt/blob/master/torchnet/dataset/splitdataset.py#L4">tnt.dataset.SplitDataset</a>，而不是下面的代码段。）</p>
+<pre><code class="language-python">""" Dataset partitioning helper """
+class Partition(object):
+
+    def __init__(self, data, index):
+        self.data = data
+        self.index = index
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, index):
+        data_idx = self.index[index]
+        return self.data[data_idx]
+
+class DataPartitioner(object):
+
+    def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
+        self.data = data
+        self.partitions = []
+        rng = Random()
+        rng.seed(seed)
+        data_len = len(data)
+        indexes = [x for x in range(0, data_len)]
+        rng.shuffle(indexes)
+
+        for frac in sizes:
+            part_len = int(frac * data_len)
+            self.partitions.append(indexes[0:part_len])
+            indexes = indexes[part_len:]
+
+    def use(self, partition):
+        return Partition(self.data, self.partitions[partition])
+</code></pre>
+<p>通过上面的代码片段，我们现在可以使用以下几行简单地对任何数据集进行分区：</p>
+<pre><code class="language-python">""" Partitioning MNIST """
+def partition_dataset():
+    dataset = datasets.MNIST('./data', train=True, download=True,
+                             transform=transforms.Compose([
+                                 transforms.ToTensor(),
+                                 transforms.Normalize((0.1307,), (0.3081,))
+                             ]))
+    size = dist.get_world_size()
+    bsz = 128 / float(size)
+    partition_sizes = [1.0 / size for _ in range(size)]
+    partition = DataPartitioner(dataset, partition_sizes)
+    partition = partition.use(dist.get_rank())
+    train_set = torch.utils.data.DataLoader(partition,
+                                         batch_size=bsz,
+                                         shuffle=True)
+    return train_set, bsz
+</code></pre>
+<p>假设我们有2个副本，那么每个进程将具有60000/2 = 30000个样本的train_set。 我们还将批量大小除以副本数量，以保持总批量大小为128。</p>
+<p>我们现在可以编写我们通常的前向后向优化训练代码，并添加一个函数调用来平均我们模型的渐变。 （以下内容主要来自官方的<a href="https://github.com/pytorch/examples/blob/master/mnist/main.py">PyTorch MNIST</a>示例。）</p>
+<pre><code class="language-python">""" Distributed Synchronous SGD Example """
+def run(rank, size):
+    torch.manual_seed(1234)
+    train_set, bsz = partition_dataset()
+    model = Net()
+    optimizer = optim.SGD(model.parameters(),
+                          lr=0.01, momentum=0.5)
+
+    num_batches = ceil(len(train_set.dataset) / float(bsz))
+    for epoch in range(10):
+        epoch_loss = 0.0
+        for data, target in train_set:
+            optimizer.zero_grad()
+            output = model(data)
+            loss = F.nll_loss(output, target)
+            epoch_loss += loss.item()
+            loss.backward()
+            average_gradients(model)
+            optimizer.step()
+        print('Rank ', dist.get_rank(), ', epoch ',
+              epoch, ': ', epoch_loss / num_batches)
+</code></pre>
+<p>它仍然是实现average_gradients（模型）函数，它只是简单地接受一个模型并在整个空间中平均其渐变。</p>
+<pre><code class="language-python">""" Gradient averaging. """
+def average_gradients(model):
+    size = float(dist.get_world_size())
+    for param in model.parameters():
+        dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM)
+        param.grad.data /= size
+</code></pre>
+<p>我们成功实现了分布式同步SGD，可以在大型计算机集群上训练任何模型。</p>
+<p>注意：虽然最后一句在技术上是正确的，但实现同步SGD的生产级实现需要更多<a href="https://seba-1511.github.io/dist_blog/">技巧</a>。 再次，使用已经过<a href="https://pytorch.org/docs/stable/nn.html#torch.nn.parallel.DistributedDataParallel">测试和优化</a>的内容。</p>
+<h3 id="自定义ring-allreduce">自定义Ring-Allreduce</h3>
+<p>作为一个额外的挑战，想象一下我们想要实现DeepSpeech的高效环allreduce。 使用点对点集合相当容易实现。</p>
+<pre><code class="language-python">""" Implementation of a ring-reduce with addition. """
+def allreduce(send, recv):
+    rank = dist.get_rank()
+    size = dist.get_world_size()
+    send_buff = th.zeros(send.size())
+    recv_buff = th.zeros(send.size())
+    accum = th.zeros(send.size())
+    accum[:] = send[:]
+
+    left = ((rank - 1) + size) % size
+    right = (rank + 1) % size
+
+    for i in range(size - 1):
+        if i % 2 == 0:
+            # Send send_buff
+            send_req = dist.isend(send_buff, right)
+            dist.recv(recv_buff, left)
+            accum[:] += recv[:]
+        else:
+            # Send recv_buff
+            send_req = dist.isend(recv_buff, right)
+            dist.recv(send_buff, left)
+            accum[:] += send[:]
+        send_req.wait()
+    recv[:] = accum[:]
+</code></pre>
+<p>在上面的脚本中，allreduce（send，recv）函数的签名与PyTorch中的签名略有不同。 它需要一个recv张量，并将所有发送张量的总和存储在其中。 作为练习留给读者，我们的版本和DeepSpeech中的版本之间仍然存在一个区别：它们的实现将梯度张量划分为块，以便最佳地利用通信带宽。 （提示：<a href="https://pytorch.org/docs/stable/torch.html#torch.chunk">torch.chunk</a>）</p>
+<h2 id="高级主题">高级主题</h2>
+<p>我们现在准备发现torch.distributed的一些更高级的功能。 由于有很多内容需要介绍，本节分为两个小节：</p>
+<ol>
+<li>通信后端：我们学习如何使用MPI和Gloo进行GPU-GPU通信。</li>
+<li>初始化方法：我们了解如何在dist.init_process_group（）中最好地设置初始协调阶段。</li>
+</ol>
+<h3 id="通信后端">通信后端</h3>
+<p>torch.distributed最优雅的方面之一是它能够在不同的后端之上进行抽象和构建。 如前所述，目前在PyTorch中实现了三个后端：TCP，MPI和Gloo。 根据所需的用例，它们各自具有不同的规格和权衡。 可以在<a href="https://pytorch.org/docs/stable/distributed.html#module-torch.distributed">此处</a>找到支持功能的比较表。 请注意，自本教程创建以来，已添加第四个后端NCCL。 有关其使用和值的更多信息，请参阅torch.distributed docs的<a href="https://pytorch.org/docs/stable/distributed.html#multi-gpu-collective-functions">此部分</a>。</p>
+<p><strong>TCP后端</strong></p>
+<p>到目前为止，我们已广泛使用TCP后端。 它作为一个开发平台非常方便，因为它可以保证在大多数机器和操作系统上运行。 它还支持CPU上的所有点对点和集合功能。 但是，不支持GPU，并且其通信例程不像MPI那样优化。</p>
+<p><strong>Gloo后端</strong></p>
+<p><a href="https://github.com/facebookincubator/gloo">Gloo后端</a>为CPU和GPU提供了集体通信程序的优化实现。 它特别适用于GPU，因为它可以执行通信而无需使用<a href="https://developer.nvidia.com/gpudirect">GPUDirect</a>将数据传输到CPU的内存。 它还能够使用<a href="https://github.com/NVIDIA/nccl">NCCL</a>执行快速的节点内通信，并实现其自己的节点间<a href="https://github.com/facebookincubator/gloo/blob/master/docs/algorithms.html">例程算法</a>。</p>
+<p>从版本0.2.0开始，Gloo后端自动包含在PyTorch的预编译二进制文件中。 正如您已经注意到的那样，如果您将模型放在GPU上，我们的分布式SGD示例将不起作用。 让我们通过首先替换init_processes中的backend ='gloo'来修复它（rank，size，fn，backend ='tcp'）。 此时，脚本仍将在CPU上运行，但在幕后使用Gloo后端。 为了使用多个GPU，我们还要进行以下修改：</p>
+<ol>
+<li><code>init_processes(rank, size, fn, backend='tcp')</code> <code>\(\rightarrow\)</code> <code>init_processes(rank, size, fn, backend='gloo')</code></li>
+<li>Use <code>device = torch.device("cuda:{}".format(rank))</code></li>
+<li><code>model = Net()</code> <code>\(\rightarrow\)</code> <code>model = Net().to(device)</code></li>
+<li>Use <code>data, target = data.to(device), target.to(device)</code></li>
+</ol>
+<p>通过上述修改，我们的模型现在在两个GPU上进行培训，您可以通过运行nvidia-smi监控它们的使用情况。</p>
+<p><strong>MPI后端</strong></p>
+<p>消息传递接口（MPI）是高性能计算领域的标准化工具。 它允许进行点对点和集体通信，并且是torch.distributed的API的主要灵感。 存在MPI的若干实现（例如，<a href="https://www.open-mpi.org/">Open-MPI</a>，<a href="http://mvapich.cse.ohio-state.edu/">MVAPICH2</a>，<a href="https://software.intel.com/en-us/intel-mpi-library">Intel MPI</a>），每个实现针对不同目的而优化。 使用MPI后端的优势在于MPI在大型计算机集群上的广泛可用性和高级优化。 最近的一些<a href="https://www.open-mpi.org/">实现</a>也能够利用CUDA IPC和GPU Direct技术，以避免通过CPU进行内存复制。</p>
+<p>不幸的是，PyTorch的二进制文件不能包含MPI实现，我们必须手动重新编译它。 幸运的是，这个过程非常简单，因为在编译时，PyTorch会自行查看可用的MPI实现。 以下步骤通过从源安装PyTorch来安装MPI后端。</p>
+<ol>
+<li>创建并激活您的Anaconda环境，按照指南安装所有先决条件，但不要运行python setup.py install。</li>
+<li>选择并安装您最喜欢的MPI实现。 请注意，启用支持CUDA的MPI可能需要一些额外的步骤。 在我们的例子中，我们将坚持不支持GPU的Open-MPI：conda install -c conda-forge openmpi</li>
+<li>现在，转到克隆的PyTorch repo并执行python setup.py install。</li>
+</ol>
+<p>为了测试我们新安装的后端，需要进行一些修改。</p>
+<ol>
+<li>使用init_processes（0,0，run，backend ='mpi'）替换if <strong>name</strong> =='__ main__'下的内容：</li>
+<li>运行mpirun -n 4 python myscript.py。</li>
+</ol>
+<p>这些更改的原因是MPI需要在生成流程之前创建自己的环境。 MPI还将生成自己的进程并执行<a href="https://github.com/apachecn/pytorch-doc-zh/blob/master/docs/1.0/dist_tuto.html#initialization-methods">初始化方法</a>中描述的握手，使得init_process_group的rankand size参数变得多余。 这实际上非常强大，因为您可以将其他参数传递给mpirun，以便为每个进程定制计算资源。 （例如每个进程的内核数量，将机器分配给特定的等级，以及<a href="https://github.com/apachecn/pytorch-doc-zh/blob/master/docs/1.0/dist_tuto.html#initialization-methods">更多内容</a>）这样做，您应该获得与其他通信后端相同的熟悉输出。</p>
+<h3 id="初始化方法">初始化方法</h3>
+<p>为了完成本教程，我们来谈谈我们调用的第一个函数：dist.init_process_group（backend，init_method）。 特别是，我们将讨论不同的初始化方法，这些方法负责每个进程之间的初始协调步骤。 这些方法允许您定义如何完成此协调。 根据您的硬件设置，其中一种方法应该比其他方法更合适。 除了以下部分，您还应该查看<a href="https://pytorch.org/docs/stable/distributed.html#initialization">官方文档</a>。</p>
+<p>在深入研究初始化方法之前，让我们从C / C ++的角度快速了解init_process_group背后的情况。</p>
+<ol>
+<li> <p>首先，解析和验证参数。</p> </li>
+<li> <p>后端通过name2channel.at（）函数解析。 返回Channel类，将用于执行数据传输。</p> </li>
+<li> <p>GIL被删除，并调用THDProcessGroupInit（）。 这会实例化通道并添加主节点的地址。</p> </li>
+<li> <p>等级0的过程将执行主过程，而所有其他等级将是工作进程。</p> </li>
+<li> <p>主进程</p> <p>（1）为所有工作进程创建套接字。 （2）等待所有工作进程连接。 （3）向他们发送有关其他进程位置的信息。</p> </li>
+<li> <p>每个工作进程</p> <p>（1）为主进程创建一个套接字。 （2）发送自己的位置信息。 （3）接收有关其他工作进程的信息。 （4）打开套接字并与所有其他工作进程握手。</p> </li>
+<li> <p>初始化完成，每个进程都相互建立连接。</p> </li>
+</ol>
+<p><strong>环境变量</strong></p>
+<p>在本教程中，我们一直在使用环境变量初始化方法。 通过在所有计算机上设置以下四个环境变量，所有进程都能够正确连接到主进程，获取有关其他进程的信息，最后与它们握手。</p>
+<ul>
+<li>MASTER_PORT：计算机上的一个空闲端口，用于承载排名为0的进程。</li>
+<li>MASTER_ADDR：将以0级托管进程的计算机的IP地址。</li>
+<li>WORLD_SIZE：进程总数，以便master知道要等待多少worker。</li>
+<li>RANK：每个流程的等级，因此他们将知道它是否是worker的master。</li>
+</ul>
+<p><strong>共享文件系统</strong></p>
+<p>共享文件系统要求所有进程都可以访问共享文件系统，并通过共享文件协调它们。 这意味着每个进程都将打开文件，写入其信息，并等到每个人都这样做。 在所有必需信息将随时可用于所有流程之后。 为了避免竞争条件，文件系统必须支持通过<a href="http://man7.org/linux/man-pages/man2/fcntl.2.html">fcntl</a>锁定。 请注意，您可以手动指定排名，也可以让流程自行计算。 要为每个作业定义一个唯一的组名，您可以为多个作业使用相同的文件路径并安全地避免冲突。</p>
+<pre><code class="language-python">dist.init_process_group(init_method='file:///mnt/nfs/sharedfile', world_size=4,
+                        group_name='mygroup')
+</code></pre>
+<p><strong>TCP初始化和多播</strong></p>
+<p>通过TCP初始化可以通过两种不同的方式实现：</p>
+<ul>
+<li>通过提供具有等级0和世界大小的进程的IP地址。</li>
+<li>通过提供任何有效的IP<a href="https://en.wikipedia.org/wiki/Multicast_address">多播</a>地址和世界大小。</li>
+</ul>
+<p>在第一种情况下，所有工作进程将能够连接到等级为0的进程并按照上述步骤进行操作。</p>
+<pre><code class="language-python">dist.init_process_group(init_method='tcp://10.1.1.20:23456', rank=args.rank, world_size=4)
+</code></pre>
+<p>在第二种情况下，多播地址指定可能处于活动状态的节点组，并且可以通过允许每个进程在执行上述过程之前进行初始握手来处理协调。 此外，TCP多播初始化还支持group_name参数（与共享文件方法一样），允许在同一群集上调度多个作业。</p>
+<pre><code class="language-python">dist.init_process_group(init_method='tcp://[ff15:1e18:5d4c:4cf0:d02d:b659:53ba:b0a7]:23456',
+                        world_size=4)
+</code></pre>
+<h2 id="致谢">致谢</h2>
+<p>我要感谢PyTorch开发人员在他们的实现，<a href="https://pytorch.org/docs/stable/distributed.html">文档</a>和<a href="https://github.com/pytorch/pytorch/blob/master/test/test_distributed.py">测试</a>方面做得很好。 当代码不清楚时，我总是可以依靠文档或测试来找到答案。 特别是，我要感谢Soumith Chintala，Adam Paszke和Natalia Gimelshein提供有见地的评论并回答有关早期草稿的问题。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/165/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/165/index.html">Python学习知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/94.html">coco369</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">85页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 190个">190</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/172/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/172/index.html">Seaborn 0.9 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">76页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 32个">32</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/33/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/33/index.html">Scapy 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 17个">17</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/154/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/154/index.html">Python 学习总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/86.html">itroger</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/197/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/ubuntu_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/197/index.html">手把手教你，搭建内网穿透服务</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="ubuntu">ubuntu</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">45页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 189个">189</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/130/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/130/index.html">进击的Python</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/68.html">HuberTRoy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 169个">169</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/169/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_getting_started.html" title="起步" data-book-page-rel-url="docs/1.0/tut_getting_started.html" data-book-page-id="11555">起步</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_60min_blitz.html" title="PyTorch 深度学习: 60 分钟极速入门" data-book-page-rel-url="docs/1.0/deep_learning_60min_blitz.html" data-book-page-id="11556">PyTorch 深度学习: 60 分钟极速入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_tensor_tutorial.html" title="什么是 PyTorch？" data-book-page-rel-url="docs/1.0/blitz_tensor_tutorial.html" data-book-page-id="11557">什么是 PyTorch？</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_autograd_tutorial.html" title="Autograd：自动求导" data-book-page-rel-url="docs/1.0/blitz_autograd_tutorial.html" data-book-page-id="11558">Autograd：自动求导</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_neural_networks_tutorial.html" title="神经网络" data-book-page-rel-url="docs/1.0/blitz_neural_networks_tutorial.html" data-book-page-id="11559">神经网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_cifar10_tutorial.html" title="训练分类器" data-book-page-rel-url="docs/1.0/blitz_cifar10_tutorial.html" data-book-page-id="11560">训练分类器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_data_parallel_tutorial.html" title="可选：数据并行处理" data-book-page-rel-url="docs/1.0/blitz_data_parallel_tutorial.html" data-book-page-id="11561">可选：数据并行处理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data_loading_tutorial.html" title="数据加载和处理教程" data-book-page-rel-url="docs/1.0/data_loading_tutorial.html" data-book-page-id="11562">数据加载和处理教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/pytorch_with_examples.html" title="用例子学习 PyTorch" data-book-page-rel-url="docs/1.0/pytorch_with_examples.html" data-book-page-id="11563">用例子学习 PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/transfer_learning_tutorial.html" title="迁移学习教程" data-book-page-rel-url="docs/1.0/transfer_learning_tutorial.html" data-book-page-id="11564">迁移学习教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" title="混合前端的 seq2seq 模型部署" data-book-page-rel-url="docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" data-book-page-id="11565">混合前端的 seq2seq 模型部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/saving_loading_models.html" title="Saving and Loading Models" data-book-page-rel-url="docs/1.0/saving_loading_models.html" data-book-page-id="11566">Saving and Loading Models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_tutorial.html" title="What is `torch.nn` _really_?" data-book-page-rel-url="docs/1.0/nn_tutorial.html" data-book-page-id="11567">What is `torch.nn` _really_?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_image.html" title="图像" data-book-page-rel-url="docs/1.0/tut_image.html" data-book-page-id="11568">图像</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/finetuning_torchvision_models_tutorial.html" title="Torchvision 模型微调" data-book-page-rel-url="docs/1.0/finetuning_torchvision_models_tutorial.html" data-book-page-id="11569">Torchvision 模型微调</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/spatial_transformer_tutorial.html" title="空间变换器网络教程" data-book-page-rel-url="docs/1.0/spatial_transformer_tutorial.html" data-book-page-id="11570">空间变换器网络教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/neural_style_tutorial.html" title="使用 PyTorch 进行图像风格转换" data-book-page-rel-url="docs/1.0/neural_style_tutorial.html" data-book-page-id="11571">使用 PyTorch 进行图像风格转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/fgsm_tutorial.html" title="对抗性示例生成" data-book-page-rel-url="docs/1.0/fgsm_tutorial.html" data-book-page-id="11572">对抗性示例生成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/super_resolution_with_caffe2.html" title="使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端" data-book-page-rel-url="docs/1.0/super_resolution_with_caffe2.html" data-book-page-id="11573">使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_text.html" title="文本" data-book-page-rel-url="docs/1.0/tut_text.html" data-book-page-id="11574">文本</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/chatbot_tutorial.html" title="聊天机器人教程" data-book-page-rel-url="docs/1.0/chatbot_tutorial.html" data-book-page-id="11575">聊天机器人教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_generation_tutorial.html" title="使用字符级别特征的 RNN 网络生成姓氏" data-book-page-rel-url="docs/1.0/char_rnn_generation_tutorial.html" data-book-page-id="11576">使用字符级别特征的 RNN 网络生成姓氏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_classification_tutorial.html" title="使用字符级别特征的 RNN 网络进行姓氏分类" data-book-page-rel-url="docs/1.0/char_rnn_classification_tutorial.html" data-book-page-id="11577">使用字符级别特征的 RNN 网络进行姓氏分类</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_nlp_tutorial.html" title="Deep Learning for NLP with Pytorch" data-book-page-rel-url="docs/1.0/deep_learning_nlp_tutorial.html" data-book-page-id="11578">Deep Learning for NLP with Pytorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_pytorch_tutorial.html" title="PyTorch 介绍" data-book-page-rel-url="docs/1.0/nlp_pytorch_tutorial.html" data-book-page-id="11579">PyTorch 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_deep_learning_tutorial.html" title="使用 PyTorch 进行深度学习" data-book-page-rel-url="docs/1.0/nlp_deep_learning_tutorial.html" data-book-page-id="11580">使用 PyTorch 进行深度学习</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_word_embeddings_tutorial.html" title="Word Embeddings: Encoding Lexical Semantics" data-book-page-rel-url="docs/1.0/nlp_word_embeddings_tutorial.html" data-book-page-id="11581">Word Embeddings: Encoding Lexical Semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_sequence_models_tutorial.html" title="序列模型和 LSTM 网络" data-book-page-rel-url="docs/1.0/nlp_sequence_models_tutorial.html" data-book-page-id="11582">序列模型和 LSTM 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_advanced_tutorial.html" title="Advanced: Making Dynamic Decisions and the Bi-LSTM CRF" data-book-page-rel-url="docs/1.0/nlp_advanced_tutorial.html" data-book-page-id="11583">Advanced: Making Dynamic Decisions and the Bi-LSTM CRF</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/seq2seq_translation_tutorial.html" title="基于注意力机制的 seq2seq 神经网络翻译" data-book-page-rel-url="docs/1.0/seq2seq_translation_tutorial.html" data-book-page-id="11584">基于注意力机制的 seq2seq 神经网络翻译</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_generative.html" title="生成" data-book-page-rel-url="docs/1.0/tut_generative.html" data-book-page-id="11585">生成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dcgan_faces_tutorial.html" title="DCGAN Tutorial" data-book-page-rel-url="docs/1.0/dcgan_faces_tutorial.html" data-book-page-id="11586">DCGAN Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_reinforcement_learning.html" title="强化学习" data-book-page-rel-url="docs/1.0/tut_reinforcement_learning.html" data-book-page-id="11587">强化学习</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/reinforcement_q_learning.html" title="Reinforcement Learning (DQN) Tutorial" data-book-page-rel-url="docs/1.0/reinforcement_q_learning.html" data-book-page-id="11588">Reinforcement Learning (DQN) Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_extending_pytorch.html" title="扩展 PyTorch" data-book-page-rel-url="docs/1.0/tut_extending_pytorch.html" data-book-page-id="11589">扩展 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/numpy_extensions_tutorial.html" title="用 numpy 和 scipy 创建扩展" data-book-page-rel-url="docs/1.0/numpy_extensions_tutorial.html" data-book-page-id="11590">用 numpy 和 scipy 创建扩展</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_extension.html" title="Custom C++   and CUDA Extensions" data-book-page-rel-url="docs/1.0/cpp_extension.html" data-book-page-id="11591">Custom C++ and CUDA Extensions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch_script_custom_ops.html" title="Extending TorchScript with Custom C++   Operators" data-book-page-rel-url="docs/1.0/torch_script_custom_ops.html" data-book-page-id="11592">Extending TorchScript with Custom C++ Operators</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_production_usage.html" title="生产性使用" data-book-page-rel-url="docs/1.0/tut_production_usage.html" data-book-page-id="11593">生产性使用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dist_tuto.html" title="Writing Distributed Applications with PyTorch" data-book-page-rel-url="docs/1.0/dist_tuto.html" data-book-page-id="11594">Writing Distributed Applications with PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/aws_distributed_training_tutorial.html" title="使用 Amazon AWS 进行分布式训练" data-book-page-rel-url="docs/1.0/aws_distributed_training_tutorial.html" data-book-page-id="11595">使用 Amazon AWS 进行分布式训练</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/ONNXLive.html" title="ONNX 现场演示教程" data-book-page-rel-url="docs/1.0/ONNXLive.html" data-book-page-id="11596">ONNX 现场演示教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_export.html" title="在 C++ 中加载 PYTORCH 模型" data-book-page-rel-url="docs/1.0/cpp_export.html" data-book-page-id="11597">在 C++ 中加载 PYTORCH 模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_other_language.html" title="其它语言中的 PyTorch" data-book-page-rel-url="docs/1.0/tut_other_language.html" data-book-page-id="11598">其它语言中的 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_frontend.html" title="使用 PyTorch C++ 前端" data-book-page-rel-url="docs/1.0/cpp_frontend.html" data-book-page-id="11599">使用 PyTorch C++ 前端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_notes.html" title="注解" data-book-page-rel-url="docs/1.0/docs_notes.html" data-book-page-id="11600">注解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_autograd.html" title="自动求导机制" data-book-page-rel-url="docs/1.0/notes_autograd.html" data-book-page-id="11601">自动求导机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_broadcasting.html" title="广播语义" data-book-page-rel-url="docs/1.0/notes_broadcasting.html" data-book-page-id="11602">广播语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_cuda.html" title="CUDA 语义" data-book-page-rel-url="docs/1.0/notes_cuda.html" data-book-page-id="11603">CUDA 语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_extending.html" title="Extending PyTorch" data-book-page-rel-url="docs/1.0/notes_extending.html" data-book-page-id="11604">Extending PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_faq.html" title="Frequently Asked Questions" data-book-page-rel-url="docs/1.0/notes_faq.html" data-book-page-id="11605">Frequently Asked Questions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_multiprocessing.html" title="Multiprocessing best practices" data-book-page-rel-url="docs/1.0/notes_multiprocessing.html" data-book-page-id="11606">Multiprocessing best practices</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_randomness.html" title="Reproducibility" data-book-page-rel-url="docs/1.0/notes_randomness.html" data-book-page-id="11607">Reproducibility</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_serialization.html" title="Serialization semantics" data-book-page-rel-url="docs/1.0/notes_serialization.html" data-book-page-id="11608">Serialization semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_windows.html" title="Windows FAQ" data-book-page-rel-url="docs/1.0/notes_windows.html" data-book-page-id="11609">Windows FAQ</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_package_ref.html" title="包参考" data-book-page-rel-url="docs/1.0/docs_package_ref.html" data-book-page-id="11610">包参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch.html" title="torch" data-book-page-rel-url="docs/1.0/torch.html" data-book-page-id="11611">torch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensors.html" title="torch.Tensor" data-book-page-rel-url="docs/1.0/tensors.html" data-book-page-id="11612">torch.Tensor</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensor_attributes.html" title="Tensor Attributes" data-book-page-rel-url="docs/1.0/tensor_attributes.html" data-book-page-id="11613">Tensor Attributes</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/type_info.html" title="数据类型信息" data-book-page-rel-url="docs/1.0/type_info.html" data-book-page-id="11614">数据类型信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/sparse.html" title="torch.sparse" data-book-page-rel-url="docs/1.0/sparse.html" data-book-page-id="11615">torch.sparse</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cuda.html" title="torch.cuda" data-book-page-rel-url="docs/1.0/cuda.html" data-book-page-id="11616">torch.cuda</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/storage.html" title="torch.Storage" data-book-page-rel-url="docs/1.0/storage.html" data-book-page-id="11617">torch.Storage</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn.html" title="torch.nn" data-book-page-rel-url="docs/1.0/nn.html" data-book-page-id="11618">torch.nn</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_functional.html" title="torch.nn.functional" data-book-page-rel-url="docs/1.0/nn_functional.html" data-book-page-id="11619">torch.nn.functional</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_init.html" title="torch.nn.init" data-book-page-rel-url="docs/1.0/nn_init.html" data-book-page-id="11620">torch.nn.init</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/optim.html" title="torch.optim" data-book-page-rel-url="docs/1.0/optim.html" data-book-page-id="11621">torch.optim</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/autograd.html" title="Automatic differentiation package - torch.autograd" data-book-page-rel-url="docs/1.0/autograd.html" data-book-page-id="11622">Automatic differentiation package - torch.autograd</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed.html" title="Distributed communication package - torch.distributed" data-book-page-rel-url="docs/1.0/distributed.html" data-book-page-id="11623">Distributed communication package - torch.distributed</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributions.html" title="Probability distributions - torch.distributions" data-book-page-rel-url="docs/1.0/distributions.html" data-book-page-id="11624">Probability distributions - torch.distributions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/jit.html" title="Torch Script" data-book-page-rel-url="docs/1.0/jit.html" data-book-page-id="11625">Torch Script</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/multiprocessing.html" title="多进程包 - torch.multiprocessing" data-book-page-rel-url="docs/1.0/multiprocessing.html" data-book-page-id="11626">多进程包 - torch.multiprocessing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/bottleneck.html" title="torch.utils.bottleneck" data-book-page-rel-url="docs/1.0/bottleneck.html" data-book-page-id="11627">torch.utils.bottleneck</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/checkpoint.html" title="torch.utils.checkpoint" data-book-page-rel-url="docs/1.0/checkpoint.html" data-book-page-id="11628">torch.utils.checkpoint</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_cpp_extension.html" title="torch.utils.cpp_extension" data-book-page-rel-url="docs/1.0/docs_cpp_extension.html" data-book-page-id="11629">torch.utils.cpp_extension</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data.html" title="torch.utils.data" data-book-page-rel-url="docs/1.0/data.html" data-book-page-id="11630">torch.utils.data</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dlpack.html" title="torch.utils.dlpack" data-book-page-rel-url="docs/1.0/dlpack.html" data-book-page-id="11631">torch.utils.dlpack</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/hub.html" title="torch.hub" data-book-page-rel-url="docs/1.0/hub.html" data-book-page-id="11632">torch.hub</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/model_zoo.html" title="torch.utils.model_zoo" data-book-page-rel-url="docs/1.0/model_zoo.html" data-book-page-id="11633">torch.utils.model_zoo</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/onnx.html" title="torch.onnx" data-book-page-rel-url="docs/1.0/onnx.html" data-book-page-id="11634">torch.onnx</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed_deprecated.html" title="Distributed communication package (deprecated) - torch.distributed.deprecated" data-book-page-rel-url="docs/1.0/distributed_deprecated.html" data-book-page-id="11635">Distributed communication package (deprecated) - torch.distributed.deprecated</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_torchvision_ref.html" title="torchvision 参考" data-book-page-rel-url="docs/1.0/docs_torchvision_ref.html" data-book-page-id="11636">torchvision 参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_datasets.html" title="torchvision.datasets" data-book-page-rel-url="docs/1.0/torchvision_datasets.html" data-book-page-id="11637">torchvision.datasets</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_models.html" title="torchvision.models" data-book-page-rel-url="docs/1.0/torchvision_models.html" data-book-page-id="11638">torchvision.models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_transforms.html" title="torchvision.transforms" data-book-page-rel-url="docs/1.0/torchvision_transforms.html" data-book-page-id="11639">torchvision.transforms</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_utils.html" title="torchvision.utils" data-book-page-rel-url="docs/1.0/torchvision_utils.html" data-book-page-id="11640">torchvision.utils</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =169;var bookPageId =11594;var bookPageRelUrl ='docs/1.0/dist_tuto.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

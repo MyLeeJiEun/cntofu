@@ -1,0 +1,588 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Serialization（序列化）-Apache Storm 官方文档中文版</title>
+<meta content='Serialization（序列化）,Apache Storm 官方文档中文版' name='keywords'>
+<meta content='Serialization（序列化）,Apache Storm 官方文档中文版' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/108/doc/zh/windows-users-guide.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Windows 平台的..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/108/doc/zh/Common-patterns.html">
+<span class="">Common patt..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/108/index.html">Apache Storm 官方文档中文版</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/storm-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<hr>
+<h2 id="title-序列化layout-documentationdocumentation-true">title: 序列化 layout: documentation documentation: true</h2>
+<p>序列化 本文阐述了 Storm 0.6.0 以上版本的序列化机制。在低于 0.6.0 版本的 Storm 中使用了另一种序列化系统，详细信息可以参考 <a href="Serialization-(prior-to-0.6.0).html">Serialization (prior to 0.6.0)</a> 一文</p>
+<p>Storm 中的 tuple 可以包含任何类型的对象。由于 Storm 是一个分布式系统，所以在不同的任务之间传递消息时 Storm 必须知道怎样序列化、反序列化消息对象。</p>
+<p>Storm 使用 <a href="https://github.com/EsotericSoftware/kryo">Kryo</a> 对对象进行序列化。Kryo 是一个灵活、快速的序列化库。</p>
+<p>Storm 默认支持基础类型、string、byte arrays、ArrayList、HashMap、HashSet 以及 Clojure 的集合类型的序列化。如果你需要在 tuple 中使用其他的对象类型，你就需要注册一个自定义的序列化器。</p>
+<h3 id="dynamic-typing动态类型">Dynamic typing(动态类型)</h3>
+<p>在 tuple 中没有对各个字段（field）的直接类型声明。你需要将对象放入对应的字段中，然后 Storm 可以动态地实现对象的序列化。在学习序列化接口之前，我们先来了解一下为什么 Storm 的 tuple 是动态类型化的。</p>
+<p>为 tuple fields 增加静态类型会大幅增加 Storm 的 API 的复杂度。比如 Hadoop 就将它的 key 和 value 都静态化了，这就要求用户自己添加大量的注解。使用 Hadoop 的 API 非常繁琐，而相应的“类型安全”不值得。相对的，动态类型就非常易于使用。</p>
+<p>进一步说，也不可能有什么合理的方法将 Storm 的 tuple 的类型静态化。假如一个 Bolt 订阅了多个 stream，从这些 stream 传入的 tuple 很可能都带有不同的类型。在 Bolt 的 execute 方法接收到一个 tuple 的时候，这个 tuple 可能来自任何一个 stream，也可能包含各种组合类型。也许你可以使用某种反射机制来为 bolt 订阅的每个 tuple stream 声明一个方法类处理 tuple，但是 Storm 可以提供一种更简单、更直接的动态类型机制来解决这个问题。</p>
+<p>最后，Storm 使用动态类型定义的另一个原因就是为了用简洁直观的方式使用 Clojure、JRuby 这样的动态类型语言。</p>
+<h3 id="custom-serialization自定义序列化">Custom serialization(自定义序列化)</h3>
+<p>前面已经提到，Storm 使用 Kryo 来处理序列化。如果要实现自定义的序列化生成器，你需要用Kryo注册一个新的序列化生成器。强烈建议读者先仔细阅读 <a href="https://github.com/EsotericSoftware/kryo">Kryo's home page</a> 来理解它是怎样处理自定义的序列化的。</p>
+<p>可以通过topology的 topology.kryo.register 属性来添加自定义序列化生成器。该属性接收一个注册器列表，每个注册项都可以使用以下两种注册格式中的一种格式： 1.只有一个待注册的类的名称。在这种情况下，Storm 会使用 Kryo 的 FieldsSerializer 来序列化该类。这也许并不一定是该类的最优化方式 —— 可以查看 Kryo 的文档来了解更多细节内容。 2. 一个包含待注册的类的名称和实现了 <a href="https://github.com/EsotericSoftware/kryo/blob/master/src/com/esotericsoftware/kryo/Serializer.java">com.esotericsoftware.kryo.Serializer</a>接口的类组成的集合。 我们来看个例子.</p>
+<pre><code>topology.kryo.register:
+  - com.mycompany.CustomType1
+  - com.mycompany.CustomType2: com.mycompany.serializer.CustomType2Serializer
+  - com.mycompany.CustomType3
+</code></pre>
+<p><code>com.mycompany.CustomType1</code> 和 <code>com.mycompany.CustomType3</code> 会使用 <code>FieldsSerializer</code>，而<code>com.mycompany.CustomType2</code> 则会使用 <code>com.mycompany.serializer.CustomType2Serializer</code>来实现序列化。</p>
+<p>Storm provides helpers for registering serializers in a topology config. The <a href="javadocs/org/apache/storm/Config.html">Config</a> class has a method called <code>registerSerialization</code> that takes in a registration to add to the config. 在topology的配置中，Storm 提供了用于注册序列化生成器的帮助类。<a href="javadocs/org/apache/storm/Config.html">Config</a> 类有一个 registerSerialization 方法可以将序列化生成器注册到配置中。</p>
+<p>Config 中有一个更高级的配置项做 <code>Config.TOPOLOGY_SKIP_MISSING_KRYO_REGISTRATIONS</code>。如果你将该项设置为 true，Storm 会忽略掉所有已注册但是在topology的类路径上没有相应的代码的序列化器。否则，Storm 会在无法查找到序列化器的时候抛出错误。如果你在集群中运行有多个topology并且每个topology都有不同的序列化器，但是你又想要在<code>storm.yaml</code>中声明好所有的序列化器，在这种情况下这个配置项会有很大的帮助。</p>
+<h3 id="java-serializationjava-序列化">Java serialization(java 序列化)</h3>
+<p>如果 Storm 发现了一个没有注册序列化器的类型，它会使用 Java 序列化器来代替，如果这个对象无法被 Java 序列化器序列化，Storm 就会抛出异常。</p>
+<p>注意，Java 自身的序列化机制非常耗费资源，而且不管在 CPU 的性能上还是在序列化对象的大小上都没有优势。强烈建议读者在生产环境中运行topology 的时候注册一个自定义的序列化器。保留 Java 的序列化机制主要为了便于设计新topology 的原型。</p>
+<p>你可以通过将 Config.TOPOLOGY_FALL_BACK_ON_JAVA_SERIALIZATION 配置为 false 的方式来将序列化器回退到 Java 的序列化机制。</p>
+<h3 id="component-specific-serialization-registrations特定组件的序列化注册">Component-specific serialization registrations(特定组件的序列化注册)</h3>
+<p>Storm 0.7.0 支持对特定组件的配置（详情请参阅Storm配置一文）。当然，如果某个组件定义了一个序列化器，这个序列化器也需要能够支持其他的 bolt —— 否则，后续的 bolt 将会无法接收来自该组件的消息！</p>
+<p>在提交topology 的时候，topology 会选择一组序列化器用于在所有的组件间传递消息。这是通过将特定组件的序列化器注册信息与普通的序列化器信息融合在一起实现的。如果两个组件为同一个类定义了两个序列化器，Storm 会从中任意选择一个。</p>
+<p>如果在两个组件的序列化器注册信息冲突的时候需要强制使用一个序列化器，可以在topology 级的配置中定义你想要的序列化器。对于序列化器的注册信息，拓扑中配置的值是优先于具体组件的配置的。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/198/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/198/index.html">大数据入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/113.html">heibaiying</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">98页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/84/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/84/index.html">Java后端开发笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/54.html">shunliz</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/161/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/161/index.html">关于python的面试题</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/92.html">jackfrued</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">271页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33个">33</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/77/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/openstack_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/77/index.html">深入理解 Neutron -- OpenStack 网络实现</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="openstack">openstack</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 136个">136</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/66/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/66/index.html">Java 8:新特性教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/42.html">shekhargulati</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1241个">1241</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/117/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/117/index.html">成为专业程序员路上用到的各种优秀资料、神器及框架</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">26页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/108/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7785">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 基础" disabled data-book-page-rel-url="" data-book-page-id="7786">Storm 基础</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Javadoc.html" title="Javadoc" data-book-page-rel-url="doc/zh/Javadoc.html" data-book-page-id="7787">Javadoc</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Concepts.html" title="概念" data-book-page-rel-url="doc/zh/Concepts.html" data-book-page-id="7788">概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Storm-Scheduler.html" title="调度器" data-book-page-rel-url="doc/zh/Storm-Scheduler.html" data-book-page-id="7789">调度器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Configuration.html" title="配置" data-book-page-rel-url="doc/zh/Configuration.html" data-book-page-id="7790">配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Guaranteeing-message-processing.html" title="保证消息处理" data-book-page-rel-url="doc/zh/Guaranteeing-message-processing.html" data-book-page-id="7791">保证消息处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Daemon-Fault-Tolerance.html" title="Daemon（守护进程）容错" data-book-page-rel-url="doc/zh/Daemon-Fault-Tolerance.html" data-book-page-id="7792">Daemon（守护进程）容错</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Command-line-client.html" title="命令行 client（客户端）" data-book-page-rel-url="doc/zh/Command-line-client.html" data-book-page-id="7793">命令行 client（客户端）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/STORM-UI-REST-API.html" title="REST API" data-book-page-rel-url="doc/zh/STORM-UI-REST-API.html" data-book-page-id="7794">REST API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Understanding-the-parallelism-of-a-Storm-topology.html" title="理解 Storm topology 的 parallelism（并行度）" data-book-page-rel-url="doc/zh/Understanding-the-parallelism-of-a-Storm-topology.html" data-book-page-id="7795">理解 Storm topology 的 parallelism（并行度）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/FAQ.html" title="FAQ" data-book-page-rel-url="doc/zh/FAQ.html" data-book-page-id="7796">FAQ</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm Trident" disabled data-book-page-rel-url="" data-book-page-id="7797">Storm Trident</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Layers on Top of Storm" disabled data-book-page-rel-url="" data-book-page-id="7798">Layers on Top of Storm</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-tutorial.html" title="Trident 教程" data-book-page-rel-url="doc/zh/Trident-tutorial.html" data-book-page-id="7799">Trident 教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-API-Overview.html" title="Trident API 概述" data-book-page-rel-url="doc/zh/Trident-API-Overview.html" data-book-page-id="7800">Trident API 概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-state.html" title="Trident State（状态）" data-book-page-rel-url="doc/zh/Trident-state.html" data-book-page-id="7801">Trident State（状态）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-spouts.html" title="Trident spouts" data-book-page-rel-url="doc/zh/Trident-spouts.html" data-book-page-id="7802">Trident spouts</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-RAS-API.html" title="Trident RAS API" data-book-page-rel-url="doc/zh/Trident-RAS-API.html" data-book-page-id="7803">Trident RAS API</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm SQL" disabled data-book-page-rel-url="" data-book-page-id="7804">Storm SQL</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql.html" title="Storm SQL 概述" data-book-page-rel-url="doc/zh/storm-sql.html" data-book-page-id="7805">Storm SQL 概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-example.html" title="Storm SQL 示例" data-book-page-rel-url="doc/zh/storm-sql-example.html" data-book-page-id="7806">Storm SQL 示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-reference.html" title="Storm SQL 文献" data-book-page-rel-url="doc/zh/storm-sql-reference.html" data-book-page-id="7807">Storm SQL 文献</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-internal.html" title="Storm SQL 结构" data-book-page-rel-url="doc/zh/storm-sql-internal.html" data-book-page-id="7808">Storm SQL 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Flux" disabled data-book-page-rel-url="" data-book-page-id="7809">Flux</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/flux.html" title="Flux Data Driven Topology Builder" data-book-page-rel-url="doc/zh/flux.html" data-book-page-id="7810">Flux Data Driven Topology Builder</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 安装和部署" disabled data-book-page-rel-url="" data-book-page-id="7811">Storm 安装和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Setting-up-a-Storm-cluster.html" title="安装一个 Storm 集群" data-book-page-rel-url="doc/zh/Setting-up-a-Storm-cluster.html" data-book-page-id="7812">安装一个 Storm 集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Local-mode.html" title="Local mode（本地模式）" data-book-page-rel-url="doc/zh/Local-mode.html" data-book-page-id="7813">Local mode（本地模式）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Troubleshooting.html" title="问题排查" data-book-page-rel-url="doc/zh/Troubleshooting.html" data-book-page-id="7814">问题排查</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Running-topologies-on-a-production-cluster.html" title="在生产 cluster（集群）上运行 topologies（拓扑）" data-book-page-rel-url="doc/zh/Running-topologies-on-a-production-cluster.html" data-book-page-id="7815">在生产 cluster（集群）上运行 topologies（拓扑）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Maven.html" title="构建 Storm with Maven" data-book-page-rel-url="doc/zh/Maven.html" data-book-page-id="7816">构建 Storm with Maven</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/SECURITY.html" title="安装 Secure（安全的）Cluster（集群）" data-book-page-rel-url="doc/zh/SECURITY.html" data-book-page-id="7817">安装 Secure（安全的）Cluster（集群）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/cgroups_in_storm.html" title="CGroup 的实施" data-book-page-rel-url="doc/zh/cgroups_in_storm.html" data-book-page-id="7818">CGroup 的实施</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Pacemaker.html" title="Pacemaker 针对大集群减低在 zookeeper 上的负载" data-book-page-rel-url="doc/zh/Pacemaker.html" data-book-page-id="7819">Pacemaker 针对大集群减低在 zookeeper 上的负载</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Resource_Aware_Scheduler_overview.html" title="Resource Aware Scheduler（资源意识调度器）" data-book-page-rel-url="doc/zh/Resource_Aware_Scheduler_overview.html" data-book-page-id="7820">Resource Aware Scheduler（资源意识调度器）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-metrics-profiling-internal-actions.html" title="Daemon Metrics/Monitoring（守护进程的度量/监控）" data-book-page-rel-url="doc/zh/storm-metrics-profiling-internal-actions.html" data-book-page-id="7821">Daemon Metrics/Monitoring（守护进程的度量/监控）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/windows-users-guide.html" title="Windows 平台的用户指南" data-book-page-rel-url="doc/zh/windows-users-guide.html" data-book-page-id="7822">Windows 平台的用户指南</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 中级" disabled data-book-page-rel-url="" data-book-page-id="7823">Storm 中级</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Serialization.html" title="Serialization（序列化）" data-book-page-rel-url="doc/zh/Serialization.html" data-book-page-id="7824">Serialization（序列化）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Common-patterns.html" title="Common patterns（常见模式）" data-book-page-rel-url="doc/zh/Common-patterns.html" data-book-page-id="7825">Common patterns（常见模式）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Clojure-DSL.html" title="Clojure DSL" data-book-page-rel-url="doc/zh/Clojure-DSL.html" data-book-page-id="7826">Clojure DSL</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Using-non-JVM-languages-with-Storm.html" title="与 Storm 一起使用非 JVM 的语言" data-book-page-rel-url="doc/zh/Using-non-JVM-languages-with-Storm.html" data-book-page-id="7827">与 Storm 一起使用非 JVM 的语言</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Distributed-RPC.html" title="分布式的 RPC" data-book-page-rel-url="doc/zh/Distributed-RPC.html" data-book-page-id="7828">分布式的 RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Transactional-topologies.html" title="Transactional topologies（事务性的拓扑）" data-book-page-rel-url="doc/zh/Transactional-topologies.html" data-book-page-id="7829">Transactional topologies（事务性的拓扑）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Hooks.html" title="Hooks（钩子）" data-book-page-rel-url="doc/zh/Hooks.html" data-book-page-id="7830">Hooks（钩子）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Metrics.html" title="Metrics（度量）" data-book-page-rel-url="doc/zh/Metrics.html" data-book-page-id="7831">Metrics（度量）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/State-checkpointing.html" title="State Checkpointing" data-book-page-rel-url="doc/zh/State-checkpointing.html" data-book-page-id="7832">State Checkpointing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Windowing.html" title="Windowing（窗口操作）" data-book-page-rel-url="doc/zh/Windowing.html" data-book-page-id="7833">Windowing（窗口操作）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Joins.html" title="Joining Streams" data-book-page-rel-url="doc/zh/Joins.html" data-book-page-id="7834">Joining Streams</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/distcache-blobstore.html" title="Blobstore(Distcahce)" data-book-page-rel-url="doc/zh/distcache-blobstore.html" data-book-page-id="7835">Blobstore(Distcahce)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 调试" disabled data-book-page-rel-url="" data-book-page-id="7836">Storm 调试</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/dynamic-log-level-settings.html" title="Dynamic Log Level Settings" data-book-page-rel-url="doc/zh/dynamic-log-level-settings.html" data-book-page-id="7837">Dynamic Log Level Settings</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Logs.html" title="Searching Worker Logs" data-book-page-rel-url="doc/zh/Logs.html" data-book-page-id="7838">Searching Worker Logs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/dynamic-worker-profiling.html" title="Worker Profiling" data-book-page-rel-url="doc/zh/dynamic-worker-profiling.html" data-book-page-id="7839">Worker Profiling</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Eventlogging.html" title="Event Logging" data-book-page-rel-url="doc/zh/Eventlogging.html" data-book-page-id="7840">Event Logging</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 与外部系统, 以及其它库的集成" disabled data-book-page-rel-url="" data-book-page-id="7841">Storm 与外部系统, 以及其它库的集成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kafka.html" title="Apache Kafka 集成" data-book-page-rel-url="doc/zh/storm-kafka.html" data-book-page-id="7842">Apache Kafka 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kafka-client.html" title="新的 Kafka Consumer（消费者）集成" data-book-page-rel-url="doc/zh/storm-kafka-client.html" data-book-page-id="7843">新的 Kafka Consumer（消费者）集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hbase.html" title="Apache HBase 集成" data-book-page-rel-url="doc/zh/storm-hbase.html" data-book-page-id="7844">Apache HBase 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hdfs.html" title="Apache HDFS 集成" data-book-page-rel-url="doc/zh/storm-hdfs.html" data-book-page-id="7845">Apache HDFS 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hive.html" title="Apache Hive 集成" data-book-page-rel-url="doc/zh/storm-hive.html" data-book-page-id="7846">Apache Hive 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-solr.html" title="Apache Solr 集成" data-book-page-rel-url="doc/zh/storm-solr.html" data-book-page-id="7847">Apache Solr 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-cassandra.html" title="Apache Cassandra 集成" data-book-page-rel-url="doc/zh/storm-cassandra.html" data-book-page-id="7848">Apache Cassandra 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-jdbc.html" title="JDBC 集成" data-book-page-rel-url="doc/zh/storm-jdbc.html" data-book-page-id="7849">JDBC 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-jms.html" title="JMS 集成" data-book-page-rel-url="doc/zh/storm-jms.html" data-book-page-id="7850">JMS 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-redis.html" title="Redis 集成" data-book-page-rel-url="doc/zh/storm-redis.html" data-book-page-id="7851">Redis 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-eventhubs.html" title="Event Hubs 集成" data-book-page-rel-url="doc/zh/storm-eventhubs.html" data-book-page-id="7852">Event Hubs 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-elasticsearch.html" title="Elasticsearch 集成" data-book-page-rel-url="doc/zh/storm-elasticsearch.html" data-book-page-id="7853">Elasticsearch 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-mqtt.html" title="MQTT 集成" data-book-page-rel-url="doc/zh/storm-mqtt.html" data-book-page-id="7854">MQTT 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-mongodb.html" title="Mongodb 集成" data-book-page-rel-url="doc/zh/storm-mongodb.html" data-book-page-id="7855">Mongodb 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-opentsdb.html" title="OpenTSDB 集成" data-book-page-rel-url="doc/zh/storm-opentsdb.html" data-book-page-id="7856">OpenTSDB 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kinesis.html" title="Kinesis 集成" data-book-page-rel-url="doc/zh/storm-kinesis.html" data-book-page-id="7857">Kinesis 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-druid.html" title="Druid 集成" data-book-page-rel-url="doc/zh/storm-druid.html" data-book-page-id="7858">Druid 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Kestrel-and-Storm.html" title="Kestrel 集成" data-book-page-rel-url="doc/zh/Kestrel-and-Storm.html" data-book-page-id="7859">Kestrel 集成</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Container, Resource Management System Integration" disabled data-book-page-rel-url="" data-book-page-id="7860">Container, Resource Management System Integration</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-yarn.html" title="YARN 集成" data-book-page-rel-url="doc/zh/storm-yarn.html" data-book-page-id="7861">YARN 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/mesos-storm.html" title="Mesos 集成" data-book-page-rel-url="doc/zh/mesos-storm.html" data-book-page-id="7862">Mesos 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/docker-storm.html" title="Docker 集成" data-book-page-rel-url="doc/zh/docker-storm.html" data-book-page-id="7863">Docker 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/kubernetes-storm.html" title="Kubernetes 集成" data-book-page-rel-url="doc/zh/kubernetes-storm.html" data-book-page-id="7864">Kubernetes 集成</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 高级" disabled data-book-page-rel-url="" data-book-page-id="7865">Storm 高级</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Defining-a-non-jvm-language-dsl-for-storm.html" title="为 Storm 定义非 JVM 语言的 DSL" data-book-page-rel-url="doc/zh/Defining-a-non-jvm-language-dsl-for-storm.html" data-book-page-id="7866">为 Storm 定义非 JVM 语言的 DSL</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Multilang-protocol.html" title="多语言协议（如何为其它语言提供支持）" data-book-page-rel-url="doc/zh/Multilang-protocol.html" data-book-page-id="7867">多语言协议（如何为其它语言提供支持）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Implementation-docs.html" title="实现文档" data-book-page-rel-url="doc/zh/Implementation-docs.html" data-book-page-id="7868">实现文档</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =108;var bookPageId =7824;var bookPageRelUrl ='doc/zh/Serialization.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

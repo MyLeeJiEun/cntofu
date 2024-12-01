@@ -1,0 +1,774 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>信号量-Linux 内核揭密</title>
+<meta content='信号量,Linux 内核揭密' name='keywords'>
+<meta content='信号量,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/SyncPrim/sync-2.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">队列自旋锁</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/SyncPrim/sync-4.html">
+<span class="">互斥锁</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="内核同步原语-第三部分">内核同步原语. 第三部分.</h1>
+<h2 id="信号量">信号量</h2>
+<p>这是本章的第三部分 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/index.html">chapter</a>，本章描述了内核中的同步原语,在之前的部分我们见到了特殊的 <a href="https://en.wikipedia.org/wiki/Spinlock">自旋锁</a> - <code>排队自旋锁</code>。 在更前的 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-2.html">部分</a> 是和 <code>自旋锁</code> 相关的描述。我们将描述更多同步原语。</p>
+<p>在 <code>自旋锁</code> 之后的下一个我们将要讲到的 <a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">内核同步原语</a>是 <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">信号量</a>。我们会从理论角度开始学习什么是 <code>信号量</code>， 然后我们会像前几章一样讲到Linux内核是如何实现信号量的。</p>
+<p>好吧，现在我们开始。</p>
+<h2 id="介绍linux内核中的信号量">介绍Linux内核中的信号量</h2>
+<p>那么究竟什么是 <code>信号量</code> ？就像你可以猜到那样 - <code>信号量</code> 是另外一种支持线程或者进程的同步机制。Linux内核已经提供了一种同步机制 - <code>自旋锁</code>， 为什么我们还需要另外一种呢？为了回答这个问题，我们需要理解这两种机制。我们已经熟悉了 <code>自旋锁</code> ,因此我们从 <code>信号量</code> 机制开始。</p>
+<p><code>自旋锁</code> 的设计理念是它仅会被持有非常短的时间。 但持有自旋锁的时候我们不可以进入睡眠模式因为其他的进程在等待我们。为了防止 <a href="https://en.wikipedia.org/wiki/Deadlock">死锁</a> <a href="https://en.wikipedia.org/wiki/Context_switch">上下文交换</a> 也是不允许的。</p>
+<p>当需要长时间持有一个锁的时候 <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">信号量</a> 就是一个很好的解决方案。从另一个方面看，这个机制对于需要短期持有锁的应用并不是最优。为了理解这个问题，我们需要知道什么是 <code>信号量</code>。</p>
+<p>就像一般的同步原语，<code>信号量</code> 是基于变量的。这个变量可以变大或者减少，并且这个变量的状态代表了获取锁的能力。注意这个变量的值并不限于 <code>0</code> 和 <code>1</code>。有两种类型的 <code>信号量</code>：</p>
+<ul>
+<li><code>二值信号量</code>;</li>
+<li><code>普通信号量</code>.</li>
+</ul>
+<p>第一种 <code>信号量</code> 的值可以为 <code>1</code> 或者 <code>0</code>。第二种 <code>信号量</code> 的值可以为任何非负数。如果 <code>信号量</code> 的值大于 <code>1</code> 那么它被叫做 <code>计数信号量</code>，并且它允许多于 <code>1</code> 个进程获取它。这种机制允许我们记录现有的资源，而 <code>自旋锁</code> 只允许我们为一个任务上锁。除了所有这些之外，另外一个重要的点是 <code>信号量</code> 允许进入睡眠状态。 另外当某进程在等待一个被其他进程获取的锁时， <a href="https://en.wikipedia.org/wiki/Scheduling_%28computing%29">调度器</a> 也许会切换别的进程。</p>
+<h2 id="信号量-api">信号量 API</h2>
+<p>因此，我们从理论方面了解一些 <code>信号量</code>的知识，我们来看看它在Linux内核中是如何实现的。所有 <code>信号量</code> 相关的 <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> 都在名为 <a href="https://github.com/torvalds/linux/blob/master/include/linux/semaphore.h">include/linux/semaphore.h</a> 的头文件中</p>
+<p>我们看到 <code>信号量</code> 机制是有以下的结构体表示的：</p>
+<pre><code class="language-C">struct semaphore {
+	raw_spinlock_t		lock;
+	unsigned int		count;
+	struct list_head	wait_list;
+};
+</code></pre>
+<p>在内核中， <code>信号量</code> 结构体由三部分组成：</p>
+<ul>
+<li><code>lock</code> - 保护 <code>信号量</code> 的 <code>自旋锁</code>;</li>
+<li><code>count</code> - 现有资源的数量;</li>
+<li><code>wait_list</code> - 等待获取此锁的进程序列.</li>
+</ul>
+<p>在我们考虑Linux内核的的 <code>信号量</code> <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> 之前，我们需要知道如何初始化一个 <code>信号量</code>。事实上， Linux内核提供了两个 <code>信号量</code> 的初始函数。这些函数允许初始化一个 <code>信号量</code> 为：</p>
+<ul>
+<li><code>静态</code>;</li>
+<li><code>动态</code>.</li>
+</ul>
+<p>我们来看看第一个种初始化静态 <code>信号量</code>。我们可以使用 <code>DEFINE_SEMAPHORE</code> 宏将 <code>信号量</code> 静态初始化。</p>
+<pre><code class="language-C">#define DEFINE_SEMAPHORE(name)  \
+         struct semaphore name = __SEMAPHORE_INITIALIZER(name, 1)
+</code></pre>
+<p>就像我们看到这样，<code>DEFINE_SEMAPHORE</code> 宏只提供了初始化 <code>二值</code> 信号量。 <code>DEFINE_SEMAPHORE</code> 宏展开到 <code>信号量</code> 结构体的定义。结构体通过 <code>__SEMAPHORE_INITIALIZER</code> 宏初始化。我们来看看这个宏的实现</p>
+<pre><code class="language-C">#define __SEMAPHORE_INITIALIZER(name, n)              \
+{                                                                       \
+        .lock           = __RAW_SPIN_LOCK_UNLOCKED((name).lock),        \
+        .count          = n,                                            \
+        .wait_list      = LIST_HEAD_INIT((name).wait_list),             \
+}
+</code></pre>
+<p><code>__SEMAPHORE_INITIALIZER</code> 宏传入了 <code>信号量</code> 结构体的名字并且初始化这个结构体的各个域。首先我们使用 <code>__RAW_SPIN_LOCK_UNLOCKED</code> 宏对给予的 <code>信号量</code> 初始化一个 <code>自旋锁</code>。就像你从 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">之前</a> 的部分看到那样，<code>__RAW_SPIN_LOCK_UNLOCKED</code> 宏是在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/spinlock_types.h">include/linux/spinlock_types.h</a> 头文件中定义，它展开到 <code>__ARCH_SPIN_LOCK_UNLOCKED</code> 宏，而 <code>__ARCH_SPIN_LOCK_UNLOCKED</code> 宏又展开到零或者无锁状态</p>
+<pre><code class="language-C">#define __ARCH_SPIN_LOCK_UNLOCKED       { { 0 } }
+</code></pre>
+<p><code>信号量</code> 的最后两个域 <code>count</code> 和 <code>wait_list</code> 是通过现有资源的数量和空 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/DataStructures/dlist.html">链表</a>来初始化。 第二种初始化 <code>信号量</code> 的方式是将 <code>信号量</code> 和现有资源数目传送给 <code>sema_init</code> 函数。 这个函数是在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/semaphore.h">include/linux/semaphore.h</a> 头文件中定义的。</p>
+<pre><code class="language-C">static inline void sema_init(struct semaphore *sem, int val)
+{
+       static struct lock_class_key __key;
+       *sem = (struct semaphore) __SEMAPHORE_INITIALIZER(*sem, val);
+       lockdep_init_map(&amp;sem-&gt;lock.dep_map, "semaphore-&gt;lock", &amp;__key, 0);
+}
+</code></pre>
+<p>我们来看看这个函数是如何实现的。它看起来很简单。函数使用我们刚看到的 <code>__SEMAPHORE_INITIALIZER</code> 宏对传入的 <code>信号量</code> 进行初始化。就像我们在之前 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/index.html">部分</a> 写的那样，我们将会跳过Linux内核关于 <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">锁验证</a> 的部分。 从现在开始我们知道如何初始化一个 <code>信号量</code>，我们看看如何上锁和解锁。Linux内核提供了如下操作 <code>信号量</code> 的 <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></p>
+<pre><code>void down(struct semaphore *sem);
+void up(struct semaphore *sem);
+int  down_interruptible(struct semaphore *sem);
+int  down_killable(struct semaphore *sem);
+int  down_trylock(struct semaphore *sem);
+int  down_timeout(struct semaphore *sem, long jiffies);
+</code></pre>
+<p>前两个函数： <code>down</code> 和 <code>up</code> 是用来获取或释放 <code>信号量</code>。 <code>down_interruptible</code>函数试图去获取一个 <code>信号量</code>。如果被成功获取，<code>信号量</code> 的计数就会被减少并且锁也会被获取。同时当前任务也会被调度到受阻状态，也就是说 <code>TASK_INTERRUPTIBLE</code> 标志将会被至位。<code>TASK_INTERRUPTIBLE</code> 表示这个进程也许可以通过 <a href="https://en.wikipedia.org/wiki/Unix_signal">信号</a> 退回到销毁状态。</p>
+<p><code>down_killable</code> 函数和 <code>down_interruptible</code> 函数提供类似的功能，但是它还将当前进程的 <code>TASK_KILLABLE</code> 标志置位。这表示等待的进程可以被杀死信号中断。</p>
+<p><code>down_trylock</code> 函数和 <code>spin_trylock</code> 函数相似。这个函数试图去获取一个锁并且退出如果这个操作是失败的。在这个例子中，想获取锁的进程不会等待。最后的 <code>down_timeout</code>函数试图去获取一个锁。当前进程将会被中断进入到等待状态当超过传入的可等待时间。除此之外你也许注意到，这个等待的时间是以 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-1.html">jiffies</a>计数。</p>
+<p>我们刚刚看了 <code>信号量</code> <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>的定义。我们从 <code>down</code> 函数开始看。这个函数是在 <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/semaphore.c">kernel/locking/semaphore.c</a> 源代码定义的。我们来看看函数实现：</p>
+<pre><code class="language-C">void down(struct semaphore *sem)
+{
+        unsigned long flags;
+
+        raw_spin_lock_irqsave(&amp;sem-&gt;lock, flags);
+        if (likely(sem-&gt;count &gt; 0))
+                sem-&gt;count--;
+        else
+                __down(sem);
+        raw_spin_unlock_irqrestore(&amp;sem-&gt;lock, flags);
+}
+EXPORT_SYMBOL(down);
+</code></pre>
+<p>我们先看在 <code>down</code> 函数起始处定义的 <code>flags</code> 变量。这个变量将会传入到 <code>raw_spin_lock_irqsave</code> 和 <code>raw_spin_lock_irqrestore</code> 宏定义。这些宏是在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/spinlock.h">include/linux/spinlock.h</a>头文件定义的。这些宏用来保护当前 <code>信号量</code> 的计数器。事实上这两个宏的作用和 <code>spin_lock</code> 和 <code>spin_unlock</code> 宏相似。只不过这组宏会存储/重置当前中断标志并且禁止 <a href="https://en.wikipedia.org/wiki/Interrupt">中断</a>。</p>
+<p>就像你猜到那样， <code>down</code> 函数的主要就是通过 <code>raw_spin_lock_irqsave</code> 和 <code>raw_spin_unlock_irqrestore</code> 宏来实现的。我们通过将 <code>信号量</code> 的计数器和零对比，如果计数器大于零，我们可以减少这个计数器。这表示我们已经获取了这个锁。否则如果计数器是零，这表示所以的现有资源都已经被占用，我们需要等待以获取这个锁。就像我们看到那样， <code>__down</code> 函数将会被调用。 <code>__down</code> 函数是在 <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/semaphore.c">相同</a>)的源代码定义的，它的实现看起来如下：</p>
+<pre><code class="language-C">static noinline void __sched __down(struct semaphore *sem)
+{
+        __down_common(sem, TASK_UNINTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
+}
+</code></pre>
+<p><code>__down</code> 函数仅仅调用了 <code>__down_common</code> 函数，并且传入了三个参数</p>
+<ul>
+<li><code>semaphore</code>;</li>
+<li><code>flag</code> - 对当前任务;</li>
+<li><code>timeout</code> - 最长等待 <code>信号量</code> 的时间.</li>
+</ul>
+<p>在我们看 <code>__down_common</code> 函数之前，注意 <code>down_trylock</code>, <code>down_timeout</code> 和 <code>down_killable</code> 的实现也都是基于 <code>__down_common</code> 函数。</p>
+<pre><code class="language-C">static noinline int __sched __down_interruptible(struct semaphore *sem)
+{
+        return __down_common(sem, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
+}
+</code></pre>
+<p><code>__down_killable</code> 函数：</p>
+<pre><code class="language-C">static noinline int __sched __down_killable(struct semaphore *sem)
+{
+        return __down_common(sem, TASK_KILLABLE, MAX_SCHEDULE_TIMEOUT);
+}
+</code></pre>
+<p><code>__down_timeout</code> 函数:</p>
+<pre><code class="language-C">static noinline int __sched __down_timeout(struct semaphore *sem, long timeout)
+{
+        return __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
+}
+</code></pre>
+<p>现在我们来看看 <code>__down_common</code> 函数的实现。这个函数是在 <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/semaphore.c">kernel/locking/semaphore.c</a>源文件中定义的。这个函数的定义从以下两个本地变量开始。</p>
+<pre><code class="language-C">struct task_struct *task = current;
+struct semaphore_waiter waiter;
+</code></pre>
+<p>第一个变量表示当前想获取本地处理器锁的任务。 <code>current</code> 宏是在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/current.h">arch/x86/include/asm/current.h</a> 头文件中定义的。</p>
+<pre><code class="language-C">#define current get_current()
+</code></pre>
+<p><code>get_current</code> 函数返回 <code>current_task</code> <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a> 变量的值。</p>
+<pre><code class="language-C">DECLARE_PER_CPU(struct task_struct *, current_task);
+
+static __always_inline struct task_struct *get_current(void)
+{
+        return this_cpu_read_stable(current_task);
+}
+</code></pre>
+<p>第二个变量是 <code>waiter</code> 表示了一个 <code>semaphore.wait_list</code> 列表的入口：</p>
+<pre><code class="language-C">struct semaphore_waiter {
+        struct list_head list;
+        struct task_struct *task;
+        bool up;
+};
+</code></pre>
+<p>下一步我们将当前进程加入到 <code>wait_list</code> 并且在定义如下变量后填充 <code>waiter</code> 域</p>
+<pre><code class="language-C">list_add_tail(&amp;waiter.list, &amp;sem-&gt;wait_list);
+waiter.task = task;
+waiter.up = false;
+</code></pre>
+<p>下一步我们进入到如下的无限循环：</p>
+<pre><code class="language-C">for (;;) {
+        if (signal_pending_state(state, task))
+            goto interrupted;
+
+        if (unlikely(timeout &lt;= 0))
+            goto timed_out;
+
+        __set_task_state(task, state);
+
+        raw_spin_unlock_irq(&amp;sem-&gt;lock);
+        timeout = schedule_timeout(timeout);
+        raw_spin_lock_irq(&amp;sem-&gt;lock);
+
+        if (waiter.up)
+            return 0;
+}
+</code></pre>
+<p>在之前的代码中我们将 <code>waiter.up</code> 设置为 <code>false</code>。所以当 <code>up</code> 没有设置为 <code>true</code> 任务将会在这个无限循环中循环。这个循环从检查当前的任务是否处于 <code>pending</code> 状态开始，也就是说此任务的标志包含 <code>TASK_INTERRUPTIBLE</code> 或者 <code>TASK_WAKEKILL</code> 标志。我之前写到当一个任务在等待获取一个信号的时候任务也许可以被 ［信号］(https://en.wikipedia.org/wiki/Unix_signal) 中断。<code>signal_pending_state</code> 函数是在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/sched.h">include/linux/sched.h</a>原文件中定义的，它看起来如下：</p>
+<pre><code class="language-C">static inline int signal_pending_state(long state, struct task_struct *p)
+{
+         if (!(state &amp; (TASK_INTERRUPTIBLE | TASK_WAKEKILL)))
+                 return 0;
+         if (!signal_pending(p))
+                 return 0;
+ 
+         return (state &amp; TASK_INTERRUPTIBLE) || __fatal_signal_pending(p);
+}
+</code></pre>
+<p>我们先会检测 <code>state</code> <a href="https://en.wikipedia.org/wiki/Mask_%28computing%29">位掩码</a> 包含 <code>TASK_INTERRUPTIBLE</code> 或者 <code>TASK_WAKEKILL</code> 位，如果不包含这两个位，函数退出。下一步我们检测当前任务是否有一个挂起信号，如果没有挂起信号函数退出。最后我们就检测 <code>state</code> 位掩码的 <code>TASK_INTERRUPTIBLE</code> 位。如果，我们任务包含一个挂起信号，我们将会跳转到 <code>interrupted</code> 标签：</p>
+<pre><code class="language-C">interrupted:
+    list_del(&amp;waiter.list);
+    return -EINTR;
+</code></pre>
+<p>在这个标签中，我们会删除等待锁的列表，然后返回 <code>-EINTR</code> <a href="https://en.wikipedia.org/wiki/Errno.h">错误码</a>。 如果一个任务没有挂起信号，我们检测超时是否小于等于零。</p>
+<pre><code class="language-C">if (unlikely(timeout &lt;= 0))
+    goto timed_out;
+</code></pre>
+<p>我们跳转到 <code>timed_out</code> 标签：</p>
+<pre><code class="language-C">timed_out:
+    list_del(&amp;waiter.list);
+    return -ETIME;
+</code></pre>
+<p>在这个标签里，我们继续做和 <code>interrupted</code> 一样的事情。我们将任务从锁等待者中删除，但是返回 <code>-ETIME</code> 错误码。如果一个任务没有挂起信号而且给予的超时也没有过期，当前的任务将会被设置为传入的 <code>state</code>：</p>
+<pre><code class="language-C">__set_task_state(task, state);
+</code></pre>
+<p>然后调用 <code>schedule_timeout</code> 函数：</p>
+<pre><code class="language-C">raw_spin_unlock_irq(&amp;sem-&gt;lock);
+timeout = schedule_timeout(timeout);
+raw_spin_lock_irq(&amp;sem-&gt;lock);
+</code></pre>
+<p>这个函数是在 <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">kernel/time/timer.c</a> 代码中定义的。<code>schedule_timeout</code> 函数将当前的任务置为休眠到设置的超时为止。</p>
+<p>这就是所有关于 <code>__down_common</code> 函数。如果一个函数想要获取一个已经被其它任务获取的锁，它将会转入到无限循环。并且它不能被信号中断，当前设置的超时不会过期或者当前持有锁的任务不释放它。现在我们来看看 <code>up</code> 函数的实现。</p>
+<p><code>up</code> 函数和 <code>down</code> 函数定义在<a href="https://github.com/torvalds/linux/blob/master/kernel/locking/semaphore.c">同一个</a> 原文件。这个函数的主要功能是释放锁，这个函数看起来：</p>
+<pre><code class="language-C">void up(struct semaphore *sem)
+{
+        unsigned long flags;
+
+        raw_spin_lock_irqsave(&amp;sem-&gt;lock, flags);
+        if (likely(list_empty(&amp;sem-&gt;wait_list)))
+                sem-&gt;count++;
+        else
+                __up(sem);
+        raw_spin_unlock_irqrestore(&amp;sem-&gt;lock, flags);
+}
+EXPORT_SYMBOL(up);
+</code></pre>
+<p>它看起来和 <code>down</code> 函数相似。这里有两个不同点。首先我们增加 <code>semaphore</code> 的计数。如果等待列表是空的，我们调用在当前原文件中定义的 <code>__up</code> 函数。如果等待列表不是空的，我们需要允许列表中的第一个任务去获取一个锁：</p>
+<pre><code class="language-C">static noinline void __sched __up(struct semaphore *sem)
+{
+        struct semaphore_waiter *waiter = list_first_entry(&amp;sem-&gt;wait_list,
+                                                struct semaphore_waiter, list);
+        list_del(&amp;waiter-&gt;list);
+        waiter-&gt;up = true;
+        wake_up_process(waiter-&gt;task);
+}
+</code></pre>
+<p>在此我们获取待序列中的第一个任务，将它从列表中删除，将它的 <code>waiter-up</code> 设置为真。从此刻起 <code>__down_common</code> 函数中的无限循环将会被停止。 <code>wake_up_process</code> 函数将会在 <code>__up</code> 函数的结尾调用。我们从 <code>__down_common</code> 函数调用的 <code>schedule_timeout</code> 函数调用了 <code>schedule_timeout</code> 函数。<code>schedule_timeout</code> 函数将当前任务置于睡眠状态直到超时等待。现在我们进程也许会睡眠，我们需要唤醒。这就是为什么我们需要从 <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/core.c">kernel/sched/core.c</a> 源代码中调用 <code>wake_up_process</code> 函数</p>
+<p>这就是所有的信息了。</p>
+<h2 id="小结">小结</h2>
+<p>这就是Linux内核中关于 <a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">同步原语</a> 的第三部分的终结。在之前的两个部分，我们已经见到了第一个Linux内核的同步原语 <code>自旋锁</code>，它是使用 <code>ticket spinlock</code> 实现并且用于很短时间的锁。在这个部分我们见到了另外一种同步原语 － <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">信号量</a>，信号量用于长时间的锁，因为它会导致 <a href="https://en.wikipedia.org/wiki/Context_switch">上下文切换</a>。 在下一部分，我们将会继续深入Linux内核的同步原语并且讨论另一个同步原语 － <a href="https://en.wikipedia.org/wiki/Mutual_exclusion">互斥量</a>。</p>
+<p>如果你有问题或者建议，请在twitter <a href="https://twitter.com/0xAX">0xAX</a>上联系我，通过 <a href="anotherworldofworld@gmail.com">email</a>联系我，或者创建一个 <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a></p>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Spinlock">spinlocks</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">synchronization primitive</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Context_switch">context switch</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Preemption_%28computing%29">preemption</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Deadlock">deadlocks</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Scheduling_%28computing%29">scheduler</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/DataStructures/dlist.html">Doubly linked list in the Linux kernel</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-1.html">jiffies</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt">interrupts</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Mask_%28computing%29">bitmask</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Unix_signal#SIGKILL">SIGKILL</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Errno.h">errno</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Mutual_exclusion">mutex</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-2.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/114/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/55/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/rust_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/55/index.html">Rust 程序设计语言 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/31.html">hltj</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="rust">rust</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">71页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/125/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/125/index.html">前端早读课</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/78/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/78/index.html">阿里巴巴Java开发手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/49.html">Alibaba</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9831个">9831</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7503;var bookPageRelUrl ='SyncPrim/sync-3.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,589 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>logstash-forwarder-Logstash最佳实践</title>
+<meta content='logstash-forwarder,Logstash最佳实践' name='keywords'>
+<meta content='logstash-forwarder,Logstash最佳实践' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/52/ecosystem/rsyslog.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Rsyslog</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/52/ecosystem/nxlog.html">
+<span class="">nxlog</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/52/index.html">Logstash最佳实践</a>
+<a target="_blank" rel="nofollow" href="https://github.com/chenryn/logstash-best-practice-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="logstash-forwarder">Logstash Forwarder</h1>
+<p>Redis 已经帮我们解决了很多的问题，而且也很轻量，为什么我们还需要 logstash-forwarder 呢？</p>
+<blockquote>
+<p>Redis provides simple authentication but no transport-layer encryption or authorization. This is perfectly fine in trusted environments. However, if you're connecting to Redis between datacenters you will probably want to use encryption.</p>
+</blockquote>
+<p>简而言之他很好，但是他不 secure。</p>
+<p>现在看看我们如何来配置 logstash-forwarder。</p>
+<h2 id="indexer-端配置">indexer 端配置</h2>
+<p>在 logstash 作为 indexer server 角色的这端，我们首先需要生成证书：</p>
+<pre><code>cd /etc/pki/tls
+sudo openssl req -x509 -batch -nodes -days 3650 -newkey rsa:2048 -keyout private/logstash-forwarder.key -out certs/logstash-forwarder.crt
+</code></pre>
+<p>然后把证书发送到准备运行 logstash-forwarder 的 shipper 端服务器上去：</p>
+<pre><code>scp private/logstash-forwarder.key root@target_server_ip:/etc/pki/tls/private
+scp certs/logstash-forwarder.crt root@target_server_ip:/etc/pki/tls/certs
+</code></pre>
+<p>然后创建 logstash 的配置文件。监听部分 /etc/logstash/conf.d/02-lumberjack-input.conf ，内容如下：</p>
+<pre><code>input {
+  lumberjack {
+    port =&gt; 5000
+    type =&gt; "anything"
+    ssl_certificate =&gt; "../../../etc/pki/tls/certs/logstash-forwarder.crt"
+    ssl_key =&gt; "../../../etc/pki/tls/private/logstash-forwarder.key"
+  }
+}
+</code></pre>
+<p>以上，我们在 logstash 这端已经配置完成。运行 <code>logstash -f /etc/logstash/conf.d/</code> 即可。</p>
+<p><em>小知识：lumberjack 是 logstash-forwarder 还没用 Golang 重写之前的名字</em></p>
+<h2 id="shipper-端配置">shipper 端配置</h2>
+<p>我们现在登入到我们需要传送 log 的机器上，我们已在之前的步骤中发送了 logstash 的 crt 过来。</p>
+<h3 id="logstash-forwarder-安装">logstash-forwarder 安装</h3>
+<p>首先，我们需要安装 logstash-forwarder 软件。官方都已经提供了软件仓库可用。在 Redhat 机器上只需要添加一个 <em>/etc/yum.repos.d/logstash-forwarder.repo</em>，内容如下：</p>
+<pre><code class="language-ini">[logstash-forwarder]
+name=logstash-forwarder
+baseurl=http://packages.elasticsearch.org/logstash-forwarder/centos
+gpgcheck=1
+gpgkey=http://packages.elasticsearch.org/GPG-KEY-elasticsearch
+enabled=1
+</code></pre>
+<p>然后运行安装命令即可：</p>
+<pre><code>sudo yum install -y logstash-forwarder
+</code></pre>
+<p>你可以从我提供的 gist 中下载已经更改的 init script 或者使用 rpm 中提供的脚本 <a href="https://gist.github.com/ae30a4c1a1f342df1274.git">logstash-forwader</a>.</p>
+<h3 id="logstash-forwarder-配置">logstash-forwarder 配置</h3>
+<p>logstash-forwarder 的配置文件是纯 JSON 格式。因为其轻量级的设计目的，所以可配置项很少。下面是一个 <em>/etc/logstash-forwarder</em> 配置示例：</p>
+<pre><code class="language-json">{
+  "network": {
+    "servers": [ "10.18.10.2:5000" ],
+      "timeout": 15,
+      "ssl ca" : "../../../etc/pki/tls/certs/logstash-forwarder.crt"
+      "ssl key": "../../../etc/pki/tls/private/logstash-forwarder.key"
+  },
+  "files": [
+    {
+      "paths": [
+        "../../../var/log/message",
+      "../../../var/log/secure"
+        ],
+      "fields": { "type": "syslog" }
+    }
+  ]
+}
+</code></pre>
+<p>我们已完成了配置，当 <code>sudo service logstash-forwarder start</code> 之后，你就可以在 kibana 上看到你的日志了</p>
+<h3 id="logstash-forwarder-配置说明">logstash-forwarder 配置说明</h3>
+<p>配置中，主要包括下面几个可用配置项：</p>
+<ul>
+<li>network.servers: 用来指定远端(即 logstash indexer 角色)服务器的 IP 地址和端口。这里可以写数组，但是 logstash-forwarder 只会随机选一台作为对端发送数据，一直到对端故障，才会重选其他服务器。</li>
+<li>network.ssl*: 网络交互中使用的 SSL 证书路径。</li>
+<li>files.*.paths: 读取的文件路径。 logstash-forwarder 只支持两种输入，一种就是示例中用的文件方式，和 logstash 一样也支持 glob 路径，即 <code>"../../../var/log/*.log"</code> 这样的写法；一种是标准输入，写法为 <code>"paths": [ "-" ]</code></li>
+<li>files.*.fields: 给每条日志添加的固定字段，相当于 logstash 里的 <code>add_field</code> 参数。 注意示例中添加的是 <strong>type</strong> 字段。在 logstash-forwarder 里添加的字段是优先于 LogStash::Inputs::Lumberjack 配置里定义的字段的。所以，在本例中，即便你在 indexer 上定义 type 为 "anything"。事件的实际 type 依然是这里添加的 "syslog"。这也意味着，你在 indexer 上如果做后续判断，应该是这样：</li>
+</ul>
+<pre><code>filter {
+  if [type] == "syslog" {
+    grok {
+      match =&gt; { "message" =&gt; "%{SYSLOGTIMESTAMP:syslog_timestamp} %{SYSLOGHOST:syslog_hostname} %{DATA:syslog_program}(?:\[%{POSINT:syslog_pid}\])?: %{GREEDYDATA:syslog_message}" }
+    }
+  }
+}
+</code></pre>
+<h2 id="安全性提示">安全性提示</h2>
+<p>虽然 ssl 是可信任的，但是当 hacker 得到你一台机器上的证书后，他可以畅通无阻，建议对每台机器都签发单独的证书，如果你忙的过来的话:)</p>
+<h2 id="logstash-forwarder-java的使用">Logstash-forwarder-java的使用</h2>
+<p>在AIX环境下（IBM Power小型机的一种操作系统）,你无法使用logstash（因为IBM JDK没有实现相关方法），也无法使用logstash-forwarder，github上有个Logstash-forwarder再实现的项目就是解决这个问题的： https://github.com/didfet/logstash-forwarder-java</p>
+<p>配置和Logstash-forwarder基本一致，但是注意有一个坑是需要关注的，作者也在他的github上提到了，就是：</p>
+<pre><code>the ssl ca parameter points to a java keystore containing the root certificate of the server, not a PEM file
+</code></pre>
+<p>不熟悉证书相关体系的读者可能不太清楚这个意思，换句话说，如果你还按照logstash-forwarder的配置方法配置shipper端，那么你将会得到一个诡异的java.io.IOException: Invalid keystore format 异常。</p>
+<p>首先介绍下背景知识，摘录一段知乎上的讲解： @刘长元 from http://www.zhihu.com/question/29620953</p>
+<pre><code>把SSL系统比喻为工商局系统。
+首先有SSL就有CA，certificate authority。证书局，用于制作、认证证书的第三方机构，我们假设营业执照非常难制作，就像身份证一样，需要有制证公司来提供，并且提供技术帮助工商局验证执照的真伪。然后CA是可以有多个的，也就是可以有多个制证公司，但工商局就只有一个，它来说那个制证公司是可信的，那些是假的，需要打击。在SSL的世界中，微软、Google和Mozilla扮演了一部分这个角色。也就是说，IE、Chrome、Firefox中内置有一些CA，经过这些CA颁发，验证过的证书都是可以信的，否则就会提示你不安全。
+这也是为什么前几天Chrome决定屏蔽CNNIC的CA时，CNNIC那么遗憾了。
+也因为内置的CA是相对固定的，所以当你决定要新建网站时，就需要购买这些内置CA颁发的证书来让用户看到你的域名前面是绿色的，而不是红色。而这个最大的卖证书的公司就是VeriSign如果你听说过的话，当然它被卖给了Symantec，这家伙不只出Ghost，还是个卖证书的公司。
+
+要开店的老板去申请营业执照的时候是需要交他的身份证的，然后办出来的营业执照上也会有他的照片和名字。身份证相当于私钥，营业执照就是证书，Ceritficate，.cer文件。
+
+然后关于私钥和公钥如何解释我没想好，而它们在数据加密层面，数据的流向是这样的。
+
+消息--&gt;[公钥]--&gt;加密后的信息--&gt;[私钥]--&gt;消息
+
+公钥是可以随便扔给谁的，他把消息加了密传给我。对了，可以这样理解，我有一个箱子，一把锁和一把钥匙，我把箱子和开着的锁给别人，他写了信放箱子里，锁上，然后传递回我手上的途中谁都是打不开箱子的，只有我可以用原来的钥匙打开，这就是SSL，公钥，私钥传递加密消息的方式。这里的密钥就是key文件。
+
+于是我们就有了.cer和.key文件。接下来说keystore
+
+不同的语言、工具序列SSL相关文件的格式和扩展名是不一样的。
+其中Java系喜欢用keystore, truststore来干活，你看它的名字，Store，仓库，它里面存放着key和信任的CA，key和CA可以有多个。
+这里的truststore就像你自己电脑的证书管理器一样，如果你打开Chrome的设置，找到HTTP SSL，就可以看到里面有很多CA，truststore就是干这个活儿的，它也里面也是存一个或多个CA让Tomcat或Java程序来调用。
+而keystore就是用来存密钥文件的，可以存放多个。
+
+然后是PEM，它是由RFC1421至1424定义的一种数据格式。其实前面的.cert和.key文件都是PEM格式的，只不过在有些系统中（比如Windows）会根据扩展名不同而做不同的事。所以当你看到.pem文件时，它里面的内容可能是certificate也可能是key，也可能两个都有，要看具体情况。可以通过openssl查看。
+
+</code></pre>
+<p>看到这儿你就应该懂了，按照logstash-forwarder-java的作者设计，此时你的shipper端ssl ca这个域配置的应该是keystore，而不是PEM，因此需要从你生成的crt中创建出keystore（jks）文件，方法为：</p>
+<pre><code>keytool -importcert -trustcacerts -file logstash-forwarder.crt -alias ca -keystore keystore.jks
+</code></pre>
+<p>一个示例的shipper.conf为： { "network": { "servers": [ "192.168.1.1:5043"], "ssl ca": "../../../mnt/disk12/logger/logstash/config/keystore.jks" }, "files": [ { "paths": [ "../../../mnt/disk12/logger/logstash/config/2.txt" ], "fields": { "type": "sadb" } } ] } <em>注意：server可以配置多个，这样agent如果一个logstash连接不上可以连接另外的。</em></p>
+<p>其余配置信息，请参考logstash-forwarder，它完全兼容。</p>
+<p>配置好以后启动它即可：nohup java -jar logstash-forwarder-java-0.2.3-SNAPSHOT.jar -quiet -config logforwarder.conf &gt; logforwarder.log &amp;</p>
+<p><em>-quiet 参数可以大大减少不必要的日志量，如果遇到错误请打开-debug和-trace选项，得到相关信息后查证，未果时请转向该项目github的issue区，作者很热心</em></p>
+<p>测试通过环境：</p>
+<pre><code>AIX版本
+6100-04-06-1034
+
+Java版本
+java version "1.6.0"
+Java(TM) SE Runtime Environment (build pap6460sr14-20130705_01(SR14))
+IBM J9 VM (build 2.4, JRE 1.6.0 IBM J9 2.4 AIX ppc64-64 jvmap6460sr14-20130704_155156 (JIT enabled, AOT enabled)
+J9VM - 20130704_155156
+JIT - r9_20130517_38390
+GC - GA24_Java6_SR14_20130704_1138_B155156)
+JCL - 20130618_01
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/34/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/34/index.html">Markdown - 简单的世界</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">16页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 159个">159</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/38/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/38/index.html">Java资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">61页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月23日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7938个">7938</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/89/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/206/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/81/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/81/index.html">《SpringBoot参考指南》中文翻译 基于1.5.7 RELEASE</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/52.html">wangjingjing</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">100页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/4/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/4/index.html">Redux 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/4.html">camsong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">69页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2786个">2786</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/52/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="4835">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/README.html" title="基础知识" data-book-page-rel-url="get_start/README.html" data-book-page-id="4836">基础知识</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/get_start/introduction.html" title="介绍" data-book-page-rel-url="get_start/introduction.html" data-book-page-id="4837">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/install.html" title="安装" data-book-page-rel-url="get_start/install.html" data-book-page-id="4838">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/hello_world.html" title="Hello World" data-book-page-rel-url="get_start/hello_world.html" data-book-page-id="4839">Hello World</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/daemon.html" title="长期运行" data-book-page-rel-url="get_start/daemon.html" data-book-page-id="4840">长期运行</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/full_config.html" title="配置语法" data-book-page-rel-url="get_start/full_config.html" data-book-page-id="4841">配置语法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/README.html" title="输入插件(Input)" data-book-page-rel-url="input/README.html" data-book-page-id="4842">输入插件(Input)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/input/stdin.html" title="标准输入(Stdin)" data-book-page-rel-url="input/stdin.html" data-book-page-id="4843">标准输入(Stdin)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/file.html" title="读取文件(File)" data-book-page-rel-url="input/file.html" data-book-page-id="4844">读取文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/tcp.html" title="读取网络数据(TCP)" data-book-page-rel-url="input/tcp.html" data-book-page-id="4845">读取网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/generator.html" title="生成测试数据(Generator)" data-book-page-rel-url="input/generator.html" data-book-page-id="4846">生成测试数据(Generator)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/syslog.html" title="读取 Syslog 数据" data-book-page-rel-url="input/syslog.html" data-book-page-id="4847">读取 Syslog 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/redis.html" title="读取 Redis 数据" data-book-page-rel-url="input/redis.html" data-book-page-id="4848">读取 Redis 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/collectd.html" title="读取 Collectd 数据" data-book-page-rel-url="input/collectd.html" data-book-page-id="4849">读取 Collectd 数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/README.html" title="编码插件(Codec)" data-book-page-rel-url="codec/README.html" data-book-page-id="4850">编码插件(Codec)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/codec/json.html" title="采用 JSON 编码" data-book-page-rel-url="codec/json.html" data-book-page-id="4851">采用 JSON 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/multiline.html" title="合并多行数据(Multiline)" data-book-page-rel-url="codec/multiline.html" data-book-page-id="4852">合并多行数据(Multiline)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/README.html" title="过滤器插件(Filter)" data-book-page-rel-url="filter/README.html" data-book-page-id="4853">过滤器插件(Filter)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/filter/grok.html" title="Grok 正则捕获" data-book-page-rel-url="filter/grok.html" data-book-page-id="4854">Grok 正则捕获</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/date.html" title="时间处理(Date)" data-book-page-rel-url="filter/date.html" data-book-page-id="4855">时间处理(Date)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/mutate.html" title="数据修改(Mutate)" data-book-page-rel-url="filter/mutate.html" data-book-page-id="4856">数据修改(Mutate)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/geoip.html" title="GeoIP 查询归类" data-book-page-rel-url="filter/geoip.html" data-book-page-id="4857">GeoIP 查询归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/json.html" title="JSON 编解码" data-book-page-rel-url="filter/json.html" data-book-page-id="4858">JSON 编解码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/split.html" title="split 拆分事件" data-book-page-rel-url="filter/split.html" data-book-page-id="4859">split 拆分事件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/useragent.html" title="UserAgent 匹配归类" data-book-page-rel-url="filter/useragent.html" data-book-page-id="4860">UserAgent 匹配归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/kv.html" title="Key-Value 切分" data-book-page-rel-url="filter/kv.html" data-book-page-id="4861">Key-Value 切分</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/ruby.html" title="随心所欲的 Ruby 处理" data-book-page-rel-url="filter/ruby.html" data-book-page-id="4862">随心所欲的 Ruby 处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/metrics.html" title="数值统计(Metrics)" data-book-page-rel-url="filter/metrics.html" data-book-page-id="4863">数值统计(Metrics)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/README.html" title="输出插件(Output)" data-book-page-rel-url="output/README.html" data-book-page-id="4864">输出插件(Output)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/output/stdout.html" title="标准输出(Stdout)" data-book-page-rel-url="output/stdout.html" data-book-page-id="4865">标准输出(Stdout)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/file.html" title="保存成文件(File)" data-book-page-rel-url="output/file.html" data-book-page-id="4866">保存成文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/elasticsearch.html" title="保存进 Elasticsearch" data-book-page-rel-url="output/elasticsearch.html" data-book-page-id="4867">保存进 Elasticsearch</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/redis.html" title="输出到 Redis" data-book-page-rel-url="output/redis.html" data-book-page-id="4868">输出到 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/tcp.html" title="输出网络数据(TCP)" data-book-page-rel-url="output/tcp.html" data-book-page-id="4869">输出网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/statsd.html" title="输出到 Statsd" data-book-page-rel-url="output/statsd.html" data-book-page-id="4870">输出到 Statsd</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/nagios.html" title="报警到 Nagios" data-book-page-rel-url="output/nagios.html" data-book-page-id="4871">报警到 Nagios</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/email.html" title="发送邮件(Email)" data-book-page-rel-url="output/email.html" data-book-page-id="4872">发送邮件(Email)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/exec.html" title="调用命令执行(Exec)" data-book-page-rel-url="output/exec.html" data-book-page-id="4873">调用命令执行(Exec)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/README.html" title="尚未进入官方库的常用插件" data-book-page-rel-url="contrib_plugins/README.html" data-book-page-id="4874">尚未进入官方库的常用插件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/kafka.html" title="Kafka" data-book-page-rel-url="contrib_plugins/kafka.html" data-book-page-id="4875">Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/hdfs.html" title="HDFS" data-book-page-rel-url="contrib_plugins/hdfs.html" data-book-page-id="4876">HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/scribe.html" title="Scribe" data-book-page-rel-url="contrib_plugins/scribe.html" data-book-page-id="4877">Scribe</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/README.html" title="深入了解" data-book-page-rel-url="dive_into/README.html" data-book-page-id="4878">深入了解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/write_your_own.html" title="自己写一个插件" data-book-page-rel-url="dive_into/write_your_own.html" data-book-page-id="4879">自己写一个插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/why_jvm_and_howto_run_with_mri.html" title="为什么用 JRuby? 能用 MRI 运行么?" data-book-page-rel-url="dive_into/why_jvm_and_howto_run_with_mri.html" data-book-page-id="4880">为什么用 JRuby? 能用 MRI 运行么?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/README.html" title="周边项目" data-book-page-rel-url="ecosystem/README.html" data-book-page-id="4881">周边项目</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/rsyslog.html" title="Rsyslog" data-book-page-rel-url="ecosystem/rsyslog.html" data-book-page-id="4882">Rsyslog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/logstash_forwarder.html" title="logstash-forwarder" data-book-page-rel-url="ecosystem/logstash_forwarder.html" data-book-page-id="4883">logstash-forwarder</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/nxlog.html" title="nxlog" data-book-page-rel-url="ecosystem/nxlog.html" data-book-page-id="4884">nxlog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/heka.html" title="heka" data-book-page-rel-url="ecosystem/heka.html" data-book-page-id="4885">heka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/message_passing.html" title="Message::Passing" data-book-page-rel-url="ecosystem/message_passing.html" data-book-page-id="4886">Message::Passing</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/fluent.html" title="fluent" data-book-page-rel-url="ecosystem/fluent.html" data-book-page-id="4887">fluent</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =52;var bookPageId =4883;var bookPageRelUrl ='ecosystem/logstash_forwarder.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

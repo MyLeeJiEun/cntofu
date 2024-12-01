@@ -1,0 +1,494 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>并发HTTP服务器(2)-C 语言进阶</title>
+<meta content='并发HTTP服务器(2),C 语言进阶' name='keywords'>
+<meta content='并发HTTP服务器(2),C 语言进阶' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/102/book/chapter-3/33.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">并发HTTP服务器(1)</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/102/book/chapter-3/35.html">
+<span class="">并发HTTP服务器(3)</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/102/index.html">C 语言进阶</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/gitbook" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h4 id="0x14-套接字编程-http服务器2">0x14-套接字编程-HTTP服务器(2)</h4>
+<h4 id="http服务器的结构">HTTP服务器的结构</h4>
+<ul>
+<li><strong>HTTP服务器</strong> 本质上就是一个 <strong>TCP的接收端</strong> 程序</li>
+<li>但凡一个正常的 <strong>TCP</strong> 接收端程序，都逃不过那几个流程：
+<ul>
+<li><strong>创建监听<code>socket</code></strong> -&gt; <strong>绑定端口，IP</strong> -&gt; <strong>监听<code>socket</code></strong> -&gt; <strong>接受新连接</strong> -&gt; <strong>处理读写...</strong> -&gt; <strong>关闭完成的连接</strong></li>
+<li>其中前三步比较固定，最多对这个监听用的<code>socket</code>，进行一些优化处理，设置一些属性之类的，但那都是固定模式，想想就能明白。硬要说重要的地方，也就是在于是否把<code>socket</code>设为非阻塞(<strong>non-blocking</strong>)了。</li>
+<li>后面几步，每个都是很重要的环节，需要细细设计才行</li>
+</ul> </li>
+</ul>
+<blockquote>
+<p>所谓非阻塞，我还是不班门弄斧了，请移步 <strong>UNIX网络编程-卷1-中文·第三版 127页(英文版160页)</strong> 的图<code>6-6</code>，清楚的对比了，阻塞，非阻塞，异步，I/O复用的区别和含义。十分建议写网络程序之前，去把这本书的某些章节大致过一遍。</p>
+</blockquote>
+<ul>
+<li>对于这章节需要写的这个服务器而言，采用的是经典且流行的 <strong>I/O复用+非阻塞套接字(socket)+多线程(线程池)</strong> 结构。</li>
+<li>呐，又出现一个新的知识点，<strong>I/O复用</strong>，这是什么鬼。</li>
+</ul>
+<h4 id="io复用">I/O复用</h4>
+<ul>
+<li> <p>我给一个不太严密的解释，那就是 <strong>将你这个程序需要等待的地方，集中起来</strong></p> </li>
+<li> <p>打个比方：</p>
+<ul>
+<li>假设有100个新连接，被你的监听套接字给成功接受(<code>accept()</code>)了</li>
+<li>这时候并不是所有新连接都立刻有数据可以读，那此时你有两种选择：阻塞，非阻塞。但不论是哪一种都会导致同一个结果
+<ul>
+<li>阻塞： 那假设你只有一个线程处理这100个连接，万一要是正好处理到这个暂时没有数据的连接，就要一直等待它的数据到来，后面的几十个连接都要闲着；假设有多个线程同时处理，理由还是一样，换汤不换药，而且难道你还能开100个线程去处理吗？那如果更多的连接呢？</li>
+<li>非阻塞： 比阻塞看起来稍微好一些，因为如果没有数据到来的话，那就直接跳过这个连接，直接去处理下一个连接了，但是你想想，这不就是<strong>遍历</strong>了吗？万一连接量一大，假设上万，而且只有少数的几个连接有数据活跃，这无用功做的是不是太多了？多开几个线程去平摊压力？那么要开多少比较合适？</li>
+</ul> </li>
+<li>这时候喜欢偷懒的程序员，自然就不愿意了，于是考虑是否可以有一个，让我们可以在单个线程的情况下还能够只处理那些活跃的连接？</li>
+<li>这时候出现了所谓的 <strong>I/O复用</strong> 技术，说是技术，因为它使用的还是<strong>同步型</strong>的操作(<code>read, write</code>)，只不过套接字设为非阻塞的了。</li>
+<li>Linux平台下的<code>epoll</code>, Unix(包括Mac)平台下的<code>kqueue</code>, Windows平台下的<code>IOCP</code>，各平台通用的<code>select</code>, <code>poll</code>，还有几个历史实现就不赘述了。</li>
+<li>最后这两个<code>select</code>, <code>poll</code>在<strong>活跃连接明显少于总连接数</strong>的情况下，性能比前三个要差许多，故本章使用的是<code>epoll</code>,(当然还有资料比较多的原因啦</li>
+</ul> </li>
+<li> <p>说说 <code>epoll</code> 的工作</p>
+<ul>
+<li>首先它帮我们管理着所有的套接字，用来监听这些套接字哪些有了数据，就返回谁。</li>
+<li>将所有等待，阻塞都集中在了一个地方，那就是<code>epoll_wait()</code>调用上</li>
+<li>而且可以针对不同的事件进行不同的监听，这就是<strong>事件驱动</strong>这种模式的由来</li>
+</ul> </li>
+<li> <p>事件驱动</p>
+<ul>
+<li>简单来说，就是针对某种事件进行触发的一种编程模式</li>
+<li>具体来说，假设你在网络编程，正在处理一个套接字，由于TCP是全双工的，意味着这个TCP套接字是可读可写，问题来了，什么时候可读，什么时候可写呢？这就延伸出了事件，<strong>读事件，写事件，错误事件等</strong></li>
+<li>可以通过<code>epoll_clt()</code>来设置要监听的事件，当然也可以同时监听多个事件，看你的设计了。</li>
+</ul> </li>
+<li> <p>具体的<code>epoll</code>接口的详细介绍，可以直接在<strong>Linux</strong>上，使用<code>man epoll</code>进行查看手册，这是基本功。</p>
+<ul>
+<li><code>epoll_create</code>, <code>epoll_ctl</code>, <code>epoll_wait</code></li>
+</ul> </li>
+</ul>
+<h4 id="服务器结构">服务器结构</h4>
+<ul>
+<li>继续回到服务器结构</li>
+<li>上面简单的讲述了一下什么是 <strong>I/O复用</strong>，以及将会用到的具体实现<code>epoll</code>。那具体说一下，整个程序的流程</li>
+<li>还是老规矩，写程序之前要先构思，自己在纸上画一画，大概的流程是什么</li>
+<li>问题： 想要完整处理一个HTTP请求，需要哪些步骤？
+<ol>
+<li>解析<strong>HTTP请求报文</strong></li>
+<li>创建<strong>HTTP回复报文</strong></li>
+</ol> </li>
+<li>逻辑就这么简单啊，但是加上细节部分，就会稍微麻烦一些了：
+<ul>
+<li><strong>完整地</strong> 从套接字中，读取 <strong>HTTP请求报文</strong></li>
+<li>解析 <strong>HTTP请求报文</strong>，并判断其<strong>有效性</strong></li>
+<li>生成 <strong>HTTP回复报文</strong></li>
+<li><strong>完整地</strong> 通过对应套接字，发送给请求者。</li>
+</ul> </li>
+<li>在这里我假设，你已经对<strong>TCP编程的模型</strong>很熟悉了，不熟的可以去顶部看看再回来
+<ul>
+<li>并发服务器的关键点就在于
+<ul>
+<li>高效且正确地接收尽可能多的连接</li>
+<li>高效且正确地处理尽可能多的连接</li>
+<li>以上忽略了安全性</li>
+</ul> </li>
+<li>该如何设计？
+<ul>
+<li>让某个<code>epoll</code>用来服务于<strong>接收新连接</strong>这个环节(<code>accept</code>)</li>
+<li>让某些<code>epoll</code>用来处理这些新连接的事务。</li>
+<li>这样理论上我们既发挥了单核的极限(epoll)，又用上了多核的优势(多个<code>epoll</code>)</li>
+</ul> </li>
+<li>更具体的呢？
+<ul>
+<li>在主线程里使用单个<code>epoll</code>来处理，<strong>监听套接字</strong>的读事件，也就是接受新连接</li>
+<li>再开几个线程<code>epoll</code>，用来平分处理这些新连接。</li>
+</ul> </li>
+<li>这样也就是网络编程的一整个流程，如果看到这里你已经大概有了一个程序思路，实际上就已经达到目的了，接下来就是直接上手代码就行</li>
+<li>还是迷迷糊糊的，就一步一步跟着我，写出这个服务器，会大有脾益。</li>
+</ul> </li>
+</ul>
+<blockquote>
+<p>小经验，在编程中，读往往比写要复杂许多。在网络编程里面亦是。</p>
+</blockquote>
+<ul>
+<li> <p>有图有真相，希望能够自己画。 <a href="http://o8taitpxn.bkt.clouddn.com/%E6%B5%81%E7%A8%8B%E5%9B%BE.png" data-uk-lightbox><img src="http://o8taitpxn.bkt.clouddn.com/%E6%B5%81%E7%A8%8B%E5%9B%BE.png" alt="HTTP流程图"></a></p> </li>
+<li> <p>现在大致有了思路，可以整理整理自己接下来该干什么了</p> </li>
+</ul>
+<h4 id="环境准备">环境准备</h4>
+<ul>
+<li>99%的中国大学学生的操作系统，应该都是 Windows或者Max OS(maxOS)，那么建议你直接使用虚拟机进行环境的搭建，可以选择开源免费的<code>Visual Box</code>，Windows下也可以使用商业版的<code>VMware</code>，Mac下有一个更棒的商业版选择<code>Paralelle Desktop</code>，但是这都是软件，算是无关紧要的。</li>
+<li>选择一个<code>Linux</code>发行版，由于我用的是 <code>Debian</code>系列的<code>Ubuntu 16.04 LTS</code>，所以我也推荐这个发行版，其他的发行版也许略有差异，不再多说。</li>
+<li>装好之后，直接进入开发阶段吧。
+<ul>
+<li>IDE可以选择<code>Clion</code>或者<code>Kdevelop</code>。</li>
+<li>当然你要用<code>Vim</code>我也不会阻拦，但是请装好两个插件<code>Nerdtree</code>和<code>YouCompleteMe</code>，配合好另一个软件<code>tmux</code>(<a href="http://www.wushxin.top/2016/03/28/%E4%BD%BF%E7%94%A8tmux.html">简单使用</a>)，不然你会想死。</li>
+<li>除了<code>Vim</code>，你也可以选择 <code>Visual Studio Code</code>加装一个<code>C/C++ tools</code>也是不错的。</li>
+<li>作为时尚的我，自然选择<code>Clion</code>了，简单明了，且还是使用<code>CMake</code>作为构建工具。</li>
+</ul> </li>
+<li>想要进行这么底层的网络编程，请准备好<code>Google</code>和<code>Unix网络编程卷1</code>，如果你两个都没有的话，不说了，再见。建议准备一个<strong>那玩意儿</strong>去访问<code>Google</code>。</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/43/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/43/index.html">C 语言编程透视</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 369个">369</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/25/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/70/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/70/index.html">C++ 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1422个">1422</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/177/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/177/index.html">30秒学会常用React代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/98.html">30 seconds</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1894个">1894</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/7/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/7/index.html">Netty 4.x 用户指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1131个">1131</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/138/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/138/index.html">开发经验总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 641个">641</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/102/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/README.html" title="介绍" data-book-page-rel-url="README.html" data-book-page-id="7413">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/Seperate-0.html" title="第一部分" data-book-page-rel-url="book/chapter-0/Seperate-0.html" data-book-page-id="7414">第一部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/00.html" title="前序" data-book-page-rel-url="book/chapter-0/00.html" data-book-page-id="7415">前序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/01.html" title="序" data-book-page-rel-url="book/chapter-0/01.html" data-book-page-id="7416">序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/02.html" title="C代码风格" data-book-page-rel-url="book/chapter-0/02.html" data-book-page-id="7417">C代码风格</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/04.html" title="C代码规范" data-book-page-rel-url="book/chapter-0/04.html" data-book-page-id="7418">C代码规范</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/03.html" title="变量" data-book-page-rel-url="book/chapter-0/03.html" data-book-page-id="7419">变量</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/Seperate-1.html" title="第二部分" data-book-page-rel-url="book/chapter-1/Seperate-1.html" data-book-page-id="7420">第二部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/10.html" title="指针(上)" data-book-page-rel-url="book/chapter-1/10.html" data-book-page-id="7421">指针(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/11.html" title="指针(下)" data-book-page-rel-url="book/chapter-1/11.html" data-book-page-id="7422">指针(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/12.html" title="预处理器" data-book-page-rel-url="book/chapter-1/12.html" data-book-page-id="7423">预处理器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/13.html" title="效率至上(上)" data-book-page-rel-url="book/chapter-1/13.html" data-book-page-id="7424">效率至上(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/14.html" title="效率至上(下)" data-book-page-rel-url="book/chapter-1/14.html" data-book-page-id="7425">效率至上(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/15.html" title="未曾领略的新风景" data-book-page-rel-url="book/chapter-1/15.html" data-book-page-id="7426">未曾领略的新风景</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/16.html" title="C线程和Glib的视角" data-book-page-rel-url="book/chapter-1/16.html" data-book-page-id="7427">C线程和Glib的视角</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/Seperate-2.html" title="第三部分" data-book-page-rel-url="book/chapter-2/Seperate-2.html" data-book-page-id="7428">第三部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/20.html" title="错误处理" data-book-page-rel-url="book/chapter-2/20.html" data-book-page-id="7429">错误处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/21.html" title="开始行动" data-book-page-rel-url="book/chapter-2/21.html" data-book-page-id="7430">开始行动</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/22.html" title="单线程备份(上)" data-book-page-rel-url="book/chapter-2/22.html" data-book-page-id="7431">单线程备份(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/23.html" title="单线程备份(下)" data-book-page-rel-url="book/chapter-2/23.html" data-book-page-id="7432">单线程备份(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/24.html" title="多线程备份" data-book-page-rel-url="book/chapter-2/24.html" data-book-page-id="7433">多线程备份</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/25.html" title="总结" data-book-page-rel-url="book/chapter-2/25.html" data-book-page-id="7434">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/Seperate-3.html" title="第四部分" data-book-page-rel-url="book/chapter-3/Seperate-3.html" data-book-page-id="7435">第四部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/30.html" title="网络的世界" data-book-page-rel-url="book/chapter-3/30.html" data-book-page-id="7436">网络的世界</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/31.html" title="套接字编程(1)" data-book-page-rel-url="book/chapter-3/31.html" data-book-page-id="7437">套接字编程(1)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/32.html" title="套接字编程(2)" data-book-page-rel-url="book/chapter-3/32.html" data-book-page-id="7438">套接字编程(2)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/33.html" title="并发HTTP服务器(1)" data-book-page-rel-url="book/chapter-3/33.html" data-book-page-id="7439">并发HTTP服务器(1)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/34.html" title="并发HTTP服务器(2)" data-book-page-rel-url="book/chapter-3/34.html" data-book-page-id="7440">并发HTTP服务器(2)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/35.html" title="并发HTTP服务器(3)" data-book-page-rel-url="book/chapter-3/35.html" data-book-page-id="7441">并发HTTP服务器(3)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/36.html" title="并发HTTP服务器(4)" data-book-page-rel-url="book/chapter-3/36.html" data-book-page-id="7442">并发HTTP服务器(4)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/37.html" title="并发HTTP服务器(5)" data-book-page-rel-url="book/chapter-3/37.html" data-book-page-id="7443">并发HTTP服务器(5)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =102;var bookPageId =7440;var bookPageRelUrl ='book/chapter-3/34.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

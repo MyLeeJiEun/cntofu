@@ -1,0 +1,840 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>互斥锁-Linux 内核揭密</title>
+<meta content='互斥锁,Linux 内核揭密' name='keywords'>
+<meta content='互斥锁,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/SyncPrim/sync-3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">信号量</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/SyncPrim/sync-5.html">
+<span class="">读者/写者信号量</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="synchronization-primitives-in-the-linux-kernel-part-4">Synchronization primitives in the Linux kernel. Part 4.</h1>
+<h2 id="introduction">Introduction</h2>
+<p>This is the fourth part of the <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/index.html">chapter</a> which describes synchronization primitives in the Linux kernel and in the previous parts we finished to consider different types <a href="https://en.wikipedia.org/wiki/Spinlock">spinlocks</a> and <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a> synchronization primitives. We will continue to learn <a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">synchronization primitives</a> in this part and consider yet another one which is called - <a href="https://en.wikipedia.org/wiki/Mutual_exclusion">mutex</a> which is stands for <code>MUTual EXclusion</code>.</p>
+<p>As in all previous parts of this <a href="https://0xax.gitbooks.io/linux-insides/content">book</a>, we will try to consider this synchronization primitive from the theoretical side and only than we will consider <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> provided by the Linux kernel to manipulate with <code>mutexes</code>.</p>
+<p>So, let's start.</p>
+<h2 id="concept-of-mutex">Concept of <code>mutex</code></h2>
+<p>We already familiar with the <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a> synchronization primitive from the previous <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">part</a>. It represented by the:</p>
+<pre><code class="language-C">struct semaphore {
+	raw_spinlock_t		lock;
+	unsigned int		count;
+	struct list_head	wait_list;
+};
+</code></pre>
+<p>structure which holds information about state of a <a href="https://en.wikipedia.org/wiki/Lock_%28computer_science%29">lock</a> and list of a lock waiters. Depends on the value of the <code>count</code> field, a <code>semaphore</code> can provide access to a resource of more than one wishing of this resource. The <a href="https://en.wikipedia.org/wiki/Mutual_exclusion">mutex</a> concept is very similar to a <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a> concept. But it has some differences. The main difference between <code>semaphore</code> and <code>mutex</code> synchronization primitive is that <code>mutex</code> has more strict semantic. Unlike a <code>semaphore</code>, only one <a href="https://en.wikipedia.org/wiki/Process_%28computing%29">process</a> may hold <code>mutex</code> at one time and only the <code>owner</code> of a <code>mutex</code> may release or unlock it. Additional difference in implementation of <code>lock</code> <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>. The <code>semaphore</code> synchronization primitive forces rescheduling of processes which are in waiters list. The implementation of <code>mutex</code> lock <code>API</code> allows to avoid this situation and as a result expensive <a href="https://en.wikipedia.org/wiki/Context_switch">context switches</a>.</p>
+<p>The <code>mutex</code> synchronization primitive represented by the following:</p>
+<pre><code class="language-C">struct mutex {
+        atomic_t                count;
+        spinlock_t              wait_lock;
+        struct list_head        wait_list;
+#if defined(CONFIG_DEBUG_MUTEXES) || defined(CONFIG_MUTEX_SPIN_ON_OWNER)
+        struct task_struct      *owner;
+#endif
+#ifdef CONFIG_MUTEX_SPIN_ON_OWNER
+        struct optimistic_spin_queue osq;
+#endif
+#ifdef CONFIG_DEBUG_MUTEXES
+        void                    *magic;
+#endif
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+        struct lockdep_map      dep_map;
+#endif
+};
+</code></pre>
+<p>structure in the Linux kernel. This structure is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">include/linux/mutex.h</a> header file and contains similar to the <code>semaphore</code> structure set of fields. The first field of the <code>mutex</code> structure is - <code>count</code>. Value of this field represents state of a <code>mutex</code>. In a case when the value of the <code>count</code> field is <code>1</code>, a <code>mutex</code> is in <code>unlocked</code> state. When the value of the <code>count</code> field is <code>zero</code>, a <code>mutex</code> is in the <code>locked</code> state. Additionally value of the <code>count</code> field may be <code>negative</code>. In this case a <code>mutex</code> is in the <code>locked</code> state and has possible waiters.</p>
+<p>The next two fields of the <code>mutex</code> structure - <code>wait_lock</code> and <code>wait_list</code> are <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">spinlock</a> for the protection of a <code>wait queue</code> and list of waiters which represents this <code>wait queue</code> for a certain lock. As you may notice, the similarity of the <code>mutex</code> and <code>semaphore</code> structures ends. Remaining fields of the <code>mutex</code> structure, as we may see depends on different configuration options of the Linux kernel.</p>
+<p>The first field - <code>owner</code> represents <a href="https://en.wikipedia.org/wiki/Process_%28computing%29">process</a> which acquired a lock. As we may see, existence of this field in the <code>mutex</code> structure depends on the <code>CONFIG_DEBUG_MUTEXES</code> or <code>CONFIG_MUTEX_SPIN_ON_OWNER</code> kernel configuration options. Main point of this field and the next <code>osq</code> fields is support of <code>optimistic spinning</code> which we will see later. The last two fields - <code>magic</code> and <code>dep_map</code> are used only in <a href="https://en.wikipedia.org/wiki/Debugging">debugging</a> mode. The <code>magic</code> field is to storing a <code>mutex</code> related information for debugging and the second field - <code>lockdep_map</code> is for <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a> of the Linux kernel.</p>
+<p>Now, after we have considered the <code>mutex</code> structure, we may consider how this synchronization primitive works in the Linux kernel. As you may guess, a process which wants to acquire a lock, must to decrease value of the <code>mutex-&gt;count</code> if possible. And if a process wants to release a lock, it must to increase the same value. That's true. But as you may also guess, it is not so simple in the Linux kernel.</p>
+<p>Actually, when a process try to acquire a <code>mutex</code>, there three possible paths:</p>
+<ul>
+<li><code>fastpath</code>;</li>
+<li><code>midpath</code>;</li>
+<li><code>slowpath</code>.</li>
+</ul>
+<p>which may be taken, depending on the current state of the <code>mutex</code>. The first path or <code>fastpath</code> is the fastest as you may understand from its name. Everything is easy in this case. Nobody acquired a <code>mutex</code>, so the value of the <code>count</code> field of the <code>mutex</code> structure may be directly decremented. In a case of unlocking of a <code>mutex</code>, the algorithm is the same. A process just increments the value of the <code>count</code> field of the <code>mutex</code> structure. Of course, all of these operations must be <a href="https://en.wikipedia.org/wiki/Linearizability">atomic</a>.</p>
+<p>Yes, this looks pretty easy. But what happens if a process wants to acquire a <code>mutex</code> which is already acquired by other process? In this case, the control will be transferred to the second path - <code>midpath</code>. The <code>midpath</code> or <code>optimistic spinning</code> tries to <a href="https://en.wikipedia.org/wiki/Spinlock">spin</a> with already familiar for us <a href="http://www.cs.rochester.edu/~scott/papers/1991_TOCS_synch.pdf">MCS lock</a> while the lock owner is running. This path will be executed only if there are no other processes ready to run that have higher priority. This path is called <code>optimistic</code> because the waiting task will not be sleep and rescheduled. This allows to avoid expensive <a href="https://en.wikipedia.org/wiki/Context_switch">context switch</a>.</p>
+<p>In the last case, when the <code>fastpath</code> and <code>midpath</code> may not be executed, the last path - <code>slowpath</code> will be executed. This path acts like a <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a> lock. If the lock is unable to be acquired by a process, this process will be added to <code>wait queue</code> which is represented by the following:</p>
+<pre><code class="language-C">struct mutex_waiter {
+        struct list_head        list;
+        struct task_struct      *task;
+#ifdef CONFIG_DEBUG_MUTEXES
+        void                    *magic;
+#endif
+};
+</code></pre>
+<p>structure from the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">include/linux/mutex.h</a> header file and will be sleep. Before we will consider <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> which is provided by the Linux kernel for manipulation with <code>mutexes</code>, let's consider the <code>mutex_waiter</code> structure. If you have read the <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">previous part</a> of this chapter, you may notice that the <code>mutex_waiter</code> structure is similar to the <code>semaphore_waiter</code> structure from the <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/semaphore.c">kernel/locking/semaphore.c</a> source code file:</p>
+<pre><code class="language-C">struct semaphore_waiter {
+        struct list_head list;
+        struct task_struct *task;
+        bool up;
+};
+</code></pre>
+<p>It also contains <code>list</code> and <code>task</code> fields which are represent entry of the mutex wait queue. The one difference here that the <code>mutex_waiter</code> does not contains <code>up</code> field, but contains the <code>magic</code> field which depends on the <code>CONFIG_DEBUG_MUTEXES</code> kernel configuration option and used to store a <code>mutex</code> related information for debugging purpose.</p>
+<p>Now we know what is it <code>mutex</code> and how it is represented the Linux kernel. In this case, we may go ahead and start to look at the <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> which the Linux kernel provides for manipulation of <code>mutexes</code>.</p>
+<h2 id="mutex-api">Mutex API</h2>
+<p>Ok, in the previous paragraph we knew what is it <code>mutex</code> synchronization primitive and saw the <code>mutex</code> structure which represents <code>mutex</code> in the Linux kernel. Now it's time to consider <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> for manipulation of mutexes. Description of the <code>mutex</code> API is located in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">include/linux/mutex.h</a> header file. As always, before we will consider how to acquire and release a <code>mutex</code>, we need to know how to initialize it.</p>
+<p>There are two approaches to initialize a <code>mutex</code>. The first is to do it statically. For this purpose the Linux kernel provides following:</p>
+<pre><code class="language-C">#define DEFINE_MUTEX(mutexname) \
+        struct mutex mutexname = __MUTEX_INITIALIZER(mutexname)
+</code></pre>
+<p>macro. Let's consider implementation of this macro. As we may see, the <code>DEFINE_MUTEX</code> macro takes name for the <code>mutex</code> and expands to the definition of the new <code>mutex</code> structure. Additionally new <code>mutex</code> structure get initialized with the <code>__MUTEX_INITIALIZER</code> macro. Let's look at the implementation of the <code>__MUTEX_INITIALIZER</code>:</p>
+<pre><code class="language-C">#define __MUTEX_INITIALIZER(lockname)         \
+{                                                             \
+       .count = ATOMIC_INIT(1),                               \
+       .wait_lock = __SPIN_LOCK_UNLOCKED(lockname.wait_lock), \
+       .wait_list = LIST_HEAD_INIT(lockname.wait_list)        \
+}
+</code></pre>
+<p>This macro is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">same</a> header file and as we may understand it initializes fields of the <code>mutex</code> structure the initial values. The <code>count</code> field get initialized with the <code>1</code> which represents <code>unlocked</code> state of a mutex. The <code>wait_lock</code> <a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a> get initialized to the unlocked state and the last field <code>wait_list</code> to empty <a href="https://0xax.gitbooks.io/linux-insides/content/DataStructures/dlist.html">doubly linked list</a>.</p>
+<p>The second approach allows us to initialize a <code>mutex</code> dynamically. To do this we need to call the <code>__mutex_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/mutex.c">kernel/locking/mutex.c</a> source code file. Actually, the <code>__mutex_init</code> function rarely called directly. Instead of the <code>__mutex_init</code>, the:</p>
+<pre><code class="language-C"># define mutex_init(mutex)                \
+do {                                                    \
+        static struct lock_class_key __key;             \
+                                                        \
+        __mutex_init((mutex), #mutex, &amp;__key);          \
+} while (0)
+</code></pre>
+<p>macro is used. We may see that the <code>mutex_init</code> macro just defines the <code>lock_class_key</code> and call the <code>__mutex_init</code> function. Let's look at the implementation of this function:</p>
+<pre><code class="language-C">void
+__mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key)
+{
+        atomic_set(&amp;lock-&gt;count, 1);
+        spin_lock_init(&amp;lock-&gt;wait_lock);
+        INIT_LIST_HEAD(&amp;lock-&gt;wait_list);
+        mutex_clear_owner(lock);
+#ifdef CONFIG_MUTEX_SPIN_ON_OWNER
+        osq_lock_init(&amp;lock-&gt;osq);
+#endif
+        debug_mutex_init(lock, name, key);
+}
+</code></pre>
+<p>As we may see the <code>__mutex_init</code> function takes three arguments:</p>
+<ul>
+<li><code>lock</code> - a mutex itself;</li>
+<li><code>name</code> - name of mutex for debugging purpose;</li>
+<li><code>key</code> - key for <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a>.</li>
+</ul>
+<p>At the beginning of the <code>__mutex_init</code> function, we may see initialization of the <code>mutex</code> state. We set it to <code>unlocked</code> state with the <code>atomic_set</code> function which atomically set the give variable to the given value. After this we may see initialization of the <code>spinlock</code> to the unlocked state which will protect <code>wait queue</code> of the <code>mutex</code> and initialization of the <code>wait queue</code> of the <code>mutex</code>. After this we clear owner of the <code>lock</code> and initialize optimistic queue by the call of the <code>osq_lock_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/include/linux/osq_lock.h">include/linux/osq_lock.h</a> header file. This function just sets the tail of the optimistic queue to the unlocked state:</p>
+<pre><code class="language-C">static inline bool osq_is_locked(struct optimistic_spin_queue *lock)
+{
+        return atomic_read(&amp;lock-&gt;tail) != OSQ_UNLOCKED_VAL;
+}
+</code></pre>
+<p>In the end of the <code>__mutex_init</code> function we may see the call of the <code>debug_mutex_init</code> function, but as I already wrote in previous parts of this <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/index.html">chapter</a>, we will not consider debugging related stuff in this chapter.</p>
+<p>After the <code>mutex</code> structure is initialized, we may go ahead and will look at the <code>lock</code> and <code>unlock</code> API of <code>mutex</code> synchronization primitive. Implementation of <code>mutex_lock</code> and <code>mutex_unlock</code> functions located in the <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/mutex.c">kernel/locking/mutex.c</a> source code file. First of all let's start from the implementation of the <code>mutex_lock</code>. It looks:</p>
+<pre><code class="language-C">void __sched mutex_lock(struct mutex *lock)
+{
+        might_sleep();
+        __mutex_fastpath_lock(&amp;lock-&gt;count, __mutex_lock_slowpath);
+        mutex_set_owner(lock);
+}
+</code></pre>
+<p>We may see the call of the <code>might_sleep</code> macro from the <a href="https://github.com/torvalds/linux/blob/master/include/linux/kernel.h">include/linux/kernel.h</a> header file at the beginning of the <code>mutex_lock</code> function. Implementation of this macro depends on the <code>CONFIG_DEBUG_ATOMIC_SLEEP</code> kernel configuration option and if this option is enabled, this macro just prints a stack trace if it was executed in <a href="https://en.wikipedia.org/wiki/Linearizability">atomic</a> context. This macro is helper for debugging purposes. In other way this macro does nothing.</p>
+<p>After the <code>might_sleep</code> macro, we may see the call of the <code>__mutex_fastpath_lock</code> function. This function is architecture-specific and as we consider <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture in this book, the implementation of the <code>__mutex_fastpath_lock</code> is located in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/mutex_64.h">arch/x86/include/asm/mutex_64.h</a> header file. As we may understand from the name of the <code>__mutex_fastpath_lock</code> function, this function will try to acquire lock in a fast path or in other words this function will try to decrement the value of the <code>count</code> of the given mutex.</p>
+<p>Implementation of the <code>__mutex_fastpath_lock</code> function consists from two parts. The first part is <a href="https://0xax.gitbooks.io/linux-insides/content/Theory/asm.html">inline assembly</a> statement. Let's look at it:</p>
+<pre><code class="language-C">asm_volatile_goto(LOCK_PREFIX "   decl %0\n"
+                              "   jns %l[exit]\n"
+                              : : "m" (v-&gt;counter)
+                              : "memory", "cc"
+                              : exit);
+</code></pre>
+<p>First of all, let's pay attention to the <code>asm_volatile_goto</code>. This macro is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/compiler-gcc.h">include/linux/compiler-gcc.h</a> header file and just expands to the two inline assembly statements:</p>
+<pre><code class="language-C">#define asm_volatile_goto(x...) do { asm goto(x); asm (""); } while (0)
+</code></pre>
+<p>The first assembly statement contains <code>goto</code> specificator and the second empty inline assembly statement is <a href="https://en.wikipedia.org/wiki/Memory_barrier">barrier</a>. Now let's return to the our inline assembly statement. As we may see it starts from the definition of the <code>LOCK_PREFIX</code> macro which just expands to the <a href="http://x86.renejeschke.de/html/file_module_x86_id_159.html">lock</a> instruction:</p>
+<pre><code class="language-C">#define LOCK_PREFIX LOCK_PREFIX_HERE "\n\tlock; "
+</code></pre>
+<p>As we already know from the previous parts, this instruction allows to execute prefixed instruction <a href="https://en.wikipedia.org/wiki/Linearizability">atomically</a>. So, at the first step in the our assembly statement we try decrement value of the given <code>mutex-&gt;counter</code>. At the next step the <a href="http://unixwiz.net/techtips/x86-jumps.html">jns</a> instruction will execute jump at the <code>exit</code> label if the value of the decremented <code>mutex-&gt;counter</code> is not negative. The <code>exit</code> label is the second part of the <code>__mutex_fastpath_lock</code> function and it just points to the exit from this function:</p>
+<pre><code class="language-C">exit:
+        return;
+</code></pre>
+<p>For this moment he implementation of the <code>__mutex_fastpath_lock</code> function looks pretty easy. But the value of the <code>mutex-&gt;counter</code> may be negative after increment. In this case the:</p>
+<pre><code class="language-C">fail_fn(v);
+</code></pre>
+<p>will be called after our inline assembly statement. The <code>fail_fn</code> is the second parameter of the <code>__mutex_fastpath_lock</code> function and represents pointer to function which represents <code>midpath/slowpath</code> paths to acquire the given lock. In our case the <code>fail_fn</code> is the <code>__mutex_lock_slowpath</code> function. Before we will look at the implementation of the <code>__mutex_lock_slowpath</code> function, let's finish with the implementation of the <code>mutex_lock</code> function. In the simplest way, the lock will be acquired successfully by a process and the <code>__mutex_fastpath_lock</code> will be finished. In this case, we just call the</p>
+<pre><code class="language-C">mutex_set_owner(lock);
+</code></pre>
+<p>in the end of the <code>mutex_lock</code>. The <code>mutex_set_owner</code> function is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mutex.h">kernel/locking/mutex.h</a> header file and just sets owner of a lock to the current process:</p>
+<pre><code class="language-C">static inline void mutex_set_owner(struct mutex *lock)
+{
+        lock-&gt;owner = current;
+}
+</code></pre>
+<p>In other way, let's consider situation when a process which wants to acquire a lock is unable to do it, because another process already acquired the same lock. We already know that the <code>__mutex_lock_slowpath</code> function will be called in this case. Let's consider implementation of this function. This function is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/mutex.c">kernel/locking/mutex.c</a> source code file and starts from the obtaining of the proper mutex by the mutex state given from the <code>__mutex_fastpath_lock</code> with the <code>container_of</code> macro:</p>
+<pre><code class="language-C">__visible void __sched
+__mutex_lock_slowpath(atomic_t *lock_count)
+{
+        struct mutex *lock = container_of(lock_count, struct mutex, count);
+
+        __mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, 0,
+                            NULL, _RET_IP_, NULL, 0);
+}
+</code></pre>
+<p>and call the <code>__mutex_lock_common</code> function with the obtained <code>mutex</code>. The <code>__mutex_lock_common</code> function starts from <a href="https://en.wikipedia.org/wiki/Preemption_%28computing%29">preemtion</a> disabling until rescheduling:</p>
+<pre><code class="language-C">preempt_disable();
+</code></pre>
+<p>After this comes the stage of optimistic spinning. As we already know this stage depends on the <code>CONFIG_MUTEX_SPIN_ON_OWNER</code> kernel configuration option. If this option is disabled, we skip this stage and move at the last path - <code>slowpath</code> of a <code>mutex</code> acquisition:</p>
+<pre><code class="language-C">if (mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx)) {
+        preempt_enable();
+        return 0;
+}
+</code></pre>
+<p>First of all the <code>mutex_optimistic_spin</code> function check that we don't need to reschedule or in other words there are no other tasks ready to run that have higher priority. If this check was successful we need to update <code>MCS</code> lock wait queue with the current spin. In this way only one spinner can complete for the mutex at one time:</p>
+<pre><code class="language-C">osq_lock(&amp;lock-&gt;osq)
+</code></pre>
+<p>At the next step we start to spin in the next loop:</p>
+<pre><code class="language-C">while (true) {
+    owner = READ_ONCE(lock-&gt;owner);
+
+    if (owner &amp;&amp; !mutex_spin_on_owner(lock, owner))
+        break;
+
+    if (mutex_try_to_acquire(lock)) {
+        lock_acquired(&amp;lock-&gt;dep_map, ip);
+
+        mutex_set_owner(lock);
+        osq_unlock(&amp;lock-&gt;osq);
+        return true;
+    }
+}
+</code></pre>
+<p>and try to acquire a lock. First of all we try to take current owner and if the owner exists (it may not exists in a case when a process already released a mutex) and we wait for it in the <code>mutex_spin_on_owner</code> function before the owner will release a lock. If new task with higher priority have appeared during wait of the lock owner, we break the loop and go to sleep. In other case, the process already may release a lock, so we try to acquire a lock with the <code>mutex_try_to_acquired</code>. If this operation finished successfully, we set new owner for the given mutex, removes ourself from the <code>MCS</code> wait queue and exit from the <code>mutex_optimistic_spin</code> function. At this state a lock will be acquired by a process and we enable <a href="https://en.wikipedia.org/wiki/Preemption_%28computing%29">preemtion</a> and exit from the <code>__mutex_lock_common</code> function:</p>
+<pre><code class="language-C">if (mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx)) {
+    preempt_enable();
+    return 0;
+}
+
+</code></pre>
+<p>That's all for this case.</p>
+<p>In other case all may not be so successful. For example new task may occur during we spinning in the loop from the <code>mutex_optimistic_spin</code> or even we may not get to this loop from the <code>mutex_optimistic_spin</code> in a case when there were task(s) with higher priority before this loop. Or finally the <code>CONFIG_MUTEX_SPIN_ON_OWNER</code> kernel configuration option disabled. In this case the <code>mutex_optimistic_spin</code> will do nothing:</p>
+<pre><code class="language-C">#ifndef CONFIG_MUTEX_SPIN_ON_OWNER
+static bool mutex_optimistic_spin(struct mutex *lock,
+                                  struct ww_acquire_ctx *ww_ctx, const bool use_ww_ctx)
+{
+    return false;
+}
+#endif
+</code></pre>
+<p>In all of these cases, the <code>__mutex_lock_common</code> function will acct like a <code>semaphore</code>. We try to acquire a lock again because the owner of a lock might already release a lock before this time:</p>
+<pre><code class="language-C">if (!mutex_is_locked(lock) &amp;&amp;
+   (atomic_xchg_acquire(&amp;lock-&gt;count, 0) == 1))
+      goto skip_wait;
+</code></pre>
+<p>In a failure case the process which wants to acquire a lock will be added to the waiters list</p>
+<pre><code class="language-C">list_add_tail(&amp;waiter.list, &amp;lock-&gt;wait_list);
+waiter.task = task;
+</code></pre>
+<p>In a successful case we update the owner of a lock, enable preemption and exit from the <code>__mutex_lock_common</code> function:</p>
+<pre><code class="language-C">skip_wait:
+        mutex_set_owner(lock);
+        preempt_enable();
+        return 0; 
+</code></pre>
+<p>In this case a lock will be acquired. If can't acquire a lock for now, we enter into the following loop:</p>
+<pre><code class="language-C">for (;;) {
+
+    if (atomic_read(&amp;lock-&gt;count) &gt;= 0 &amp;&amp; (atomic_xchg_acquire(&amp;lock-&gt;count, -1) == 1))
+        break;
+
+    if (unlikely(signal_pending_state(state, task))) {
+        ret = -EINTR;
+        goto err;
+    } 
+
+    __set_task_state(task, state);
+
+     schedule_preempt_disabled();
+}
+</code></pre>
+<p>where try to acquire a lock again and exit if this operation was successful. Yes, we try to acquire a lock again right after unsuccessful try before the loop. We need to do it to make sure that we get a wakeup once a lock will be unlocked. Besides this, it allows us to acquire a lock after sleep. In other case we check the current process for pending <a href="https://en.wikipedia.org/wiki/Unix_signal">signals</a> and exit if the process was interrupted by a <code>signal</code> during wait for a lock acquisition. In the end of loop we didn't acquire a lock, so we set the task state for <code>TASK_UNINTERRUPTIBLE</code> and go to sleep with call of the <code>schedule_preempt_disabled</code> function.</p>
+<p>That's all. We have considered all three possible paths through which a process may pass when it will wan to acquire a lock. Now let's consider how <code>mutex_unlock</code> is implemented. When the <code>mutex_unlock</code> will be called by a process which wants to release a lock, the <code>__mutex_fastpath_unlock</code> will be called from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/mutex_64.h">arch/x86/include/asm/mutex_64.h</a> header file:</p>
+<pre><code class="language-C">void __sched mutex_unlock(struct mutex *lock)
+{
+    __mutex_fastpath_unlock(&amp;lock-&gt;count, __mutex_unlock_slowpath);
+}
+</code></pre>
+<p>Implementation of the <code>__mutex_fastpath_unlock</code> function is very similar to the implementation of the <code>__mutex_fastpath_lock</code> function:</p>
+<pre><code class="language-C">static inline void __mutex_fastpath_unlock(atomic_t *v,
+                                           void (*fail_fn)(atomic_t *))
+{
+       asm_volatile_goto(LOCK_PREFIX "   incl %0\n"
+                         "   jg %l[exit]\n"
+                         : : "m" (v-&gt;counter)
+                         : "memory", "cc"
+                         : exit);
+       fail_fn(v);
+exit:
+       return;
+}
+</code></pre>
+<p>Actually, there is only one difference. We increment value if the <code>mutex-&gt;count</code>. So it will represent <code>unlocked</code> state after this operation. As <code>mutex</code> released, but we have something in the <code>wait queue</code> we need to update it. In this case the <code>fail_fn</code> function will be called which is <code>__mutex_unlock_slowpath</code>. The <code>__mutex_unlock_slowpath</code> function just gets the correct <code>mutex</code> instance by the given <code>mutex-&gt;count</code> and calls the <code>__mutex_unlock_common_slowpath</code> function:</p>
+<pre><code class="language-C">__mutex_unlock_slowpath(atomic_t *lock_count)
+{
+      struct mutex *lock = container_of(lock_count, struct mutex, count);
+
+      __mutex_unlock_common_slowpath(lock, 1);
+}
+</code></pre>
+<p>In the <code>__mutex_unlock_common_slowpath</code> function we will get the first entry from the wait queue if the wait queue is not empty and wakeup related process:</p>
+<pre><code class="language-C">if (!list_empty(&amp;lock-&gt;wait_list)) {
+    struct mutex_waiter *waiter =
+           list_entry(lock-&gt;wait_list.next, struct mutex_waiter, list); 
+                wake_up_process(waiter-&gt;task);
+}
+</code></pre>
+<p>After this, a mutex will be released by previous process and will be acquired by another process from a wait queue.</p>
+<p>That's all. We have considered main <code>API</code> for manipulation with <code>mutexes</code>: <code>mutex_lock</code> and <code>mutex_unlock</code>. Besides this the Linux kernel provides following API:</p>
+<ul>
+<li><code>mutex_lock_interruptible</code>;</li>
+<li><code>mutex_lock_killable</code>;</li>
+<li><code>mutex_trylock</code>.</li>
+</ul>
+<p>and corresponding versions of <code>unlock</code> prefixed functions. This part will not describe this <code>API</code>, because it is similar to corresponding <code>API</code> of <code>semaphores</code>. More about it you may read in the <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">previous part</a>.</p>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fourth part of the <a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">synchronization primitives</a> chapter in the Linux kernel. In this part we met with new synchronization primitive which is called - <code>mutex</code>. From the theoretical side, this synchronization primitive very similar on a <a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">semaphore</a>. Actually, <code>mutex</code> represents binary semaphore. But its implementation differs from the implementation of <code>semaphore</code> in the Linux kernel. In the next part we will continue to dive into synchronization primitives in the Linux kernel.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/0xAX/linux-insides/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/0xAX/linux-insides">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Mutual_exclusion">Mutex</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Spinlock">Spinlock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Semaphore_%28programming%29">Semaphore</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">Synchronization primitives</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Lock_%28computer_science%29">Locking mechanism</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Context_switch">Context switches</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Linearizability">Atomic</a></li>
+<li><a href="http://www.cs.rochester.edu/~scott/papers/1991_TOCS_synch.pdf">MCS lock</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/DataStructures/dlist.html">Doubly linked list</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Theory/asm.html">Inline assembly</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Memory_barrier">Memory barrier</a></li>
+<li><a href="http://x86.renejeschke.de/html/file_module_x86_id_159.html">Lock instruction</a></li>
+<li><a href="http://unixwiz.net/techtips/x86-jumps.html">JNS instruction</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Preemption_%28computing%29">preemtion</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Unix_signal">Unix signals</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/197/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/ubuntu_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/197/index.html">手把手教你，搭建内网穿透服务</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="ubuntu">ubuntu</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">45页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 189个">189</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/95/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/95/index.html">Spring Framework 5 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/58.html">lfvepclr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">134页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 25个">25</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/57/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/influxdb_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/57/index.html">InfluxDB简明手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/33.html">xtutu</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="influxdb">influxdb</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 199个">199</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7504;var bookPageRelUrl ='SyncPrim/sync-4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

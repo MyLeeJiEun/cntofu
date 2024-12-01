@@ -1,0 +1,751 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>ELK日志分析平台的运维-从0到1实战微服务架构</title>
+<meta content='ELK日志分析平台的运维,从0到1实战微服务架构' name='keywords'>
+<meta content='ELK日志分析平台的运维,从0到1实战微服务架构' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/205/ms-log/sb-trace.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Spring Boot..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/205/ms-log/sb-eblk.html">
+<span class="">Spring Boot..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/205/index.html">从0到1实战微服务架构</a>
+<a target="_blank" rel="nofollow" href="https://github.com/skyline75489/hands-on-microservices" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="elk日志分析平台的运维">ELK日志分析平台的运维</h1>
+<p>在上一节中，我们在日志文件中增加了调用链信息，方便我们追踪每一次调用的完整关系链条。</p>
+<p>尽管有了追踪信息，可以更好地排查信息。但在微服务架构下，微服务众多，每个微服务又会启动若干个副本，日志文件的数量会随着文件系统迅速增加。</p>
+<p>为了排查一个问题，我们可能要分别到十几个服务上打开几十个不同的文件，效率非常低下。</p>
+<p>ELK就是在这种场景下营运而生的，ELK是一套数据分析套件，由Elasticsearch, Logstach, Kibana组成。在微服务架构的应用场景下，一般用来分析日志。</p>
+<p>在ELK套件中：</p>
+<ul>
+<li>Logstash负责从不同的微服务、不同的副本上收集日志文件，进行格式化。</li>
+<li>Elasticsearch负责日志数据的存储、索引</li>
+<li>Kibana提供了友好的数据可视化、分析界面</li>
+</ul>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/ms-log/elk-stack.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/ms-log/elk-stack.jpg" alt="ELK套件流程图" title="ELK套件流程图"></a></p>
+<p>在本节中，我们暂不接入微服务的日志，单纯探讨ELK套件的运维工作。</p>
+<p>与之前类似，我们的ELK套件将运行在Kubernetes集群上。</p>
+<h2 id="elasticsearch的运维">Elasticsearch的运维</h2>
+<p>Elasticsearch是ELK套件的核心与中枢。我们首先来看一下它的运维工作。</p>
+<p>Elasticsearch的索引需要持久化存储，我们首先声明Pv:</p>
+<pre><code class="language-yaml">
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv031 
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 20Gi
+  hostPath:
+    path: /data/pv031/
+
+</code></pre>
+<p>然后创建一下这个pv：</p>
+<pre><code class="language-shell">
+kubectl apply -f ./pvs.yaml
+
+</code></pre>
+<p>下面看一下elasticserch的定义:</p>
+<pre><code class="language-yaml">
+apiVersion: v1
+kind: Service
+metadata:
+  name: es
+spec:
+  ports:
+  - name: p2
+    port: 9200
+  - name: p3
+    port: 9300
+  selector:
+    app: elasticsearch
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet 
+metadata:
+  name: elasticsearch
+spec:
+  selector:
+    matchLabels:
+      app: elasticsearch
+  serviceName: "es"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: elasticsearch 
+    spec:
+      hostname: elasticsearch
+      containers:
+      - name: elasticsearch-ct
+        image: docker.elastic.co/elasticsearch/elasticsearch:6.3.1 
+        ports:
+        - containerPort: 9200 
+        - containerPort: 9300
+        env:
+        - name: "ES_JAVA_OPTS"
+          value: "-Xms384m -Xmx384m"
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data 
+          name: elasticsearch-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-pvc
+    spec:
+      storageClassName: standard
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 20Gi
+
+</code></pre>
+<p>如上所述：</p>
+<ul>
+<li>考虑到日志数据量大了之后，可能需要分片，我们这里采用了StatefulSet，但目前只有一台服务器。</li>
+<li>暴露两个端口9200和9300，前者是Restful接口，后者是集群同步接口</li>
+<li>采用IP直发，service伪组名是"es"。这样配置后，所有Pod都可以通过elasticsearch-0.es来直接访问这台服务器</li>
+</ul>
+<p>启动一下：</p>
+<pre><code class="language-yaml">kubctl apply -f ./elasticsearch.yaml
+</code></pre>
+<p>如果启动失败，可以查看日志，可能是如下原因：</p>
+<pre><code>kubectl logs elasticsearch-0
+
+...
+vm.max_map_count &lt; 262144
+...
+
+</code></pre>
+<p>这种情况，可以使用具有sudo权限的帐号，更改宿主机（物理机）的配置：</p>
+<pre><code class="language-yaml">sudo sysctl -w vm.max_map_count=262144
+</code></pre>
+<p>再次启动一下，可以发现启动成功：</p>
+<pre><code class="language-yaml">NAME                                                READY     STATUS    RESTARTS   AGE
+elasticsearch-0                                     1/1       Running   4          6h
+</code></pre>
+<h2 id="logstash运维">Logstash运维</h2>
+<p>在启动了Elasticsearch后，我们来看一下Logstash的运维。</p>
+<p>前面已经提到了，我们本节先不会接入Spring Boot的日志，为了方便演示，我们先Mock一个定时任务，每间隔5秒生成日志：</p>
+<pre><code class="language-yaml">apiVersion: v1
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    xpack.monitoring.elasticsearch.url: http://elasticsearch:9200
+    input {
+      heartbeat {
+        interval =&gt; 5
+        message  =&gt; 'Hello from Logstash 💓'
+      }
+    }
+    
+    output {
+      elasticsearch {
+        hosts    =&gt; [ 'elasticsearch-0.es' ]
+        user     =&gt; 'elastic'
+        password =&gt; ''
+      }
+    }
+
+kind: ConfigMap
+metadata:
+  name: logstash-configmap
+
+</code></pre>
+<p>上述是一个ConfigMap，我们在本书中是第一次使用它。它相当于一个可以加载的Volume，可以方便的直接追加到Pod上。</p>
+<p>来创建这个ConfigMap:</p>
+<pre><code class="language-yaml">kubectl apply -f logstash-configmap.yaml
+</code></pre>
+<p>下面看一下Logstash的部署：</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: ls
+spec:
+  ports:
+  - name: p
+    port: 5000
+  selector:
+    app: logstash
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet 
+metadata:
+  name: logstash
+spec:
+  selector:
+    matchLabels:
+      app: logstash
+  serviceName: "ls"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: logstash
+    spec:
+      hostname: logstash
+      containers:
+      - name: logstash-ct
+        image: docker.elastic.co/logstash/logstash:6.3.1 
+        ports:
+        - containerPort: 5000 
+        env:
+        - name: "ES_JAVA_OPTS"
+          value: "-Xms384m -Xmx384m"
+        - name: "XPACK_MONITORING_ENABLED"
+          value: "false"
+        - name: "XPACK_MONITORING_ELASTICSEARCH_URL"
+          value: "http://elasticsearch-0.es:9200"
+        volumeMounts:
+        - name: logstash-configmap
+          mountPath: /usr/share/logstash/pipeline/logstash.conf
+          subPath: logstash.conf
+      volumes:
+      - name: logstash-configmap
+        configMap:
+          name: logstash-configmap
+
+</code></pre>
+<p>如上所述：</p>
+<ul>
+<li>我们使用了刚才配置的logstash-configmap，并覆盖到Pod的/usr/share/logstash/pipeline/logstash.conf，这个文件中</li>
+<li>监控地址是elasticsearch-0.es:9200，即前面启动的es服务地址</li>
+</ul>
+<p>启动一下：</p>
+<pre><code class="language-shell">kubectl apply -f ./logstash.yaml
+</code></pre>
+<p>稍等一会，启动成功：</p>
+<pre><code class="language-shell">
+NAME                                                READY     STATUS    RESTARTS   AGE
+logstash-0                                          1/1       Running   0          7h
+
+</code></pre>
+<h2 id="kibana的运维">Kibana的运维</h2>
+<p>最后，我们来看一下Kibana的运维：</p>
+<pre><code class="language-yaml">
+apiVersion: v1
+kind: Service
+metadata:
+  name: kb
+spec:
+  selector:
+    app: kibana 
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: Deployment 
+metadata:
+  name: kibana 
+spec:
+  selector:
+    matchLabels:
+      app: kibana 
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kibana 
+    spec:
+      hostname: kibana
+      containers:
+      - name: kibana-ct
+        image: docker.elastic.co/kibana/kibana:6.3.1 
+        ports:
+        - containerPort: 5601
+          hostPort: 5601
+        env:
+        - name: "ES_JAVA_OPTS"
+          value: "-Xms384m -Xmx384m"
+        - name: "ELASTICSEARCH_URL"
+          value: "http://elasticsearch-0.es:9200"
+        - name: "XPACK_MONITORING_ENABLED"
+          value: "false"
+</code></pre>
+<p>一般来说，Kibana作为前端展示组件，只需要一台就够了，我们直接用了Deployment。</p>
+<p>尝试打开浏览器访问一下：</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/ms-log/kibana-chrome.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/ms-log/kibana-chrome.png" alt="Kibana界面图" title="Kibana界面图"></a></p>
+<p>如果一切顺利，可以发现，访问成功。</p>
+<p>对于新一些的ElasticSearch/Kibana版本，可能需要先配置一下索引，比较简单，跟着向导就可以完成。</p>
+<p>Kibana的功能非常强大，拿来做日志分析实际有点大材小用。感兴趣的话，可以参考<a href="https://www.elastic.co/guide/en/kibana/current/getting-started.html">官方使用教程</a>。</p>
+<p>我们对ELK的运维就介绍到这里。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/137/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/137/index.html">Growth: 全栈增长工程师指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 6161个">6161</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/187/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/187/index.html">软件开发的工程化</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 112个">112</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/206/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/182/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/amazonwebservices_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/182/index.html">亚马逊(aws)web服务实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/102.html">open-guides</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="amazonwebservices">amazonwebservices</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">314页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 24000个">24000</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/107/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/laravel_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/107/index.html">Laravel 源码详解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="laravel">laravel</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">42页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4个">4</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/119/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/119/index.html">给小白看的设计模式书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/205/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/README.html" title="从0到1实战微服务架构" data-book-page-rel-url="README.html" data-book-page-id="13723">从0到1实战微服务架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/README.html" title="架构概览" data-book-page-rel-url="architecture/README.html" data-book-page-id="13724">架构概览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/architecture/overview.html" title="微服务架构概览" data-book-page-rel-url="architecture/overview.html" data-book-page-id="13725">微服务架构概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/devops.html" title="运维技术链概览" data-book-page-rel-url="architecture/devops.html" data-book-page-id="13726">运维技术链概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/microservics.html" title="微服务技术栈概览" data-book-page-rel-url="architecture/microservics.html" data-book-page-id="13727">微服务技术栈概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/toolchain.html" title="研发工具链概览" data-book-page-rel-url="architecture/toolchain.html" data-book-page-id="13728">研发工具链概览</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/README.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/README.html" data-book-page-id="13729">微服务的自动发现与负载均衡</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/k8s-intro.html" title="Kubernetes 快速入门" data-book-page-rel-url="ms-discovery/k8s-intro.html" data-book-page-id="13730">Kubernetes 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/msd.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/msd.html" data-book-page-id="13731">微服务的自动发现与负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/README.html" title="微服务的开发框架" data-book-page-rel-url="spring-boot/README.html" data-book-page-id="13732">微服务的开发框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-gradle-structure.html" title="Gradle子项目划分与微服务的代码结构" data-book-page-rel-url="spring-boot/sb-gradle-structure.html" data-book-page-id="13733">Gradle子项目划分与微服务的代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-thrift.html" title="Spring Boot整合Thrift RPC" data-book-page-rel-url="spring-boot/sb-thrift.html" data-book-page-id="13734">Spring Boot整合Thrift RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-rest.html" title="Spring Boot整合REST服务" data-book-page-rel-url="spring-boot/sb-rest.html" data-book-page-id="13735">Spring Boot整合REST服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-mockito.html" title="Mockito 单元测试打桩神器" data-book-page-rel-url="spring-boot/sb-mockito.html" data-book-page-id="13736">Mockito 单元测试打桩神器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/README.html" title="微服务的存储与缓存" data-book-page-rel-url="ms-storage/README.html" data-book-page-id="13737">微服务的存储与缓存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/mysql-devops.html" title="MySQL 数据库的运维" data-book-page-rel-url="ms-storage/mysql-devops.html" data-book-page-id="13738">MySQL 数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-mysql.html" title="Spring Boot整合MySQL" data-book-page-rel-url="ms-storage/sb-mysql.html" data-book-page-id="13739">Spring Boot整合MySQL</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/memcached-devops.html" title="Memcached 缓存服务的运维" data-book-page-rel-url="ms-storage/memcached-devops.html" data-book-page-id="13740">Memcached 缓存服务的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-memcached.html" title="Spring Boot整合Memcached" data-book-page-rel-url="ms-storage/sb-memcached.html" data-book-page-id="13741">Spring Boot整合Memcached</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/redis-devops.html" title="Redis 内存数据库的运维" data-book-page-rel-url="ms-storage/redis-devops.html" data-book-page-id="13742">Redis 内存数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-redis.html" title="Spring Boot整合Redis" data-book-page-rel-url="ms-storage/sb-redis.html" data-book-page-id="13743">Spring Boot整合Redis</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/README.html" title="微服务的消息队列" data-book-page-rel-url="ms-msgq/README.html" data-book-page-id="13744">微服务的消息队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rabbitmq-devops.html" title="RabbitMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rabbitmq-devops.html" data-book-page-id="13745">RabbitMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rabitmq.html" title="Spring Boot整合RabbitMQ" data-book-page-rel-url="ms-msgq/sb-rabitmq.html" data-book-page-id="13746">Spring Boot整合RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rocketmq-devops.html" title="RocketMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rocketmq-devops.html" data-book-page-id="13747">RocketMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rocketmq.html" title="Spring Boot整合RocketMQ" data-book-page-rel-url="ms-msgq/sb-rocketmq.html" data-book-page-id="13748">Spring Boot整合RocketMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/kafka-devops.html" title="Kafka 流处理平台的运维" data-book-page-rel-url="ms-msgq/kafka-devops.html" data-book-page-id="13749">Kafka 流处理平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/dev-kafka.html" title="Kafka 流处理开发简介" data-book-page-rel-url="ms-msgq/dev-kafka.html" data-book-page-id="13750">Kafka 流处理开发简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/README.html" title="微服务日志监控" data-book-page-rel-url="ms-log/README.html" data-book-page-id="13751">微服务日志监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-logback.html" title="Spring Boot配置Logback日志" data-book-page-rel-url="ms-log/sb-logback.html" data-book-page-id="13752">Spring Boot配置Logback日志</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-trace.html" title="Spring Boot整合分布式追踪" data-book-page-rel-url="ms-log/sb-trace.html" data-book-page-id="13753">Spring Boot整合分布式追踪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/elk-devops.html" title="ELK日志分析平台的运维" data-book-page-rel-url="ms-log/elk-devops.html" data-book-page-id="13754">ELK日志分析平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-eblk.html" title="Spring Boot整合EBLK日志分析平台" data-book-page-rel-url="ms-log/sb-eblk.html" data-book-page-id="13755">Spring Boot整合EBLK日志分析平台</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/README.html" title="微服务平台监控" data-book-page-rel-url="ms-monitor/README.html" data-book-page-id="13756">微服务平台监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sentry-devops.html" title="Sentry 错误预警系统的运维" data-book-page-rel-url="ms-monitor/sentry-devops.html" data-book-page-id="13757">Sentry 错误预警系统的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sb-sentry.html" title="Spring Boot整合Sentry" data-book-page-rel-url="ms-monitor/sb-sentry.html" data-book-page-id="13758">Spring Boot整合Sentry</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/k8s-prometheus-grafana.html" title="Kubernetes + Prometheus + Grafana平台监控" data-book-page-rel-url="ms-monitor/k8s-prometheus-grafana.html" data-book-page-id="13759">Kubernetes + Prometheus + Grafana平台监控</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/README.html" title="微服务配置中心" data-book-page-rel-url="ms-config/README.html" data-book-page-id="13760">微服务配置中心</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/cfg4j.html" title="cfg4j及方案简介" data-book-page-rel-url="ms-config/cfg4j.html" data-book-page-id="13761">cfg4j及方案简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/sb-config.html" title="Spring Boot整合配置中心" data-book-page-rel-url="ms-config/sb-config.html" data-book-page-id="13762">Spring Boot整合配置中心</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/README.html" title="微服务熔断与限流" data-book-page-rel-url="ms-circuit-breaker-and-limit/README.html" data-book-page-id="13763">微服务熔断与限流</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-hystrix.html" title="熔断与Hystrix" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-hystrix.html" data-book-page-id="13764">熔断与Hystrix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-limit.html" title="限流的实现" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-limit.html" data-book-page-id="13765">限流的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/README.html" title="微服务持续交付" data-book-page-rel-url="ms-delivery/README.html" data-book-page-id="13766">微服务持续交付</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/jenkins-devops.html" title="Jenkins平台的运维" data-book-page-rel-url="ms-delivery/jenkins-devops.html" data-book-page-id="13767">Jenkins平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-ci.html" title="Jenkins持续集成" data-book-page-rel-url="ms-delivery/ms-ci.html" data-book-page-id="13768">Jenkins持续集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-cd.html" title="Jenkins持续部署" data-book-page-rel-url="ms-delivery/ms-cd.html" data-book-page-id="13769">Jenkins持续部署</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/README.html" title="研发工具链" data-book-page-rel-url="toolchain/README.html" data-book-page-id="13770">研发工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/ldap.html" title="LDAP 内部账号管理系统" data-book-page-rel-url="toolchain/ldap.html" data-book-page-id="13771">LDAP 内部账号管理系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/gerrit.html" title="gerrit 代码的版本管理与评审" data-book-page-rel-url="toolchain/gerrit.html" data-book-page-id="13772">gerrit 代码的版本管理与评审</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/nexus.html" title="Nexus 私有maven仓库" data-book-page-rel-url="toolchain/nexus.html" data-book-page-id="13773">Nexus 私有maven仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/bom.html" title="BOM 减少版本冲突" data-book-page-rel-url="toolchain/bom.html" data-book-page-id="13774">BOM 减少版本冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-template.html" title="Spring Boot 项目模板" data-book-page-rel-url="toolchain/spring-boot-template.html" data-book-page-id="13775">Spring Boot 项目模板</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-scripts.html" title="开发效率脚本" data-book-page-rel-url="toolchain/spring-boot-scripts.html" data-book-page-id="13776">开发效率脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/stress-test.html" title="打压工具" data-book-page-rel-url="toolchain/stress-test.html" data-book-page-id="13777">打压工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/README.html" title="运维工具链" data-book-page-rel-url="devops/README.html" data-book-page-id="13778">运维工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/devops/docker-repo.html" title="Docker 私有仓库" data-book-page-rel-url="devops/docker-repo.html" data-book-page-id="13779">Docker 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/discovery.html" title="Nginx REST 网关自动配置" data-book-page-rel-url="devops/discovery.html" data-book-page-id="13780">Nginx REST 网关自动配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/k8s-cluster.html" title="搭建Kubernetes集群" data-book-page-rel-url="devops/k8s-cluster.html" data-book-page-id="13781">搭建Kubernetes集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/openvpn-k8s.html" title="OpenVPN访问Kubernetes集群内网" data-book-page-rel-url="devops/openvpn-k8s.html" data-book-page-id="13782">OpenVPN访问Kubernetes集群内网</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/jump-server.html" title="线上跳板机" data-book-page-rel-url="devops/jump-server.html" data-book-page-id="13783">线上跳板机</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =205;var bookPageId =13754;var bookPageRelUrl ='ms-log/elk-devops.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

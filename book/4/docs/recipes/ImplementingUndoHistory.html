@@ -1,0 +1,927 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>实现撤销重做-Redux 中文文档(Redux in Chinese)</title>
+<meta content='实现撤销重做,Redux 中文文档,Redux in Chinese' name='keywords'>
+<meta content='实现撤销重做,Redux 中文文档,Redux in Chinese' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/4/docs/recipes/ComputingDerivedData.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">计算衍生数据</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/4/docs/recipes/IsolatingSubapps.html">
+<span class="">子应用隔离</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/4/index.html">Redux 中文文档 (Redux in Chinese)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/camsong/redux-in-chinese" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="实现撤销历史">实现撤销历史</h1>
+<p>在应用中构建撤销和重做功能往往需要开发者刻意地付出一些精力。对于经典的 MVC 框架来说，这不是一个简单的问题，因为你需要克隆所有相关的 model 来追踪每一个历史状态。此外，你需要考虑整个撤销堆栈，因为用户的初始更改也是可撤销的。</p>
+<p>这意味着在 MVC 应用中实现撤销和重做功能时，你不得不使用一些类似于 <a href="https://en.wikipedia.org/wiki/Command_pattern">Command</a> 的特殊的数据修改模式来重写你的应用代码。</p>
+<p>然而你可以用 Redux 轻而易举地实现撤销历史，因为以下三个原因：</p>
+<ul>
+<li>不存在多个模型的问题，你需要关心的只是 state 的子树。</li>
+<li>state 是不可变数据，所有修改被描述成独立的 action，而这些 action 与预期的撤销堆栈模型很接近了。</li>
+<li>reducer 的签名 <code>(state, action) =&gt; state</code> 可以自然地实现 “reducer enhancers” 或者 “higher order reducers”。它们在你为 reducer 添加额外的功能时保持着这个签名。撤销历史就是一个典型的应用场景。</li>
+</ul>
+<p>在动手之前，确认你已经阅读过<a href="../basics/README.html">基础教程</a>并且良好掌握了 <a href="../basics/Reducers.html">reducer 合成</a>。本文中的代码会构建于<a href="../basics/README.html">基础教程</a>的示例之上。</p>
+<p>文章的第一部分，我们将会解释实现撤销和重做功能所用到的基础概念。</p>
+<p>在第二部分中，我们会展示如何使用 <a href="https://github.com/omnidan/redux-undo">Redux Undo</a> 库来无缝地实现撤销和重做。</p>
+<p><a href="https://twitter.com/dan_abramov/status/647038407286390784"><a href="http://i.imgur.com/lvDFHkH.gif" data-uk-lightbox><img src="http://i.imgur.com/lvDFHkH.gif" alt="demo of todos-with-undo"></a></a></p>
+<h2 id="理解撤销历史">理解撤销历史</h2>
+<h3 id="设计状态结构">设计状态结构</h3>
+<p>撤销历史也是应用 state 的一部分，我们没有必要以不同的方式实现它。当你实现撤销和重做这个功能时，无论 state 如何随着时间不断变化，你都需要追踪 state 在不同时刻的<strong>历史记录</strong>。</p>
+<p>例如，一个计数器应用的 state 结构看起来可能是这样：</p>
+<pre><code class="language-js">{
+  counter: 10
+}
+</code></pre>
+<p>如果我们希望在这样一个应用中实现撤销和重做的话，我们必须保存更多的 state 以解决下面几个问题：</p>
+<ul>
+<li>撤销或重做留下了哪些信息？</li>
+<li>当前的状态是什么？</li>
+<li>撤销堆栈中过去（和未来）的状态是什么？</li>
+</ul>
+<p>为此我们对 state 结构做了以下修改以便解决上述问题：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ],
+    present: 10,
+    future: []
+  }
+}
+</code></pre>
+<p>现在，如果按下“撤销”，我们希望恢复到过去的状态：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2, 3, 4, 5, 6, 7, 8 ],
+    present: 9,
+    future: [ 10 ]
+  }
+}
+</code></pre>
+<p>再按一次：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2, 3, 4, 5, 6, 7 ],
+    present: 8,
+    future: [ 9, 10 ]
+  }
+}
+</code></pre>
+<p>当我们按下“重做”，我们希望往未来的状态移动一步：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2, 3, 4, 5, 6, 7, 8 ],
+    present: 9,
+    future: [ 10 ]
+  }
+}
+</code></pre>
+<p>最终，当处于撤销堆栈中时，用户发起了一个操作（例如，减少计数），那么我们将会丢弃所有未来的信息：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ],
+    present: 8,
+    future: []
+  }
+}
+</code></pre>
+<p>有趣的一点是，我们在撤销堆栈中保存的是数字、字符串、数组或是对象都不重要，因为整个结构始终保持一致：</p>
+<pre><code class="language-js">{
+  counter: {
+    past: [ 0, 1, 2 ],
+    present: 3,
+    future: [ 4 ]
+  }
+}
+</code></pre>
+<pre><code class="language-js">{
+  todos: {
+    past: [
+      [],
+      [ { text: 'Use Redux' } ],
+      [ { text: 'Use Redux', complete: true } ]
+    ],
+    present: [ { text: 'Use Redux', complete: true }, { text: 'Implement Undo' } ],
+    future: [
+      [ { text: 'Use Redux', complete: true }, { text: 'Implement Undo', complete: true } ]
+    ]
+  }
+}
+</code></pre>
+<p>它看起来通常都是这样：</p>
+<pre><code class="language-js">{
+  past: Array&lt;T&gt;,
+  present: T,
+  future: Array&lt;T&gt;
+}
+</code></pre>
+<p>我们可以在顶层保存单一的历史记录：</p>
+<pre><code class="language-js">{
+  past: [
+    { counterA: 1, counterB: 1 },
+    { counterA: 1, counterB: 0 },
+    { counterA: 0, counterB: 0 }
+  ],
+  present: { counterA: 2, counterB: 1 },
+  future: []
+}
+</code></pre>
+<p>也可以分离历史记录，这样我们可以独立地执行撤销和重做操作：</p>
+<pre><code class="language-js">{
+  counterA: {
+    past: [ 1, 0 ],
+    present: 2,
+    future: []
+  },
+  counterB: {
+    past: [ 0 ],
+    present: 1,
+    future: []
+  }
+}
+</code></pre>
+<p>接下来我们将会看到如何合适地分离撤销和重做。</p>
+<h3 id="设计算法">设计算法</h3>
+<p>无论何种特定的数据类型，重做历史记录的 state 结构始终一致：</p>
+<pre><code class="language-js">{
+  past: Array&lt;T&gt;,
+  present: T,
+  future: Array&lt;T&gt;
+}
+</code></pre>
+<p>让我们讨论一下如何通过算法来操作上文所述的 state 结构。我们可以定义两个 action 来操作该 state：<code>UNDO</code> 和 <code>REDO</code>。在 reducer 中，我们希望以如下步骤处理这两个 action：</p>
+<h4 id="处理-undo">处理 Undo</h4>
+<ul>
+<li>移除 <code>past</code> 中的<strong>最后一个</strong>元素。</li>
+<li>将上一步移除的元素赋予 <code>present</code>。</li>
+<li>将原来的 <code>present</code> 插入到 <code>future</code> 的<strong>最前面</strong>。</li>
+</ul>
+<h4 id="处理-redo">处理 Redo</h4>
+<ul>
+<li>移除 <code>future</code> 中的<strong>第一个</strong>元素。</li>
+<li>将上一步移除的元素赋予 <code>present</code>。</li>
+<li>将原来的 <code>present</code> 追加到 <code>past</code> 的<strong>最后面</strong>。</li>
+</ul>
+<h4 id="处理其他-action">处理其他 Action</h4>
+<ul>
+<li>将当前的 <code>present</code> 追加到 <code>past</code> 的<strong>最后面</strong>。</li>
+<li>将处理完 action 所产生的新的 state 赋予 <code>present</code>。</li>
+<li>清空 <code>future</code>。</li>
+</ul>
+<h3 id="第一次尝试-编写-reducer">第一次尝试: 编写 Reducer</h3>
+<pre><code class="language-js">const initialState = {
+  past: [],
+  present: null, // (?) 我们如何初始化当前状态?
+  future: []
+}
+
+function undoable(state = initialState, action) {
+  const { past, present, future } = state;
+
+  switch (action.type) {
+    case 'UNDO':
+      const previous = past[past.length - 1]
+      const newPast = past.slice(0, past.length - 1)
+      return {
+        past: newPast,
+        present: previous,
+        future: [ present, ...future ]
+      }
+    case 'REDO':
+      const next = future[0]
+      const newFuture = future.slice(1)
+      return {
+        past: [ ...past, present ],
+        present: next,
+        future: newFuture
+      }
+    default:
+      // (?) 我们如何处理其他 action？
+      return state
+  }
+}
+</code></pre>
+<p>这个实现是无法使用的，因为它忽略了下面三个重要的问题：</p>
+<ul>
+<li>我们从何处获取初始的 <code>present</code> 状态？我们无法预先知道它。</li>
+<li>当处理完外部的 action 后，我们在哪里完成将 <code>present</code> 保存到 <code>past</code> 的工作？</li>
+<li>我们如何将 <code>present</code> 状态的控制委托给一个自定义的 reducer？</li>
+</ul>
+<p>看起来 reducer 并不是正确的抽象方式，但是我们已经非常接近了。</p>
+<h3 id="初识-reducer-enhancers">初识 Reducer Enhancers</h3>
+<p>你可能已经熟悉 <a href="https://en.wikipedia.org/wiki/Higher-order_function">higher order function</a> 了。如果你使用过 React，也应该熟悉 <a href="https://medium.com/@dan_abramov/mixins-are-dead-long-live-higher-order-components-94a0d2f9e750">higher order component</a>。我们把这种模式加工一下，将其运用到 reducers。</p>
+<p><strong>reducer enhancer</strong>（或者 <strong>higher order reducer</strong>）作为一个函数，接收 reducer 作为参数并返回一个新的 reducer，这个新的 reducer 可以处理新的 action，或者维护更多的 state，亦或者将它无法处理的 action 委托给原始的 reducer 处理。这不是什么新模式，<a href="../api/combineReducers.html"><code>combineReducers()</code></a>也是 reducer enhancer，因为它同样接收多个 reducer 并返回一个新的 reducer。</p>
+<p>这是一个没有任何功能的 reducer enhancer 示例：</p>
+<pre><code class="language-js">function doNothingWith(reducer) {
+  return function (state, action) {
+    // 仅仅调用传入的 reducer
+    return reducer(state, action)
+  };
+}
+</code></pre>
+<p>一个组合其他 reducer 的 reducer enhancer 看起来类似于这样：</p>
+<pre><code class="language-js">function combineReducers(reducers) {
+  return function (state = {}, action) {
+    return Object.keys(reducers).reduce((nextState, key) =&gt; {
+      // 调用每一个 reducer 并将其管理的部分 state 传给它
+      nextState[key] = reducers[key](state[key], action)
+      return nextState
+    }, {})
+  }
+}
+</code></pre>
+<h3 id="第二次尝试-编写-reducer-enhancer">第二次尝试: 编写 Reducer Enhancer</h3>
+<p>现在我们对 reducer enhancer 有了更深的了解，我们可以明确所谓的<code>可撤销</code>到底是什么：</p>
+<pre><code class="language-js">function undoable(reducer) {
+  // 以一个空的 action 调用 reducer 来产生初始的 state
+  const initialState = {
+    past: [],
+    present: reducer(undefined, {}),
+    future: []
+  }
+
+  // 返回一个可以执行撤销和重做的新的reducer
+  return function (state = initialState, action) {
+    const { past, present, future } = state;
+
+    switch (action.type) {
+      case 'UNDO':
+        const previous = past[past.length - 1]
+        const newPast = past.slice(0, past.length - 1)
+        return {
+          past: newPast,
+          present: previous,
+          future: [ present, ...future ]
+        }
+      case 'REDO':
+        const next = future[0]
+        const newFuture = future.slice(1)
+        return {
+          past: [ ...past, present ],
+          present: next,
+          future: newFuture
+        }
+      default:
+        // 将其他 action 委托给原始的 reducer 处理
+        const newPresent = reducer(present, action);
+        if (present === newPresent) {
+          return state
+        }
+        return {
+          past: [ ...past, present ],
+          present: newPresent,
+          future: []
+        }
+    }
+  }
+}
+</code></pre>
+<p>我们现在可以将任意的 reducer 封装到<code>可撤销</code>的 reducer enhancer，从而处理 <code>UNDO</code> 和 <code>REDO</code> 这两个 action。</p>
+<pre><code class="language-js">// 这是一个 reducer。
+function todos(state = [], action) {
+  /* ... */
+}
+
+// 处理完成之后仍然是一个 reducer！
+const undoableTodos = undoable(todos)
+
+import { createStore } from 'redux'
+const store = createStore(undoableTodos)
+
+store.dispatch({
+  type: 'ADD_TODO',
+  text: 'Use Redux'
+})
+
+store.dispatch({
+  type: 'ADD_TODO',
+  text: 'Implement Undo'
+})
+
+store.dispatch({
+  type: 'UNDO'
+})
+</code></pre>
+<p>还有一个重要注意点：你需要记住当你恢复一个 state 时，必须把 <code>.present</code> 追加到当前的 state 上。你也不能忘了通过检查 <code>.past.length</code> 和 <code>.future.length</code> 确定撤销和重做按钮是否可用。</p>
+<p>你可能听说过 Redux 受 <a href="https://github.com/evancz/elm-architecture-tutorial/">Elm 架构</a> 影响颇深，所以不必惊讶于这个示例与 <a href="http://package.elm-lang.org/packages/TheSeamau5/elm-undo-redo/2.0.0">elm-undo-redo package</a> 如此相似。</p>
+<h2 id="使用-redux-undo">使用 Redux Undo</h2>
+<p>以上这些信息都非常有用，但是有没有一个库能帮助我们实现<code>可撤销</code>功能，而不是由我们自己编写呢？当然有！来看看 <a href="https://github.com/omnidan/redux-undo">Redux Undo</a>，它可以为你的 Redux 状态树中的任何部分提供撤销和重做功能。</p>
+<p>在这个部分中，你会学到如何让 <a href="../basics/ExampleTodoList.html">示例：Todo List</a> 拥有可撤销的功能。你可以在 <a href="https://github.com/reactjs/redux/tree/master/examples/todos-with-undo"><code>todos-with-undo</code></a>找到完整的源码。</p>
+<h3 id="安装">安装</h3>
+<p>首先，你必须先执行</p>
+<pre><code>npm install --save redux-undo
+</code></pre>
+<p>这一步会安装一个提供<code>可撤销</code>功能的 reducer enhancer 的库。</p>
+<h3 id="封装-reducer">封装 Reducer</h3>
+<p>你需要通过 <code>undoable</code> 函数强化你的 reducer。例如，如果之前导出的是 todos reducer，那么现在你需要把这个 reducer 传给 <code>undoable()</code> 然后把计算结果导出：</p>
+<h4 id="reducerstodosjs"><code>reducers/todos.js</code></h4>
+<pre><code class="language-js">import undoable, { distinctState } from 'redux-undo'
+
+/* ... */
+
+const todos = (state = [], action) =&gt; {
+  /* ... */
+}
+
+const undoableTodos = undoable(todos, {
+  filter: distinctState()
+})
+
+export default undoableTodos
+</code></pre>
+<p>这里的 <code>distinctState()</code> 过滤器会忽略那些没有引起 state 变化的 actions，可撤销的 reducer 还可以通过<a href="https://github.com/omnidan/redux-undo#configuration">其他选择</a>进行配置，例如为撤销和重做的 action 设置 action type。</p>
+<p>值得注意的是虽然这与调用 <code>combineReducers()</code> 的结果别无二致，但是现在的 <code>todos</code> reducer 可以传递给 Redux Undo 增强的 reducer。</p>
+<h4 id="reducersindexjs"><code>reducers/index.js</code></h4>
+<pre><code class="language-js">import { combineReducers } from 'redux'
+import todos from './todos'
+import visibilityFilter from './visibilityFilter'
+
+const todoApp = combineReducers({
+  todos,
+  visibilityFilter
+})
+
+export default todoApp
+</code></pre>
+<p>你可以在 reducer 合并层次中的任何层级对一个或多个 reducer 执行 <code>undoable</code>。我们只对 <code>todos</code> reducer 进行封装而不是整个顶层的 reducer，这样 <code>visibilityFilter</code> 引起的变化才不会影响撤销历史。</p>
+<h3 id="更新-selectors">更新 Selectors</h3>
+<p>现在 <code>todos</code> 相关的 state 看起来应该像这样：</p>
+<pre><code class="language-js">{
+  visibilityFilter: 'SHOW_ALL',
+  todos: {
+    past: [
+      [],
+      [ { text: 'Use Redux' } ],
+      [ { text: 'Use Redux', complete: true } ]
+    ],
+    present: [ { text: 'Use Redux', complete: true }, { text: 'Implement Undo' } ],
+    future: [
+      [ { text: 'Use Redux', complete: true }, { text: 'Implement Undo', complete: true } ]
+    ]
+  }
+}
+</code></pre>
+<p>这意味着你必须通过 <code>state.todos.present</code> 访问 state 而不是原来的 <code>state.todos</code>：</p>
+<h4 id="containersvisibletodolistjs"><code>containers/VisibleTodoList.js</code></h4>
+<pre><code class="language-js">const mapStateToProps = (state) =&gt; {
+  return {
+    todos: getVisibleTodos(state.todos.present, state.visibilityFilter)
+  }
+}
+</code></pre>
+<h3 id="添加按钮">添加按钮</h3>
+<p>现在只剩下给撤销和重做的 action 添加按钮。</p>
+<p>首先，为这些按钮创建一个名为 <code>UndoRedo</code> 的容器组件。由于展示部分非常简单，我们不再需要把它们分离到单独的文件去：</p>
+<h4 id="containersundoredojs"><code>containers/UndoRedo.js</code></h4>
+<pre><code class="language-js">import React from 'react'
+
+/* ... */
+
+let UndoRedo = ({ canUndo, canRedo, onUndo, onRedo }) =&gt; (
+  &lt;p&gt;
+    &lt;button onClick={onUndo} disabled={!canUndo}&gt;
+      Undo
+    &lt;/button&gt;
+    &lt;button onClick={onRedo} disabled={!canRedo}&gt;
+      Redo
+    &lt;/button&gt;
+  &lt;/p&gt;
+)
+</code></pre>
+<p>你需要使用 <a href="https://github.com/reactjs/react-redux">React Redux</a> 的 connect 函数生成容器组件，然后检查 <code>state.todos.past.length</code> 和 <code>state.todos.future.length</code> 来判断是否启用撤销和重做按钮。你不再需要给撤销和重做编写 action creators 了，因为 Redux Undo 已经提供了这些 action creators：</p>
+<h4 id="containersundoredojs-1"><code>containers/UndoRedo.js</code></h4>
+<pre><code class="language-js">/* ... */
+
+import { ActionCreators as UndoActionCreators } from 'redux-undo'
+import { connect } from 'react-redux'
+
+/* ... */
+
+const mapStateToProps = (state) =&gt; {
+  return {
+    canUndo: state.todos.past.length &gt; 0,
+    canRedo: state.todos.future.length &gt; 0
+  }
+}
+
+const mapDispatchToProps = (dispatch) =&gt; {
+  return {
+    onUndo: () =&gt; dispatch(UndoActionCreators.undo()),
+    onRedo: () =&gt; dispatch(UndoActionCreators.redo())
+  }
+}
+
+UndoRedo = connect(
+  mapStateToProps,
+  mapDispatchToProps
+)(UndoRedo)
+
+export default UndoRedo
+</code></pre>
+<p>现在把这个 <code>UndoRedo</code> 组件添加到 <code>App</code> 组件：</p>
+<h4 id="componentsappjs"><code>components/App.js</code></h4>
+<pre><code class="language-js">import React from 'react'
+import Footer from './Footer'
+import AddTodo from '../containers/AddTodo'
+import VisibleTodoList from '../containers/VisibleTodoList'
+import UndoRedo from '../containers/UndoRedo'
+
+const App = () =&gt; (
+  &lt;div&gt;
+    &lt;AddTodo /&gt;
+    &lt;VisibleTodoList /&gt;
+    &lt;Footer /&gt;
+    &lt;UndoRedo /&gt;
+  &lt;/div&gt;
+)
+
+export default App
+</code></pre>
+<p>就是这样！在<a href="https://github.com/reactjs/redux/tree/master/examples/todos-with-undo">示例文件夹</a>下执行 <code>npm install</code> 和 <code>npm start</code> 试试看吧！</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/177/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/177/index.html">30秒学会常用React代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/98.html">30 seconds</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1894个">1894</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/198/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/198/index.html">大数据入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/113.html">heibaiying</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">98页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/113/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/react_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/113/index.html">React Native中文文档0.51版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="react">react</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">118页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/95/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/95/index.html">Spring Framework 5 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/58.html">lfvepclr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">134页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 25个">25</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/62/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/62/index.html">Google 深度学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/38.html">ahangchen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1243个">1243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/188/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/4/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/README.html" title="自述" data-book-page-rel-url="README.html" data-book-page-id="224">自述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/README.html" title="介绍" data-book-page-rel-url="docs/introduction/README.html" data-book-page-id="225">介绍</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/Motivation.html" title="动机" data-book-page-rel-url="docs/introduction/Motivation.html" data-book-page-id="226">动机</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/CoreConcepts.html" title="核心概念" data-book-page-rel-url="docs/introduction/CoreConcepts.html" data-book-page-id="227">核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/ThreePrinciples.html" title="三大原则" data-book-page-rel-url="docs/introduction/ThreePrinciples.html" data-book-page-id="228">三大原则</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/PriorArt.html" title="先前技术" data-book-page-rel-url="docs/introduction/PriorArt.html" data-book-page-id="229">先前技术</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/Ecosystem.html" title="生态系统" data-book-page-rel-url="docs/introduction/Ecosystem.html" data-book-page-id="230">生态系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/introduction/Examples.html" title="示例" data-book-page-rel-url="docs/introduction/Examples.html" data-book-page-id="231">示例</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/README.html" title="基础" data-book-page-rel-url="docs/basics/README.html" data-book-page-id="232">基础</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/Actions.html" title="Action" data-book-page-rel-url="docs/basics/Actions.html" data-book-page-id="233">Action</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/Reducers.html" title="Reducer" data-book-page-rel-url="docs/basics/Reducers.html" data-book-page-id="234">Reducer</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/Store.html" title="Store" data-book-page-rel-url="docs/basics/Store.html" data-book-page-id="235">Store</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/DataFlow.html" title="数据流" data-book-page-rel-url="docs/basics/DataFlow.html" data-book-page-id="236">数据流</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/UsageWithReact.html" title="搭配 React" data-book-page-rel-url="docs/basics/UsageWithReact.html" data-book-page-id="237">搭配 React</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/basics/ExampleTodoList.html" title="示例：Todo List" data-book-page-rel-url="docs/basics/ExampleTodoList.html" data-book-page-id="238">示例：Todo List</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/README.html" title="高级" data-book-page-rel-url="docs/advanced/README.html" data-book-page-id="239">高级</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/AsyncActions.html" title="异步 Action" data-book-page-rel-url="docs/advanced/AsyncActions.html" data-book-page-id="240">异步 Action</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/AsyncFlow.html" title="异步数据流" data-book-page-rel-url="docs/advanced/AsyncFlow.html" data-book-page-id="241">异步数据流</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/Middleware.html" title="Middleware" data-book-page-rel-url="docs/advanced/Middleware.html" data-book-page-id="242">Middleware</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/UsageWithReactRouter.html" title="搭配 React Router" data-book-page-rel-url="docs/advanced/UsageWithReactRouter.html" data-book-page-id="243">搭配 React Router</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/ExampleRedditAPI.html" title="示例：Reddit API" data-book-page-rel-url="docs/advanced/ExampleRedditAPI.html" data-book-page-id="244">示例：Reddit API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/advanced/NextSteps.html" title="下一步" data-book-page-rel-url="docs/advanced/NextSteps.html" data-book-page-id="245">下一步</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/README.html" title="技巧" data-book-page-rel-url="docs/recipes/README.html" data-book-page-id="246">技巧</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/MigratingToRedux.html" title="迁移到 Redux" data-book-page-rel-url="docs/recipes/MigratingToRedux.html" data-book-page-id="247">迁移到 Redux</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/UsingObjectSpreadOperator.html" title="使用对象展开运算符" data-book-page-rel-url="docs/recipes/UsingObjectSpreadOperator.html" data-book-page-id="248">使用对象展开运算符</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/ReducingBoilerplate.html" title="减少样板代码" data-book-page-rel-url="docs/recipes/ReducingBoilerplate.html" data-book-page-id="249">减少样板代码</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/ServerRendering.html" title="服务端渲染" data-book-page-rel-url="docs/recipes/ServerRendering.html" data-book-page-id="250">服务端渲染</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/WritingTests.html" title="编写测试" data-book-page-rel-url="docs/recipes/WritingTests.html" data-book-page-id="251">编写测试</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/ComputingDerivedData.html" title="计算衍生数据" data-book-page-rel-url="docs/recipes/ComputingDerivedData.html" data-book-page-id="252">计算衍生数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/ImplementingUndoHistory.html" title="实现撤销重做" data-book-page-rel-url="docs/recipes/ImplementingUndoHistory.html" data-book-page-id="253">实现撤销重做</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/IsolatingSubapps.html" title="子应用隔离" data-book-page-rel-url="docs/recipes/IsolatingSubapps.html" data-book-page-id="254">子应用隔离</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/StructuringReducers.html" title="组织 Reducer" data-book-page-rel-url="docs/recipes/StructuringReducers.html" data-book-page-id="255">组织 Reducer</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/PrerequisiteConcepts.html" title="Reducer 基础概念" data-book-page-rel-url="docs/recipes/reducers/PrerequisiteConcepts.html" data-book-page-id="256">Reducer 基础概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/BasicReducerStructure.html" title="Reducer 基础结构" data-book-page-rel-url="docs/recipes/reducers/BasicReducerStructure.html" data-book-page-id="257">Reducer 基础结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/SplittingReducerLogic.html" title="Reducer 逻辑拆分" data-book-page-rel-url="docs/recipes/reducers/SplittingReducerLogic.html" data-book-page-id="258">Reducer 逻辑拆分</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/RefactoringReducersExample.html" title="Reducer 重构示例" data-book-page-rel-url="docs/recipes/reducers/RefactoringReducersExample.html" data-book-page-id="259">Reducer 重构示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/UsingCombineReducers.html" title="`combineReducers` 用法" data-book-page-rel-url="docs/recipes/reducers/UsingCombineReducers.html" data-book-page-id="260">`combineReducers` 用法</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/BeyondCombineReducers.html" title="`combineReducers` 进阶" data-book-page-rel-url="docs/recipes/reducers/BeyondCombineReducers.html" data-book-page-id="261">`combineReducers` 进阶</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/NormalizingStateShape.html" title="State 范式化" data-book-page-rel-url="docs/recipes/reducers/NormalizingStateShape.html" data-book-page-id="262">State 范式化</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/UpdatingNormalizedData.html" title="管理范式化数据" data-book-page-rel-url="docs/recipes/reducers/UpdatingNormalizedData.html" data-book-page-id="263">管理范式化数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/ReusingReducerLogic.html" title="Reducer 逻辑复用" data-book-page-rel-url="docs/recipes/reducers/ReusingReducerLogic.html" data-book-page-id="264">Reducer 逻辑复用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/ImmutableUpdatePatterns.html" title="不可变更新模式" data-book-page-rel-url="docs/recipes/reducers/ImmutableUpdatePatterns.html" data-book-page-id="265">不可变更新模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/reducers/InitializingState.html" title="初始化 State" data-book-page-rel-url="docs/recipes/reducers/InitializingState.html" data-book-page-id="266">初始化 State</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/recipes/UsingImmutableJS.html" title="结合 Immutable.JS 使用 Redux" data-book-page-rel-url="docs/recipes/UsingImmutableJS.html" data-book-page-id="267">结合 Immutable.JS 使用 Redux</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/FAQ.html" title="常见问题" data-book-page-rel-url="docs/FAQ.html" data-book-page-id="268">常见问题</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/General.html" title="综合" data-book-page-rel-url="docs/faq/General.html" data-book-page-id="269">综合</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/Reducers.html" title="Reducer" data-book-page-rel-url="docs/faq/Reducers.html" data-book-page-id="270">Reducer</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/OrganizingState.html" title="组织 State" data-book-page-rel-url="docs/faq/OrganizingState.html" data-book-page-id="271">组织 State</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/StoreSetup.html" title="创建 Store" data-book-page-rel-url="docs/faq/StoreSetup.html" data-book-page-id="272">创建 Store</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/Actions.html" title="Action" data-book-page-rel-url="docs/faq/Actions.html" data-book-page-id="273">Action</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/ImmutableData.html" title="不可变数据" data-book-page-rel-url="docs/faq/ImmutableData.html" data-book-page-id="274">不可变数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/CodeStructure.html" title="代码结构" data-book-page-rel-url="docs/faq/CodeStructure.html" data-book-page-id="275">代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/Performance.html" title="性能" data-book-page-rel-url="docs/faq/Performance.html" data-book-page-id="276">性能</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/DesignDecisions.html" title="设计哲学" data-book-page-rel-url="docs/faq/DesignDecisions.html" data-book-page-id="277">设计哲学</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/ReactRedux.html" title="React Redux" data-book-page-rel-url="docs/faq/ReactRedux.html" data-book-page-id="278">React Redux</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/faq/Miscellaneous.html" title="其它" data-book-page-rel-url="docs/faq/Miscellaneous.html" data-book-page-id="279">其它</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/Troubleshooting.html" title="排错" data-book-page-rel-url="docs/Troubleshooting.html" data-book-page-id="280">排错</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/Glossary.html" title="词汇表" data-book-page-rel-url="docs/Glossary.html" data-book-page-id="281">词汇表</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/README.html" title="API 文档" data-book-page-rel-url="docs/api/README.html" data-book-page-id="282">API 文档</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/createStore.html" title="createStore" data-book-page-rel-url="docs/api/createStore.html" data-book-page-id="283">createStore</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/Store.html" title="Store" data-book-page-rel-url="docs/api/Store.html" data-book-page-id="284">Store</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/combineReducers.html" title="combineReducers" data-book-page-rel-url="docs/api/combineReducers.html" data-book-page-id="285">combineReducers</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/applyMiddleware.html" title="applyMiddleware" data-book-page-rel-url="docs/api/applyMiddleware.html" data-book-page-id="286">applyMiddleware</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/bindActionCreators.html" title="bindActionCreators" data-book-page-rel-url="docs/api/bindActionCreators.html" data-book-page-id="287">bindActionCreators</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/api/compose.html" title="compose" data-book-page-rel-url="docs/api/compose.html" data-book-page-id="288">compose</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/react-redux/README.html" title="react-redux 文档" data-book-page-rel-url="docs/react-redux/README.html" data-book-page-id="289">react-redux 文档</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/4/docs/react-redux/api.html" title="API" data-book-page-rel-url="docs/react-redux/api.html" data-book-page-id="290">API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/4/docs/react-redux/troubleshooting.html" title="排错" data-book-page-rel-url="docs/react-redux/troubleshooting.html" data-book-page-id="291">排错</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =4;var bookPageId =253;var bookPageRelUrl ='docs/recipes/ImplementingUndoHistory.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

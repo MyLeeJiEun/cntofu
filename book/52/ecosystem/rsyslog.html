@@ -1,0 +1,607 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Rsyslog-Logstash最佳实践</title>
+<meta content='Rsyslog,Logstash最佳实践' name='keywords'>
+<meta content='Rsyslog,Logstash最佳实践' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/52/ecosystem/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">周边项目</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/52/ecosystem/logstash_forwarder.html">
+<span class="">logstash-fo..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/52/index.html">Logstash最佳实践</a>
+<a target="_blank" rel="nofollow" href="https://github.com/chenryn/logstash-best-practice-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="rsyslog">Rsyslog</h1>
+<p>Rsyslog 是 RHEL6 开始的默认系统 syslog 应用软件(当然，RHEL 自带的版本较低，实际官方稳定版本已经到 v8 了)。官网地址：<a href="http://www.rsyslog.com">http://www.rsyslog.com</a></p>
+<p>目前 Rsyslog 本身也支持多种输入输出方式，内部逻辑判断和模板处理。</p>
+<p><a href="http://www.rsyslog.com/common/images/rsyslog-features-imagemap.png" data-uk-lightbox><img src="http://www.rsyslog.com/common/images/rsyslog-features-imagemap.png" alt=""></a></p>
+<h2 id="常用模块介绍">常用模块介绍</h2>
+<p>不同模块插件在 rsyslog 流程中发挥作用的原理，可以阅读：<a href="http://www.rsyslog.com/doc/master/configuration/modules/workflow.html">http://www.rsyslog.com/doc/master/configuration/modules/workflow.html</a></p>
+<p>流程中可以使用 <a href="http://www.rsyslog.com/doc/master/configuration/modules/mmnormalize.html">mmnormalize</a> 组件来完成数据的切分(相当于 logstash 的 <em>filters/grok</em> 功能)。</p>
+<p>rsyslog 从 v7 版本开始带有 <em>omelasticsearch</em> 插件可以直接写入数据到 elasticsearch 集群，配合 mmnormalize 的使用示例见: <a href="http://puppetlabs.com/blog/use-rsyslog-and-elasticsearch-powerful-log-aggregation">http://puppetlabs.com/blog/use-rsyslog-and-elasticsearch-powerful-log-aggregation</a></p>
+<p>而 normalize 语法说明见: <a href="http://www.liblognorm.com/files/manual/index.html?sampledatabase.htm">http://www.liblognorm.com/files/manual/index.html?sampledatabase.htm</a></p>
+<p>类似的还有 mmjsonparse 组件。</p>
+<p>使用示例见:<a href="http://blog.sematext.com/2013/05/28/structured-logging-with-rsyslog-and-elasticsearch/">http://blog.sematext.com/2013/05/28/structured-logging-with-rsyslog-and-elasticsearch/</a></p>
+<h2 id="rsyslog-与-logstash-合作">rsyslog 与 logstash 合作</h2>
+<p>虽然 Rsyslog 很早就支持直接输出数据给 elasticsearch，但<strong>如果你使用的是 v8.4 以下的版本</strong>，我们这里并不推荐这种方式。因为normalize 语法还是比较简单，只支持时间，字符串，数字，ip 地址等几种。在复杂条件下远比不上完整的正则引擎。</p>
+<p>那么，怎么使用 rsyslog 作为日志收集和传输组件，来配合 logstash 工作呢？</p>
+<p>如果只是简单的 syslog 数据，直接单个 logstash 运行即可，配置方式见本书 2.4 章节。</p>
+<p>如果你运行着一个高负荷运行的 rsyslog 系统，每秒传输的数据远大过单个 logstash 能处理的能力，你可以运行多个 logstash 在多个端口，然后让 rsyslog 做轮训转发(事实上，单个 omfwd 本身的转发能力也有限，所以推荐这种做法)：</p>
+<pre><code>Ruleset( name="forwardRuleSet" ) {
+    Action ( type="mmsequence" mode="instance" from="0" to="4" var="$.seq" )
+    if $.seq == "0" then {
+        action  (type="omfwd" Target="127.0.0.1" Port="5140" Protocol="tcp" queue.size="150000" queue.dequeuebatchsize="2000" )
+    }
+    if $.seq == "1" then {
+        action  (type="omfwd" Target="127.0.0.1" Port="5141" Protocol="tcp" queue.size="150000" queue.dequeuebatchsize="2000" )
+    }
+    if $.seq == "2" then {
+        action  (type="omfwd" Target="127.0.0.1" Port="5142" Protocol="tcp" queue.size="150000" queue.dequeuebatchsize="2000" )
+    }
+    if $.seq == "3" then {
+        action  (type="omfwd" Target="127.0.0.1" Port="5143" Protocol="tcp" queue.size="150000" queue.dequeuebatchsize="2000" )
+    }
+}
+</code></pre>
+<h2 id="rsyslog-v8-版的-omelasticsearch">rsyslog v8 版的 omelasticsearch</h2>
+<p>如果你使用的是最新的 v8.4 版 rsyslog，其中有一个新加入的 mmexternal 模块。该模块是在 v7 的 omprog 模块基础上发展出来的，可以让你使用任意脚本，接收标准输入，自行处理以后再输出回来，而 rsyslog 接收到这个输出再进行下一步处理，这就解决了前面提到的 “normalize 语法太简单”的问题！</p>
+<p>下面是使用 rsyslog 的 mmexternal 和 omelasticsearch 完成 Nginx 访问日志直接解析存储的配置。</p>
+<p>rsyslog 配置如下：</p>
+<pre><code>module(load="imuxsock" SysSock.RateLimit.Interval="0")
+module(load="mmexternal")
+module(load="omelasticsearch")
+template(name="logstash-index" type="list") {
+    constant(value="logstash-")
+    property(name="timereported" dateFormat="rfc3339" position.from="1" position.to="4")
+    constant(value=".")
+    property(name="timereported" dateFormat="rfc3339" position.from="6" position.to="7")
+    constant(value=".")
+    property(name="timereported" dateFormat="rfc3339" position.from="9" position.to="10")
+}
+template( name="nginx-log" type="string" string="%msg%\n" )
+if ( $syslogfacility-text == 'local6' and $programname startswith 'wb-www-access-' and not ($msg contains '/2/remind/unread_count' or $msg contains '/2/remind/group_unread') ) then
+{
+    action( type="mmexternal" binary="../../../usr/local/bin/rsyslog-nginx-elasticsearch.py" interface.input="fulljson" )
+    action( type="omelasticsearch"
+            template="nginx-log"
+            server="eshost.example.com"
+            searchIndex="logstash-index"
+            searchType="nginxaccess"
+            asyncrepl="on"
+            bulkmode="on"
+            queue.type="linkedlist"
+            queue.size="10000"
+            queue.dequeuebatchsize="2000"
+            dynSearchIndex="on"
+    )
+    stop
+}
+</code></pre>
+<p>其中调用的 python 脚本示例如下：</p>
+<pre><code class="language-python">#! /usr/bin/python
+import sys
+import json
+import datetime
+
+def nginxLog(data):
+	hostname = data['hostname']
+	logline = data['msg']
+	time_local, http_x_up_calling_line_id, request, http_user_agent, staTus, remote_addr, http_x_log_uid, http_referer, request_time, body_bytes_sent, http_x_forwarded_proto, http_x_forwarded_for, request_uid, http_host, http_cookie, upstream_response_time = logline.split('`')
+	try:
+		upstream_response_time = float(upstream_response_time)
+	except:
+		upstream_response_time = None
+
+	method, uri, verb = request.split(' ')
+	arg = {}
+	try:
+		url_path, url_args = uri.split('?')
+		for args in url_args.split('&amp;'):
+			k, v = args.split('=')
+			arg[k] = v
+	except:
+		url_path = uri
+
+	# Why %z do not implement?
+	ret = {
+		"@timestamp": datetime.datetime.strptime(time_local, ' [%d/%b/%Y:%H:%M:%S +0800]').strftime('%FT%T+0800'),
+		"host": hostname,
+		"method": method.lstrip('"'),
+		"url_path": url_path,
+		"url_args": arg,
+		"verb": verb.rstrip('"'),
+		"http_x_up_calling_line_id": http_x_up_calling_line_id,
+		"http_user_agent": http_user_agent,
+		"status": int(staTus),
+		"remote_addr": remote_addr.strip('[]'),
+		"http_x_log_uid": http_x_log_uid,
+		"http_referer": http_referer,
+		"request_time": float(request_time),
+		"body_bytes_sent": int(body_bytes_sent),
+		"http_x_forwarded_proto": http_x_forwarded_proto,
+		"http_x_forwarded_for": http_x_forwarded_for,
+		"request_uid": request_uid,
+		"http_host": http_host,
+		"http_cookie": http_cookie,
+		"upstream_response_time": upstream_response_time
+	}
+	return ret
+
+def onInit():
+	""" Do everything that is needed to initialize processing
+	"""
+
+def onReceive(msg):
+	data = json.loads(msg)
+    ret  = nginxLog(data)
+	print json.dumps({'msg': ret})
+
+def onExit():
+	""" Do everything that is needed to finish processing. This is being called immediately before exiting.
+	"""
+	# most often, nothing to do here
+
+onInit()
+keepRunning = 1
+while keepRunning == 1:
+	msg = sys.stdin.readline()
+	if msg:
+		msg = msg[:len(msg)-1]
+		onReceive(msg)
+		sys.stdout.flush()
+	else:
+		keepRunning = 0
+onExit()
+sys.stdout.flush()
+</code></pre>
+<p>注意输出的时候，顶层的 key 是不能变的，msg 还得叫 msg，如果是 hostname 还得叫 hostname ，等等。否则，rsyslog 会当做处理无效，直接传递原有数据内容给下一步。</p>
+<p><strong>慎用提示</strong></p>
+<p>从实际运行效果看，rsyslog 对 mmexternal 的程序没有最大并发数限制！所以如果你发送的数据量较大的事情，rsyslog 并不会像普通的转发模式那样缓冲在磁盘队列上，而是<strong>持续 fork 出新的 mmexternal 程序</strong>，几千个进程后，你的服务器就挂了！！</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/115/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/115/index.html">ANTLR 4简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/26/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/26/index.html">安卓应用安全指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">77页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 11个">11</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/141/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/141/index.html">各种程序开发相关的Awesome开源项目清单</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/74.html">sindresorhus</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">25页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 102911个">102911</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/8/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/8/index.html">Netty 实战(精髓)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">101页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 817个">817</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/51/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/51/index.html">前端开发笔记本</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/28.html">li-xinyang</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">67页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1436个">1436</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/52/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="4835">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/README.html" title="基础知识" data-book-page-rel-url="get_start/README.html" data-book-page-id="4836">基础知识</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/get_start/introduction.html" title="介绍" data-book-page-rel-url="get_start/introduction.html" data-book-page-id="4837">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/install.html" title="安装" data-book-page-rel-url="get_start/install.html" data-book-page-id="4838">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/hello_world.html" title="Hello World" data-book-page-rel-url="get_start/hello_world.html" data-book-page-id="4839">Hello World</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/daemon.html" title="长期运行" data-book-page-rel-url="get_start/daemon.html" data-book-page-id="4840">长期运行</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/full_config.html" title="配置语法" data-book-page-rel-url="get_start/full_config.html" data-book-page-id="4841">配置语法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/README.html" title="输入插件(Input)" data-book-page-rel-url="input/README.html" data-book-page-id="4842">输入插件(Input)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/input/stdin.html" title="标准输入(Stdin)" data-book-page-rel-url="input/stdin.html" data-book-page-id="4843">标准输入(Stdin)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/file.html" title="读取文件(File)" data-book-page-rel-url="input/file.html" data-book-page-id="4844">读取文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/tcp.html" title="读取网络数据(TCP)" data-book-page-rel-url="input/tcp.html" data-book-page-id="4845">读取网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/generator.html" title="生成测试数据(Generator)" data-book-page-rel-url="input/generator.html" data-book-page-id="4846">生成测试数据(Generator)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/syslog.html" title="读取 Syslog 数据" data-book-page-rel-url="input/syslog.html" data-book-page-id="4847">读取 Syslog 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/redis.html" title="读取 Redis 数据" data-book-page-rel-url="input/redis.html" data-book-page-id="4848">读取 Redis 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/collectd.html" title="读取 Collectd 数据" data-book-page-rel-url="input/collectd.html" data-book-page-id="4849">读取 Collectd 数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/README.html" title="编码插件(Codec)" data-book-page-rel-url="codec/README.html" data-book-page-id="4850">编码插件(Codec)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/codec/json.html" title="采用 JSON 编码" data-book-page-rel-url="codec/json.html" data-book-page-id="4851">采用 JSON 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/multiline.html" title="合并多行数据(Multiline)" data-book-page-rel-url="codec/multiline.html" data-book-page-id="4852">合并多行数据(Multiline)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/README.html" title="过滤器插件(Filter)" data-book-page-rel-url="filter/README.html" data-book-page-id="4853">过滤器插件(Filter)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/filter/grok.html" title="Grok 正则捕获" data-book-page-rel-url="filter/grok.html" data-book-page-id="4854">Grok 正则捕获</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/date.html" title="时间处理(Date)" data-book-page-rel-url="filter/date.html" data-book-page-id="4855">时间处理(Date)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/mutate.html" title="数据修改(Mutate)" data-book-page-rel-url="filter/mutate.html" data-book-page-id="4856">数据修改(Mutate)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/geoip.html" title="GeoIP 查询归类" data-book-page-rel-url="filter/geoip.html" data-book-page-id="4857">GeoIP 查询归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/json.html" title="JSON 编解码" data-book-page-rel-url="filter/json.html" data-book-page-id="4858">JSON 编解码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/split.html" title="split 拆分事件" data-book-page-rel-url="filter/split.html" data-book-page-id="4859">split 拆分事件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/useragent.html" title="UserAgent 匹配归类" data-book-page-rel-url="filter/useragent.html" data-book-page-id="4860">UserAgent 匹配归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/kv.html" title="Key-Value 切分" data-book-page-rel-url="filter/kv.html" data-book-page-id="4861">Key-Value 切分</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/ruby.html" title="随心所欲的 Ruby 处理" data-book-page-rel-url="filter/ruby.html" data-book-page-id="4862">随心所欲的 Ruby 处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/metrics.html" title="数值统计(Metrics)" data-book-page-rel-url="filter/metrics.html" data-book-page-id="4863">数值统计(Metrics)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/README.html" title="输出插件(Output)" data-book-page-rel-url="output/README.html" data-book-page-id="4864">输出插件(Output)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/output/stdout.html" title="标准输出(Stdout)" data-book-page-rel-url="output/stdout.html" data-book-page-id="4865">标准输出(Stdout)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/file.html" title="保存成文件(File)" data-book-page-rel-url="output/file.html" data-book-page-id="4866">保存成文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/elasticsearch.html" title="保存进 Elasticsearch" data-book-page-rel-url="output/elasticsearch.html" data-book-page-id="4867">保存进 Elasticsearch</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/redis.html" title="输出到 Redis" data-book-page-rel-url="output/redis.html" data-book-page-id="4868">输出到 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/tcp.html" title="输出网络数据(TCP)" data-book-page-rel-url="output/tcp.html" data-book-page-id="4869">输出网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/statsd.html" title="输出到 Statsd" data-book-page-rel-url="output/statsd.html" data-book-page-id="4870">输出到 Statsd</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/nagios.html" title="报警到 Nagios" data-book-page-rel-url="output/nagios.html" data-book-page-id="4871">报警到 Nagios</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/email.html" title="发送邮件(Email)" data-book-page-rel-url="output/email.html" data-book-page-id="4872">发送邮件(Email)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/exec.html" title="调用命令执行(Exec)" data-book-page-rel-url="output/exec.html" data-book-page-id="4873">调用命令执行(Exec)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/README.html" title="尚未进入官方库的常用插件" data-book-page-rel-url="contrib_plugins/README.html" data-book-page-id="4874">尚未进入官方库的常用插件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/kafka.html" title="Kafka" data-book-page-rel-url="contrib_plugins/kafka.html" data-book-page-id="4875">Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/hdfs.html" title="HDFS" data-book-page-rel-url="contrib_plugins/hdfs.html" data-book-page-id="4876">HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/scribe.html" title="Scribe" data-book-page-rel-url="contrib_plugins/scribe.html" data-book-page-id="4877">Scribe</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/README.html" title="深入了解" data-book-page-rel-url="dive_into/README.html" data-book-page-id="4878">深入了解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/write_your_own.html" title="自己写一个插件" data-book-page-rel-url="dive_into/write_your_own.html" data-book-page-id="4879">自己写一个插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/why_jvm_and_howto_run_with_mri.html" title="为什么用 JRuby? 能用 MRI 运行么?" data-book-page-rel-url="dive_into/why_jvm_and_howto_run_with_mri.html" data-book-page-id="4880">为什么用 JRuby? 能用 MRI 运行么?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/README.html" title="周边项目" data-book-page-rel-url="ecosystem/README.html" data-book-page-id="4881">周边项目</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/rsyslog.html" title="Rsyslog" data-book-page-rel-url="ecosystem/rsyslog.html" data-book-page-id="4882">Rsyslog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/logstash_forwarder.html" title="logstash-forwarder" data-book-page-rel-url="ecosystem/logstash_forwarder.html" data-book-page-id="4883">logstash-forwarder</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/nxlog.html" title="nxlog" data-book-page-rel-url="ecosystem/nxlog.html" data-book-page-id="4884">nxlog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/heka.html" title="heka" data-book-page-rel-url="ecosystem/heka.html" data-book-page-id="4885">heka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/message_passing.html" title="Message::Passing" data-book-page-rel-url="ecosystem/message_passing.html" data-book-page-id="4886">Message::Passing</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/fluent.html" title="fluent" data-book-page-rel-url="ecosystem/fluent.html" data-book-page-id="4887">fluent</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =52;var bookPageId =4882;var bookPageRelUrl ='ecosystem/rsyslog.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

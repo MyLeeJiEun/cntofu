@@ -1,0 +1,838 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>创建进程-Go语言标准库(The Golang Standard Library by Example)</title>
+<meta content='创建进程,Go语言标准库,The Golang Standard Library by Example' name='keywords'>
+<meta content='创建进程,Go语言标准库,The Golang Standard Library by Example' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/15/chapter10/10.0.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">第十章 进程、线程与 ..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/15/chapter10/10.2.html">
+<span class="">进程属性和控制</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/15/index.html">Go语言标准库 (The Golang Standard Library by Example)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/polaris1119/The-Golang-Standard-Library-by-Example" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="101-创建进程">10.1 创建进程</h1>
+<p><code>os</code> 包及其子包 <code>os/exec</code> 提供了创建进程的方法。</p>
+<p>一般的，应该优先使用 <code>os/exec</code> 包。因为 <code>os/exec</code> 包依赖 <code>os</code> 包中关键创建进程的 API，为了便于理解，我们先探讨 <code>os</code> 包中和进程相关的部分。</p>
+<h2 id="进程的创建">进程的创建</h2>
+<p>在 Unix 中，创建一个进程，通过系统调用 <code>fork</code> 实现（及其一些变种，如 vfork、clone）。在 Go 语言中，Linux 下创建进程使用的系统调用是 <code>clone</code>。</p>
+<p>很多时候，系统调用 <code>fork</code>、<code>execve</code>、<code>wait</code> 和 <code>exit</code> 会在一起出现。此处先简要介绍这 4 个系统调用及其典型用法。</p>
+<ul>
+<li>fork：允许一进程（父进程）创建一新进程（子进程）。具体做法是，新的子进程几近于对父进程的翻版：子进程获得父进程的栈、数据段、堆和执行文本段的拷贝。可将此视为把父进程一分为二。</li>
+<li>exit(status)：终止一进程，将进程占用的所有资源（内存、文件描述符等）归还内核，交其进行再次分配。参数 <code>status</code> 为一整型变量，表示进程的退出状态。父进程可使用系统调用 <code>wait()</code> 来获取该状态。</li>
+<li>wait(&amp;status)目的有二：其一，如果进程尚未调用 <code>exit()</code> 终止，那么 <code>wait</code> 会挂起父进程直至子进程终止；其二，子进程的终止状态通过 <code>wait</code> 的 <code>status</code> 参数返回。</li>
+<li>execve(pathname, argv, envp) 加载一个新程序（路径名为 pathname，参数列表为 argv，环境变量列表为 envp）到当前进程的内存。这将丢弃现存的程序文本段，并为新程序重新创建栈、数据段以及堆。通常将这一动作称为执行一个新程序。</li>
+</ul>
+<p>在 Go 语言中，没有直接提供 <code>fork</code> 系统调用的封装，而是将 <code>fork</code> 和 <code>execve</code> 合二为一，提供了 <code>syscall.ForkExec</code>。如果想只调用 <code>fork</code>，得自己通过 <code>syscall.Syscall(syscall.SYS_FORK, 0, 0, 0)</code> 实现。</p>
+<h3 id="process-及其相关方法">Process 及其相关方法</h3>
+<p><code>os.Process</code> 存储了通过 <code>StartProcess</code> 创建的进程的相关信息。</p>
+<pre><code>type Process struct {
+	Pid    int
+	handle uintptr // handle is accessed atomically on Windows
+	isdone uint32  // process has been successfully waited on, non zero if true
+}
+</code></pre>
+<p>一般通过 <code>StartProcess</code> 创建 <code>Process</code> 的实例，函数声明如下：</p>
+<p><code>func StartProcess(name string, argv []string, attr *ProcAttr) (*Process, error)</code></p>
+<p>它使用提供的程序名、命令行参数、属性开始一个新进程。<code>StartProcess</code> 是一个低级别的接口。<code>os/exec</code> 包提供了高级别的接口，一般应该尽量使用 <code>os/exec</code> 包。如果出错，错误的类型会是<code>*PathError</code>。</p>
+<p>其中的参数 <code>attr</code>，类型是 <code>ProcAttr</code> 的指针，用于为 <code>StartProcess</code> 创建新进程提供一些属性。定义如下：</p>
+<pre><code>type ProcAttr struct {
+    // 如果 Dir 非空，子进程会在创建 Process 实例前先进入该目录。（即设为子进程的当前工作目录）
+    Dir string
+    // 如果 Env 非空，它会作为新进程的环境变量。必须采用 Environ 返回值的格式。
+    // 如果 Env 为 nil，将使用 Environ 函数的返回值。
+    Env []string
+    // Files 指定被新进程继承的打开文件对象。
+    // 前三个绑定为标准输入、标准输出、标准错误输出。
+    // 依赖底层操作系统的实现可能会支持额外的文件对象。
+    // nil 相当于在进程开始时关闭的文件对象。
+    Files []*File
+    // 操作系统特定的创建属性。
+    // 注意设置本字段意味着你的程序可能会执行异常甚至在某些操作系统中无法通过编译。这时候可以通过为特定系统设置。
+    // 看 syscall.SysProcAttr 的定义，可以知道用于控制进程的相关属性。
+    Sys *syscall.SysProcAttr
+}
+</code></pre>
+<p><code>FindProcess</code> 可以通过 <code>pid</code> 查找一个运行中的进程。该函数返回的 <code>Process</code> 对象可以用于获取关于底层操作系统进程的信息。在 Unix 系统中，此函数总是成功，即使 <code>pid</code> 对应的进程不存在。</p>
+<p><code>func FindProcess(pid int) (*Process, error)</code></p>
+<p><code>Process</code> 提供了四个方法：<code>Kill</code>、<code>Signal</code>、<code>Wait</code> 和 <code>Release</code>。其中 <code>Kill</code> 和 <code>Signal</code> 跟信号相关，而 <code>Kill</code> 实际上就是调用 <code>Signal</code>，发送了 <code>SIGKILL</code> 信号，强制进程退出，关于信号，后续章节会专门讲解。</p>
+<p><code>Release</code> 方法用于释放 <code>Process</code> 对象相关的资源，以便将来可以被再使用。该方法只有在确定没有调用 <code>Wait</code> 时才需要调用。Unix 中，该方法的内部实现只是将 <code>Process</code> 的 <code>pid</code> 置为 -1。</p>
+<p>我们重点看看 <code>Wait</code> 方法。</p>
+<p><code>func (p *Process) Wait() (*ProcessState, error)</code></p>
+<p>在多进程应用程序的设计中，父进程需要知道某个子进程何时改变了状态 —— 子进程终止或因收到信号而停止。<code>Wait</code> 方法就是一种用于监控子进程的技术。</p>
+<p><code>Wait</code> 方法阻塞直到进程退出，然后返回一个 <code>ProcessState</code> 描述进程的状态和可能的错误。<code>Wait</code> 方法会释放绑定到 <code>Process</code> 的所有资源。在大多数操作系统中，<code>Process</code> 必须是当前进程的子进程，否则会返回错误。</p>
+<p>看看 <code>ProcessState</code> 的内部结构：</p>
+<pre><code>type ProcessState struct {
+	pid    int                // The process's id.
+   status syscall.WaitStatus // System-dependent status info.
+   rusage *syscall.Rusage
+}
+</code></pre>
+<p><code>ProcessState</code> 保存了 <code>Wait</code> 函数报告的某个进程的信息。<code>status</code> 记录了状态原因，通过 <code>syscal.WaitStatus</code> 类型定义的方法可以判断：</p>
+<ul>
+<li>Exited()：是否正常退出，如调用 <code>os.Exit</code>；</li>
+<li>Signaled()：是否收到未处理信号而终止；</li>
+<li>CoreDump()：是否收到未处理信号而终止，同时生成 coredump 文件，如 SIGABRT；</li>
+<li>Stopped()：是否因信号而停止（SIGSTOP）；</li>
+<li>Continued()：是否因收到信号 SIGCONT 而恢复；</li>
+</ul>
+<p><code>syscal.WaitStatus</code> 还提供了其他一些方法，比如获取退出状态、信号、停止信号和中断（Trap）原因。</p>
+<p>因为 Linux 下 <code>Wait</code> 的内部实现使用的是 <code>wait4</code> 系统调用，因此，<code>ProcessState</code> 中包含了 <code>rusage</code>，用于统计进程的各类资源信息。一般情况下，<code>syscall.Rusage</code> 中定义的信息都用不到，如果实际中需要使用，可以查阅 Linux 系统调用 <code>getrusage</code> 获得相关说明(<code>getrusage(2)</code>)。</p>
+<p><code>ProcessState</code> 结构内部字段是私有的，我们可以通过它提供的方法来获得一些基本信息，比如：进程是否退出、Pid、进程是否是正常退出、进程CPU时间、用户时间等等。</p>
+<p>实现类似 Linux 中 <code>time</code> 命令的功能：</p>
+<pre><code>package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+func main() {
+	if len(os.Args) &lt; 2 {
+		fmt.Printf("Usage: %s [command]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	cmdName := os.Args[1]
+	if filepath.Base(os.Args[1]) == os.Args[1] {
+		if lp, err := exec.LookPath(os.Args[1]); err != nil {
+			fmt.Println("look path error:", err)
+			os.Exit(1)
+		} else {
+			cmdName = lp
+		}
+	}
+
+	procAttr := &amp;os.ProcAttr{
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Println("look path error:", err)
+		os.Exit(1)
+	}
+
+	start := time.Now()
+	process, err := os.StartProcess(cmdName, []string{cwd}, procAttr)
+	if err != nil {
+		fmt.Println("start process error:", err)
+		os.Exit(2)
+	}
+
+	processState, err := process.Wait()
+	if err != nil {
+		fmt.Println("wait error:", err)
+		os.Exit(3)
+	}
+
+	fmt.Println()
+	fmt.Println("real", time.Now().Sub(start))
+	fmt.Println("user", processState.UserTime())
+	fmt.Println("system", processState.SystemTime())
+}
+
+// go build main.go &amp;&amp; ./main ls
+// Output:
+//
+// real 4.994739ms
+// user 1.177ms
+// system 2.279ms
+</code></pre>
+<h2 id="运行外部命令">运行外部命令</h2>
+<p>通过 <code>os</code> 包可以做到运行外部命令，如前面的例子。不过，Go 标准库为我们封装了更好用的包： <code>os/exec</code>，运行外部命令，应该优先使用它，它包装了 <code>os.StartProcess</code> 函数以便更容易的重定向标准输入和输出，使用管道连接I/O，以及作其它的一些调整。</p>
+<h3 id="查找可执行程序">查找可执行程序</h3>
+<p><code>exec.LookPath</code> 函数在 <code>PATH</code> 指定目录中搜索可执行程序，如 <code>file</code> 中有 <code>/</code>，则只在当前目录搜索。该函数返回完整路径或相对于当前路径的一个相对路径。</p>
+<p><code>func LookPath(file string) (string, error)</code></p>
+<p>如果在 <code>PATH</code> 中没有找到可执行文件，则返回 <code>exec.ErrNotFound</code>。</p>
+<h3 id="cmd-及其相关方法">Cmd 及其相关方法</h3>
+<p><code>Cmd</code> 结构代表一个正在准备或者在执行中的外部命令，调用了 <code>Run</code>、<code>Output</code> 或 <code>CombinedOutput</code> 后，<code>Cmd</code> 实例不能被重用。</p>
+<pre><code>type Cmd struct {
+    // Path 是将要执行的命令路径。
+    // 该字段不能为空（也是唯一一个不能为空的字段），如为相对路径会相对于 Dir 字段。
+    // 通过 Command 初始化时，会在需要时调用 LookPath 获得完整的路径。
+    Path string
+    
+    // Args 存放着命令的参数，第一个值是要执行的命令（Args[0])；如果为空切片或者nil，使用 {Path} 运行。
+    // 一般情况下，Path 和 Args 都应被 Command 函数设定。
+    Args []string
+    
+    // Env 指定进程的环境变量，如为 nil，则使用当前进程的环境变量，即 os.Environ()，一般就是当前系统的环境变量。
+    Env []string
+    
+    // Dir 指定命令的工作目录。如为空字符串，会在调用者的进程当前工作目录下执行。
+    Dir string
+    
+    // Stdin 指定进程的标准输入，如为 nil，进程会从空设备读取（os.DevNull）
+    // 如果 Stdin 是 *os.File 的实例，进程的标准输入会直接指向这个文件
+    // 否则，会在一个单独的 goroutine 中从 Stdin 中读数据，然后将数据通过管道传递到该命令中（也就是从 Stdin 读到数据后，写入管道，该命令可以从管道读到这个数据）。在 goroutine 停止数据拷贝之前（停止的原因如遇到EOF或其他错误，或管道的 write 端错误），Wait 方法会一直堵塞。
+    Stdin io.Reader
+    
+    // Stdout 和 Stderr 指定进程的标准输出和标准错误输出。
+    // 如果任一个为 nil，Run 方法会将对应的文件描述符关联到空设备（os.DevNull）
+    // 如果两个字段相同，同一时间最多有一个线程可以写入。
+    Stdout io.Writer
+    Stderr io.Writer
+    
+    // ExtraFiles 指定额外被新进程继承的已打开文件，不包括标准输入、标准输出、标准错误输出。
+    // 如果本字段非 nil，其中的元素 i 会变成文件描述符 3+i。
+    //
+    // BUG: 在OS X 10.6系统中，子进程可能会继承不期望的文件描述符。
+    // http://golang.org/issue/2603
+    ExtraFiles []*os.File
+    
+    // SysProcAttr 提供可选的、各操作系统特定的 sys 属性。
+    // Run 方法会将它作为 os.ProcAttr 的 Sys 字段传递给os.StartProcess 函数。
+    SysProcAttr *syscall.SysProcAttr
+    
+    // Process 是底层的，只执行一次的进程。
+    Process *os.Process
+    
+    // ProcessState 包含一个已经存在的进程的信息，只有在调用 Wait 或 Run 后才可用。
+    ProcessState *os.ProcessState
+}
+</code></pre>
+<p><strong>Command</strong></p>
+<p>一般的，应该通过 <code>exec.Command</code> 函数产生 <code>Cmd</code> 实例：</p>
+<p><code>func Command(name string, arg ...string) *Cmd</code></p>
+<p>该函数返回一个 <code>*Cmd</code>，用于使用给出的参数执行 <code>name</code> 指定的程序。返回的 <code>*Cmd</code> 只设定了 <code>Path</code> 和 <code>Args</code> 两个字段。</p>
+<p>如果 <code>name</code> 不含路径分隔符，将使用 <code>LookPath</code> 获取完整路径；否则直接使用 <code>name</code>。参数 <code>arg</code> 不应包含命令名。</p>
+<p>得到 <code>*Cmd</code> 实例后，接下来一般有两种写法：</p>
+<ol>
+<li>调用 <code>Start()</code>，接着调用 <code>Wait()</code>，然后会阻塞直到命令执行完成；</li>
+<li>调用 <code>Run()</code>，它内部会先调用 <code>Start()</code>，接着调用 <code>Wait()</code>；</li>
+</ol>
+<p><strong>Start</strong></p>
+<p><code>func (c *Cmd) Start() error</code></p>
+<p>开始执行 <code>c</code> 包含的命令，但并不会等待该命令完成即返回。<code>Wait</code> 方法会返回命令的退出状态码并在命令执行完后释放相关的资源。内部调用 <code>os.StartProcess</code>，执行 <code>forkExec</code>。</p>
+<p><strong>Wait</strong></p>
+<p><code>func (c *Cmd) Wait() error</code></p>
+<p><code>Wait</code> 会阻塞直到该命令执行完成，该命令必须是先通过 <code>Start</code> 执行。</p>
+<p>如果命令成功执行，stdin、stdout、stderr 数据传递没有问题，并且返回状态码为 0，方法的返回值为 nil；如果命令没有执行或者执行失败，会返回 <code>*ExitError</code> 类型的错误；否则返回的 error 可能是表示 I/O 问题。</p>
+<p>如果 <code>c.Stdin</code> 不是 <code>*os.File</code> 类型，<code>Wait</code> 会等待，直到数据从 <code>c.Stdin</code> 拷贝到进程的标准输入。</p>
+<p><code>Wait</code> 方法会在命令返回后释放相关的资源。</p>
+<p><strong>Output</strong></p>
+<p>除了 <code>Run()</code> 是 <code>Start</code>+<code>Wait</code> 的简便写法，<code>Output()</code> 更是 <code>Run()</code> 的简便写法，外加获取外部命令的输出。</p>
+<p><code>func (c *Cmd) Output() ([]byte, error)</code></p>
+<p>它要求 <code>c.Stdout</code> 必须是 <code>nil</code>，内部会将 <code>bytes.Buffer</code> 赋值给 <code>c.Stdout</code>，在 <code>Run()</code> 成功返回后，会将 <code>Buffer</code> 的结果返回（<code>stdout.Bytes()</code>)。</p>
+<p><strong>CombinedOutput</strong></p>
+<p><code>Output()</code> 只返回 <code>Stdout</code> 的结果，而 <code>CombinedOutput</code> 组合 <code>Stdout</code> 和 <code>Stderr</code> 的输出，即 <code>Stdout</code> 和 <code>Stderr</code> 都赋值为同一个 <code>bytes.Buffer</code>。</p>
+<p><strong>StdoutPipe、StderrPipe 和 StdinPipe</strong></p>
+<p>除了上面介绍的 <code>Output</code> 和 <code>CombinedOutput</code> 直接获取命令输出结果外，还可以通过 <code>StdoutPipe</code> 返回 <code>io.ReadCloser</code> 来获取输出；相应的 <code>StderrPipe</code> 得到错误信息；而 <code>StdinPipe</code> 则可以往命令写入数据。</p>
+<p><code>func (c *Cmd) StdoutPipe() (io.ReadCloser, error)</code></p>
+<p><code>StdoutPipe</code> 方法返回一个在命令 <code>Start</code> 执行后与命令标准输出关联的管道。<code>Wait</code> 方法会在命令结束后会关闭这个管道，所以一般不需要手动关闭该管道。但是在从管道读取完全部数据之前调用 <code>Wait</code> 出错了，则必须手动关闭。</p>
+<p><code>func (c *Cmd) StderrPipe() (io.ReadCloser, error)</code></p>
+<p><code>StderrPipe</code> 方法返回一个在命令 <code>Start</code> 执行后与命令标准错误输出关联的管道。<code>Wait</code> 方法会在命令结束后会关闭这个管道，一般不需要手动关闭该管道。但是在从管道读取完全部数据之前调用 <code>Wait</code> 出错了，则必须手动关闭。</p>
+<p><code>func (c *Cmd) StdinPipe() (io.WriteCloser, error)</code></p>
+<p><code>StdinPipe</code> 方法返回一个在命令 <code>Start</code> 执行后与命令标准输入关联的管道。<code>Wait</code> 方法会在命令结束后会关闭这个管道。必要时调用者可以调用 <code>Close</code> 方法来强行关闭管道。例如，标准输入已经关闭了，命令执行才完成，这时调用者需要显示关闭管道。</p>
+<p>因为 <code>Wait</code> 之后，会将管道关闭，所以，要使用这些方法，只能使用 <code>Start</code>+<code>Wait</code> 组合，不能使用 <code>Run</code>。</p>
+<h3 id="执行外部命令示例">执行外部命令示例</h3>
+<p>前面讲到，通过 <code>Cmd</code> 实例后，有两种方式运行命令。有时候，我们不只是简单的运行命令，还希望能控制命令的输入和输出。通过上面的 API 介绍，控制输入输出有几种方法：</p>
+<ul>
+<li>得到 <code>Cmd</code> 实例后，直接给它的字段 <code>Stdin</code>、<code>Stdout</code> 和 <code>Stderr</code> 赋值；</li>
+<li>通过 <code>Output</code> 或 <code>CombinedOutput</code> 获得输出；</li>
+<li>通过带 <code>Pipe</code> 后缀的方法获得管道，用于输入或输出；</li>
+</ul>
+<h4 id="直接赋值-stdinstdout-和-stderr">直接赋值 <code>Stdin</code>、<code>Stdout</code> 和 <code>Stderr</code></h4>
+<pre><code>func FillStd(name string, arg ...string) ([]byte, error) {
+	cmd := exec.Command(name, arg...)
+	var out = new(bytes.Buffer)
+
+	cmd.Stdout = out
+	cmd.Stderr = out
+
+	err := cmd.Run()
+	if err != nil {
+		return nil, err
+	}
+
+	return out.Bytes(), nil
+}
+</code></pre>
+<h4 id="使用-output">使用 <code>Output</code></h4>
+<pre><code>func UseOutput(name string, arg ...string) ([]byte, error) {
+	return exec.Command(name, arg...).Output()
+}
+</code></pre>
+<h4 id="使用-pipe">使用 Pipe</h4>
+<pre><code>func UsePipe(name string, arg ...string) ([]byte, error) {
+	cmd := exec.Command(name, arg...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	var out = make([]byte, 0, 1024)
+	for {
+		tmp := make([]byte, 128)
+		n, err := stdout.Read(tmp)
+		out = append(out, tmp[:n]...)
+		if err != nil {
+			break
+		}
+	}
+
+	if err = cmd.Wait(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+</code></pre>
+<p>完整代码见 <a href="../../../book/15/code/src/chapter10/os_exec.go">os_exec</a>。</p>
+<h2 id="进程终止">进程终止</h2>
+<p><code>os.Exit()</code> 函数会终止当前进程，对应的系统调用不是 <code>_exit</code>，而是 <code>exit_group</code>。</p>
+<p><code>func Exit(code int)</code></p>
+<p><code>Exit</code> 让当前进程以给出的状态码 <code>code</code> 退出。一般来说，状态码 0 表示成功，非 0 表示出错。进程会立刻终止，defer 的函数不会被执行。</p>
+<h1 id="导航">导航</h1>
+<ul>
+<li><a href="../../../book/15/chapter10/10.0.html">第十章</a></li>
+<li>下一节：<a href="10.2.html">进程属性和控制</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/13/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/13/index.html">Go实战开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2789个">2789</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/18/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/18/index.html">Go社区的知识图谱</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/13.html">golang foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1356个">1356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/89/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/61/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/61/index.html">前端开发者手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/37.html">dwqs</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">92页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 548个">548</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/23/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/23/index.html">数据结构思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 286个">286</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/15/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="1282">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.0.html" title="第一章 输入输出 (Input/Output)" data-book-page-rel-url="chapter01/01.0.html" data-book-page-id="1283">第一章 输入输出 (Input/Output)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.1" disabled data-book-page-rel-url="" data-book-page-id="1284">1.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.1.html" title="io — 基本的 IO 接口" data-book-page-rel-url="chapter01/01.1.html" data-book-page-id="1285">io — 基本的 IO 接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.2" disabled data-book-page-rel-url="" data-book-page-id="1286">1.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.2.html" title="ioutil — 方便的 IO 操作函数集" data-book-page-rel-url="chapter01/01.2.html" data-book-page-id="1287">ioutil — 方便的 IO 操作函数集</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.3" disabled data-book-page-rel-url="" data-book-page-id="1288">1.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.3.html" title="fmt — 格式化 IO" data-book-page-rel-url="chapter01/01.3.html" data-book-page-id="1289">fmt — 格式化 IO</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.4" disabled data-book-page-rel-url="" data-book-page-id="1290">1.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.4.html" title="bufio — 缓存 IO" data-book-page-rel-url="chapter01/01.4.html" data-book-page-id="1291">bufio — 缓存 IO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.0.html" title="第二章 文本" data-book-page-rel-url="chapter02/02.0.html" data-book-page-id="1292">第二章 文本</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.1" disabled data-book-page-rel-url="" data-book-page-id="1293">2.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.1.html" title="strings — 字符串操作" data-book-page-rel-url="chapter02/02.1.html" data-book-page-id="1294">strings — 字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.2" disabled data-book-page-rel-url="" data-book-page-id="1295">2.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.2.html" title="bytes — byte slice 便利操作" data-book-page-rel-url="chapter02/02.2.html" data-book-page-id="1296">bytes — byte slice 便利操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.3" disabled data-book-page-rel-url="" data-book-page-id="1297">2.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.3.html" title="strconv — 字符串和基本数据类型之间转换" data-book-page-rel-url="chapter02/02.3.html" data-book-page-id="1298">strconv — 字符串和基本数据类型之间转换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.4" disabled data-book-page-rel-url="" data-book-page-id="1299">2.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.4.html" title="regexp — 正则表达式" data-book-page-rel-url="chapter02/02.4.html" data-book-page-id="1300">regexp — 正则表达式</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.5" disabled data-book-page-rel-url="" data-book-page-id="1301">2.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.5.html" title="unicode — Unicode 码点、UTF-8/16 编码" data-book-page-rel-url="chapter02/02.5.html" data-book-page-id="1302">unicode — Unicode 码点、UTF-8/16 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.0.html" title="第三章 数据结构与算法" data-book-page-rel-url="chapter03/03.0.html" data-book-page-id="1303">第三章 数据结构与算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.1" disabled data-book-page-rel-url="" data-book-page-id="1304">3.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.1.html" title="sort — 排序算法" data-book-page-rel-url="chapter03/03.1.html" data-book-page-id="1305">sort — 排序算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.3" disabled data-book-page-rel-url="" data-book-page-id="1306">3.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.3.html" title="container — 容器数据类型：heap、list 和 ring" data-book-page-rel-url="chapter03/03.3.html" data-book-page-id="1307">container — 容器数据类型：heap、list 和 ring</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.0.html" title="第四章 日期与时间" data-book-page-rel-url="chapter04/04.0.html" data-book-page-id="1308">第四章 日期与时间</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1" disabled data-book-page-rel-url="" data-book-page-id="1309">4.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.1.html" title="主要类型概述" data-book-page-rel-url="chapter04/04.1.html" data-book-page-id="1310">主要类型概述</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2" disabled data-book-page-rel-url="" data-book-page-id="1311">4.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.2.html" title="时区" data-book-page-rel-url="chapter04/04.2.html" data-book-page-id="1312">时区</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3" disabled data-book-page-rel-url="" data-book-page-id="1313">4.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.3.html" title="Time类型详解" data-book-page-rel-url="chapter04/04.3.html" data-book-page-id="1314">Time类型详解</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4" disabled data-book-page-rel-url="" data-book-page-id="1315">4.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.4.html" title="定时器" data-book-page-rel-url="chapter04/04.4.html" data-book-page-id="1316">定时器</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.1" disabled data-book-page-rel-url="" data-book-page-id="1317">5.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter05/05.1.html" title="math — 基本数学函数" data-book-page-rel-url="chapter05/05.1.html" data-book-page-id="1318">math — 基本数学函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.0.html" title="第六章 文件系统" data-book-page-rel-url="chapter06/06.0.html" data-book-page-id="1319">第六章 文件系统</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.1" disabled data-book-page-rel-url="" data-book-page-id="1320">6.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.1.html" title="os — 平台无关的操作系统功能实现" data-book-page-rel-url="chapter06/06.1.html" data-book-page-id="1321">os — 平台无关的操作系统功能实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.2" disabled data-book-page-rel-url="" data-book-page-id="1322">6.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.2.html" title="path/filepath — 操作路径" data-book-page-rel-url="chapter06/06.2.html" data-book-page-id="1323">path/filepath — 操作路径</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.0.html" title="第七章 数据持久存储与交换" data-book-page-rel-url="chapter07/07.0.html" data-book-page-id="1324">第七章 数据持久存储与交换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.1" disabled data-book-page-rel-url="" data-book-page-id="1325">7.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.1.html" title="database/sql — SQL/SQL-Like 数据库操作接口" data-book-page-rel-url="chapter07/07.1.html" data-book-page-id="1326">database/sql — SQL/SQL-Like 数据库操作接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.0.html" title="第八章 数据压缩与归档" data-book-page-rel-url="chapter08/08.0.html" data-book-page-id="1327">第八章 数据压缩与归档</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.1" disabled data-book-page-rel-url="" data-book-page-id="1328">8.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.1.html" title="flate - DEFLATE 压缩算法" data-book-page-rel-url="chapter08/08.1.html" data-book-page-id="1329">flate - DEFLATE 压缩算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.0.html" title="第九章 测试" data-book-page-rel-url="chapter09/09.0.html" data-book-page-id="1330">第九章 测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.1" disabled data-book-page-rel-url="" data-book-page-id="1331">9.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.1.html" title="testing - 单元测试" data-book-page-rel-url="chapter09/09.1.html" data-book-page-id="1332">testing - 单元测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.2" disabled data-book-page-rel-url="" data-book-page-id="1333">9.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.2.html" title="testing - 基准测试" data-book-page-rel-url="chapter09/09.2.html" data-book-page-id="1334">testing - 基准测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.3" disabled data-book-page-rel-url="" data-book-page-id="1335">9.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.3.html" title="testing - 子测试" data-book-page-rel-url="chapter09/09.3.html" data-book-page-id="1336">testing - 子测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.4" disabled data-book-page-rel-url="" data-book-page-id="1337">9.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.4.html" title="testing - 运行并验证示例" data-book-page-rel-url="chapter09/09.4.html" data-book-page-id="1338">testing - 运行并验证示例</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.5" disabled data-book-page-rel-url="" data-book-page-id="1339">9.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.5.html" title="testing - 其他功能" data-book-page-rel-url="chapter09/09.5.html" data-book-page-id="1340">testing - 其他功能</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.6" disabled data-book-page-rel-url="" data-book-page-id="1341">9.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.6.html" title="httptest - HTTP 测试辅助工具" data-book-page-rel-url="chapter09/09.6.html" data-book-page-id="1342">httptest - HTTP 测试辅助工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.7" disabled data-book-page-rel-url="" data-book-page-id="1343">9.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.7.html" title="总结" data-book-page-rel-url="chapter09/09.7.html" data-book-page-id="1344">总结</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.0.html" title="第十章 进程、线程与 goroutine" data-book-page-rel-url="chapter10/10.0.html" data-book-page-id="1345">第十章 进程、线程与 goroutine</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.1" disabled data-book-page-rel-url="" data-book-page-id="1346">10.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.1.html" title="创建进程" data-book-page-rel-url="chapter10/10.1.html" data-book-page-id="1347">创建进程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.2" disabled data-book-page-rel-url="" data-book-page-id="1348">10.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.2.html" title="进程属性和控制" data-book-page-rel-url="chapter10/10.2.html" data-book-page-id="1349">进程属性和控制</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.3" disabled data-book-page-rel-url="" data-book-page-id="1350">10.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.3.html" title="线程" data-book-page-rel-url="chapter10/10.3.html" data-book-page-id="1351">线程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.4" disabled data-book-page-rel-url="" data-book-page-id="1352">10.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.4.html" title="进程间通信" data-book-page-rel-url="chapter10/10.4.html" data-book-page-id="1353">进程间通信</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.0.html" title="第十三章 应用构建 与 debug" data-book-page-rel-url="chapter13/13.0.html" data-book-page-id="1354">第十三章 应用构建 与 debug</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.1" disabled data-book-page-rel-url="" data-book-page-id="1355">13.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.1.html" title="flag - 命令行参数解析" data-book-page-rel-url="chapter13/13.1.html" data-book-page-id="1356">flag - 命令行参数解析</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.2" disabled data-book-page-rel-url="" data-book-page-id="1357">13.2</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="log - 日志记录" disabled data-book-page-rel-url="chapter13/13.2.html" data-book-page-id="1358">log - 日志记录</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.3" disabled data-book-page-rel-url="" data-book-page-id="1359">13.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.3.html" title="expvar - 公共变量的标准化接口" data-book-page-rel-url="chapter13/13.3.html" data-book-page-id="1360">expvar - 公共变量的标准化接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.4" disabled data-book-page-rel-url="" data-book-page-id="1361">13.4</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="runtime/debug - 运行时的调试工具" disabled data-book-page-rel-url="chapter13/13.4.html" data-book-page-id="1362">runtime/debug - 运行时的调试工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.2" disabled data-book-page-rel-url="" data-book-page-id="1363">15.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter15/15.02.html" title="unsafe — 非类型安全操作" data-book-page-rel-url="chapter15/15.02.html" data-book-page-id="1364">unsafe — 非类型安全操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.1" disabled data-book-page-rel-url="" data-book-page-id="1365">16.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.01.html" title="sync - 处理同步需求" data-book-page-rel-url="chapter16/16.01.html" data-book-page-id="1366">sync - 处理同步需求</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.2" disabled data-book-page-rel-url="" data-book-page-id="1367">16.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.02.html" title="sync/atomic - 原子操作" data-book-page-rel-url="chapter16/16.02.html" data-book-page-id="1368">sync/atomic - 原子操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.3" disabled data-book-page-rel-url="" data-book-page-id="1369">16.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.03.html" title="os/signal - 信号" data-book-page-rel-url="chapter16/16.03.html" data-book-page-id="1370">os/signal - 信号</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =15;var bookPageId =1347;var bookPageRelUrl ='chapter10/10.1.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

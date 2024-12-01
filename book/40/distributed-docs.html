@@ -1,0 +1,827 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>分布式文档存储-Elasticsearch权威指南(Elasticsearch Definitive Guide)</title>
+<meta content='分布式文档存储,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='keywords'>
+<meta content='分布式文档存储,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/asciidoc.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/40/data-in-data-out.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">数据输入和输出</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/40/search.html">
+<span class="">搜索——最基本的工具</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/40/index.html">Elasticsearch权威指南 (Elasticsearch Definitive Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/elasticsearch-cn/elasticsearch-definitive-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  asc-content-section  uk-margin-bottom">
+<h2 id="distributed-docs">分布式文档存储</h2>
+<div class="paragraph">
+<p>在前面的章节，我们介绍了如何索引和查询数据，不过我们忽略了很多底层的技术细节， 例如文件是如何分布到集群的，又是如何从集群中获取的。 Elasticsearch 本意就是隐藏这些底层细节，让我们好专注在业务开发中，所以其实你不必了解这么深入也无妨。</p>
+</div>
+<div class="paragraph">
+<p>在这个章节中，我们将深入探索这些核心的技术细节，这能帮助你更好地理解数据如何被存储到这个分布式系统中。</p>
+</div>
+<div class="sidebarblock">
+<div class="content">
+<div class="title">
+注意
+</div>
+<div class="paragraph">
+<p>这个章节包含了一些高级话题，上面也提到过，就算你不记住和理解所有的细节仍然能正常使用 Elasticsearch。 如果你有兴趣的话，这个章节可以作为你的课外兴趣读物，扩展你的知识面。</p>
+</div>
+<div class="paragraph">
+<p>如果你在阅读这个章节的时候感到很吃力，也不用担心。 这个章节仅仅只是用来告诉你 Elasticsearch 是如何工作的， 将来在工作中如果你需要用到这个章节提供的知识，可以再回过头来翻阅。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="routing-value">路由一个文档到一个分片中</h3>
+<div class="paragraph">
+<p>当索引一个文档的时候，文档会被存储到一个主分片中。 Elasticsearch 如何知道一个文档应该存放到哪个分片中呢？当我们创建文档时，它如何决定这个文档应当被存储在分片 <code>1</code> 还是分片 <code>2</code> 中呢？</p>
+</div>
+<div class="paragraph">
+<p>首先这肯定不会是随机的，否则将来要获取文档的时候我们就不知道从何处寻找了。实际上，这个过程是根据下面这个公式决定的：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>shard = hash(routing) % number_of_primary_shards</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>routing</code> 是一个可变值，默认是文档的 <code>_id</code> ，也可以设置成一个自定义的值。 <code>routing</code> 通过 hash 函数生成一个数字，然后这个数字再除以 <code>number_of_primary_shards</code> （主分片的数量）后得到 <strong>余数</strong> 。这个分布在 <code>0</code> 到 <code>number_of_primary_shards-1</code> 之间的余数，就是我们所寻求的文档所在分片的位置。</p>
+</div>
+<div class="paragraph">
+<p>这就解释了为什么我们要在创建索引的时候就确定好主分片的数量 并且永远不会改变这个数量：因为如果数量变化了，那么所有之前路由的值都会无效，文档也再也找不到了。</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>你可能觉得由于 Elasticsearch 主分片数量是固定的会使索引难以进行扩容。实际上当你需要时有很多技巧可以轻松实现扩容。我们将会在<a href="#scale">扩容设计</a>一章中提到更多有关水平扩展的内容。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>所有的文档 API（ <code>get</code> 、 <code>index</code> 、 <code>delete</code> 、 <code>bulk</code> 、 <code>update</code> 以及 <code>mget</code> ）都接受一个叫做 <code>routing</code> 的路由参数 ，通过这个参数我们可以自定义文档到分片的映射。一个自定义的路由参数可以用来确保所有相关的文档——例如所有属于同一个用户的文档——都被存储到同一个分片中。我们也会在<a href="#scale">扩容设计</a>这一章中详细讨论为什么会有这样一种需求。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="how-primary-and-replica-shards-interact">主分片和副本分片如何交互</h3>
+<div class="paragraph">
+<p>为了说明目的, 我们 假设有一个集群由三个节点组成。 它包含一个叫 <code>blogs</code> 的索引，有两个主分片，每个主分片有两个副本分片。相同分片的副本不会放在同一节点，所以我们的集群看起来像 <a href="#img-distrib">有三个节点和一个索引的集群</a>。</p>
+</div>
+<div id="img-distrib" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0401.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0401.png" alt="有三个节点和一个索引的集群"></a>
+</div>
+<div class="title">
+Figure 8. 有三个节点和一个索引的集群
+</div>
+</div>
+<div class="paragraph">
+<p>我们可以发送请求到集群中的任一节点。 每个节点都有能力处理任意请求。 每个节点都知道集群中任一文档位置，所以可以直接将请求转发到需要的节点上。 在下面的例子中，将所有的请求发送到 <code>Node 1</code> ，我们将其称为 <em>协调节点(coordinating node)</em> 。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content"> 当发送请求的时候， 为了扩展负载，更好的做法是轮询集群中所有的节点。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="distrib-write">新建、索引和删除文档</h3>
+<div class="paragraph">
+<p>新建、索引和删除 请求都是 <em>写</em> 操作， 必须在主分片上面完成之后才能被复制到相关的副本分片，如下图所示 <a href="#img-distrib-write">新建、索引和删除单个文档</a>.</p>
+</div>
+<div id="img-distrib-write" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0402.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0402.png" alt="新建、索引和删除单个文档"></a>
+</div>
+<div class="title">
+Figure 9. 新建、索引和删除单个文档
+</div>
+</div>
+<div class="paragraph">
+<p>以下是在主副分片和任何副本分片上面 成功新建，索引和删除文档所需要的步骤顺序：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>客户端向 <code>Node 1</code> 发送新建、索引或者删除请求。</p> </li>
+<li> <p>节点使用文档的 <code>_id</code> 确定文档属于分片 0 。请求会被转发到 <code>Node 3</code>，因为分片 0 的主分片目前被分配在 <code>Node 3</code> 上。</p> </li>
+<li> <p><code>Node 3</code> 在主分片上面执行请求。如果成功了，它将请求并行转发到 <code>Node 1</code> 和 <code>Node 2</code> 的副本分片上。一旦所有的副本分片都报告成功, <code>Node 3</code> 将向协调节点报告成功，协调节点向客户端报告成功。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>在客户端收到成功响应时，文档变更已经在主分片和所有副本分片执行完成，变更是安全的。</p>
+</div>
+<div class="paragraph">
+<p>有一些可选的请求参数允许您影响这个过程，可能以数据安全为代价提升性能。这些选项很少使用，因为Elasticsearch已经很快，但是为了完整起见，在这里阐述如下：</p>
+</div>
+<div class="openblock">
+<div class="content">
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>consistency</code>
+</dt>
+</dl>
+</div>
+</div>
+</div>
+<div class="paragraph">
+<p>consistency，即一致性。在默认设置下，即使仅仅是在试图执行一个_写_操作之前，主分片都会要求 必须要有 <em>规定数量(quorum)</em>（或者换种说法，也即必须要有大多数）的分片副本处于活跃可用状态，才会去执行_写_操作(其中分片副本可以是主分片或者副本分片)。这是为了避免在发生网络分区故障（network partition）的时候进行_写_操作，进而导致数据不一致。_规定数量_即：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>int( (primary + number_of_replicas) / 2 ) + 1</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>consistency</code> 参数的值可以设为 <code>one</code> （只要主分片状态 ok 就允许执行_写_操作）,<code>all</code>（必须要主分片和所有副本分片的状态没问题才允许执行_写_操作）, 或 <code>quorum</code> 。默认值为 <code>quorum</code> , 即大多数的分片副本状态没问题就允许执行_写_操作。</p>
+</div>
+<div class="paragraph">
+<p>注意，<em>规定数量</em> 的计算公式中 <code>number_of_replicas</code> 指的是在索引设置中的设定副本分片数，而不是指当前处理活动状态的副本分片数。如果你的索引设置中指定了当前索引拥有三个副本分片，那规定数量的计算结果即：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>int( (primary + 3 replicas) / 2 ) + 1 = 3</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>如果此时你只启动两个节点，那么处于活跃状态的分片副本数量就达不到规定数量，也因此您将无法索引和删除任何文档。</p>
+</div>
+<div class="openblock">
+<div class="content">
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>timeout</code>
+</dt>
+<dd>
+<p>如果没有足够的副本分片会发生什么？ Elasticsearch会等待，希望更多的分片出现。默认情况下，它最多等待1分钟。 如果你需要，你可以使用 <code>timeout</code> 参数 使它更早终止： <code>100</code> 100毫秒，<code>30s</code> 是30秒。</p>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>新索引默认有 <code>1</code> 个副本分片，这意味着为满足 <code>规定数量</code> <em>应该</em> 需要两个活动的分片副本。 但是，这些默认的设置会阻止我们在单一节点上做任何事情。为了避免这个问题，要求只有当 <code>number_of_replicas</code> 大于1的时候，规定数量才会执行。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="distrib-read">取回一个文档</h3>
+<div class="paragraph">
+<p>可以从主分片或者从其它任意副本分片检索文档 ，如下图所示 <a href="#img-distrib-read">取回单个文档</a>.</p>
+</div>
+<div id="img-distrib-read" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0403.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0403.png" alt="取回单个文档"></a>
+</div>
+<div class="title">
+Figure 10. 取回单个文档
+</div>
+</div>
+<div class="paragraph">
+<p>以下是从主分片或者副本分片检索文档的步骤顺序：</p>
+</div>
+<div class="paragraph">
+<p>1、客户端向 <code>Node 1</code> 发送获取请求。</p>
+</div>
+<div class="paragraph">
+<p>2、节点使用文档的 <code>_id</code> 来确定文档属于分片 <code>0</code> 。分片 <code>0</code> 的副本分片存在于所有的三个节点上。 在这种情况下，它将请求转发到 <code>Node 2</code> 。</p>
+</div>
+<div class="paragraph">
+<p>3、<code>Node 2</code> 将文档返回给 <code>Node 1</code> ，然后将文档返回给客户端。</p>
+</div>
+<div class="paragraph">
+<p>在处理读取请求时，协调结点在每次请求的时候都会通过轮询所有的副本分片来达到负载均衡。</p>
+</div>
+<div class="paragraph">
+<p>在文档被检索时，已经被索引的文档可能已经存在于主分片上但是还没有复制到副本分片。 在这种情况下，副本分片可能会报告文档不存在，但是主分片可能成功返回文档。 一旦索引请求成功返回给用户，文档在主分片和副本分片都是可用的。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_partial_updates_to_a_document">局部更新文档</h3>
+<div class="paragraph">
+<p>如 <a href="#img-distrib-update">局部更新文档</a> 所示，<code>update</code> API 结合了先前说明的读取和写入模式。</p>
+</div>
+<div id="img-distrib-update" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0404.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0404.png" alt="局部更新文档"></a>
+</div>
+<div class="title">
+Figure 11. 局部更新文档
+</div>
+</div>
+<div class="paragraph">
+<p>以下是部分更新一个文档的步骤：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>客户端向 <code>Node 1</code> 发送更新请求。</p> </li>
+<li> <p>它将请求转发到主分片所在的 <code>Node 3</code> 。</p> </li>
+<li> <p><code>Node 3</code> 从主分片检索文档，修改 <code>_source</code> 字段中的 JSON ，并且尝试重新索引主分片的文档。 如果文档已经被另一个进程修改，它会重试步骤 3 ，超过 <code>retry_on_conflict</code> 次后放弃。</p> </li>
+<li> <p>如果 <code>Node 3</code> 成功地更新文档，它将新版本的文档并行转发到 <code>Node 1</code> 和 <code>Node 2</code> 上的副本分片，重新建立索引。 一旦所有副本分片都返回成功， <code>Node 3</code> 向协调节点也返回成功，协调节点向客户端返回成功。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p><code>update</code> API 还接受在 <a href="#distrib-write">新建、索引和删除文档</a> 章节中介绍的 <code>routing</code> 、 <code>replication</code> 、 <code>consistency</code> 和 <code>timeout</code> 参数。</p>
+</div>
+<div class="sidebarblock">
+<div class="content">
+<div class="title">
+基于文档的复制
+</div>
+<div class="paragraph">
+<p>当主分片把更改转发到副本分片时， 它不会转发更新请求。 相反，它转发完整文档的新版本。请记住，这些更改将会异步转发到副本分片，并且不能保证它们以发送它们相同的顺序到达。 如果Elasticsearch仅转发更改请求，则可能以错误的顺序应用更改，导致得到损坏的文档。</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="distrib-multi-doc">多文档模式</h3>
+<div class="paragraph">
+<p><code>mget</code> 和 <code>bulk</code> API 的模式类似于单文档模式。区别在于协调节点知道每个文档存在于哪个分片中。 它将整个多文档请求分解成 <em>每个分片</em> 的多文档请求，并且将这些请求并行转发到每个参与节点。</p>
+</div>
+<div class="paragraph">
+<p>协调节点一旦收到来自每个节点的应答，就将每个节点的响应收集整理成单个响应，返回给客户端，如 <a href="#img-distrib-mget">使用 <code>mget</code> 取回多个文档</a> 所示。</p>
+</div>
+<div id="img-distrib-mget" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0405.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0405.png" alt="“使用 `mget` 取回多个文档”"></a>
+</div>
+<div class="title">
+Figure 12. 使用
+<code>mget</code> 取回多个文档
+</div>
+</div>
+<div class="paragraph">
+<p>以下是使用单个 <code>mget</code> 请求取回多个文档所需的步骤顺序：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>客户端向 <code>Node 1</code> 发送 <code>mget</code> 请求。</p> </li>
+<li> <p><code>Node 1</code> 为每个分片构建多文档获取请求，然后并行转发这些请求到托管在每个所需的主分片或者副本分片的节点上。一旦收到所有答复， <code>Node 1</code> 构建响应并将其返回给客户端。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>可以对 <code>docs</code> 数组中每个文档设置 <code>routing</code> 参数。</p>
+</div>
+<div class="paragraph">
+<p>bulk API， 如 <a href="#img-distrib-bulk">使用 <code>bulk</code> 修改多个文档</a> 所示， 允许在单个批量请求中执行多个创建、索引、删除和更新请求。</p>
+</div>
+<div id="img-distrib-bulk" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0406.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_0406.png" alt="“使用 `bulk` 修改多个文档”"></a>
+</div>
+<div class="title">
+Figure 13. 使用
+<code>bulk</code> 修改多个文档
+</div>
+</div>
+<div class="paragraph">
+<p><code>bulk</code> API 按如下步骤顺序执行：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>客户端向 <code>Node 1</code> 发送 <code>bulk</code> 请求。</p> </li>
+<li> <p><code>Node 1</code> 为每个节点创建一个批量请求，并将这些请求并行转发到每个包含主分片的节点主机。</p> </li>
+<li> <p>主分片一个接一个按顺序执行每个操作。当每个操作成功时，主分片并行转发新文档（或删除）到副本分片，然后执行下一个操作。 一旦所有的副本分片报告所有操作成功，该节点将向协调节点报告成功，协调节点将这些响应收集整理并返回给客户端。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p><code>bulk</code> API 还可以在整个批量请求的最顶层使用 <code>consistency</code> 参数，以及在每个请求中的元数据中使用 <code>routing</code> 参数。</p>
+</div>
+<div class="sect3 pagebreak-before">
+<h4 id="bulk-format">为什么是有趣的格式？</h4>
+<div class="paragraph">
+<p>当我们早些时候在<a href="#bulk">代价较小的批量操作</a>章节了解批量请求时，您可能会问自己， "为什么 <code>bulk</code> API 需要有换行符的有趣格式，而不是发送包装在 JSON 数组中的请求，例如 <code>mget</code> API？" 。</p>
+</div>
+<div class="paragraph">
+<p>为了回答这一点，我们需要解释一点背景：在批量请求中引用的每个文档可能属于不同的主分片， 每个文档可能被分配给集群中的任何节点。这意味着批量请求 <code>bulk</code> 中的每个 <em>操作</em> 都需要被转发到正确节点上的正确分片。</p>
+</div>
+<div class="paragraph">
+<p>如果单个请求被包装在 JSON 数组中，那就意味着我们需要执行以下操作：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>将 JSON 解析为数组（包括文档数据，可以非常大）</p> </li>
+<li> <p>查看每个请求以确定应该去哪个分片</p> </li>
+<li> <p>为每个分片创建一个请求数组</p> </li>
+<li> <p>将这些数组序列化为内部传输格式</p> </li>
+<li> <p>将请求发送到每个分片</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>这是可行的，但需要大量的 RAM 来存储原本相同的数据的副本，并将创建更多的数据结构，Java虚拟机（JVM）将不得不花费时间进行垃圾回收。</p>
+</div>
+<div class="paragraph">
+<p>相反，Elasticsearch可以直接读取被网络缓冲区接收的原始数据。 它使用换行符字符来识别和解析小的 action/metadata 行来决定哪个分片应该处理每个请求。</p>
+</div>
+<div class="paragraph">
+<p>这些原始请求会被直接转发到正确的分片。没有冗余的数据复制，没有浪费的数据结构。整个请求尽可能在最小的内存中处理。</p>
+</div>
+</div>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/150/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/150/index.html">C/C++面向WebAssembly编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/82.html">3dgen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 476个">476</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/34/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/34/index.html">Markdown - 简单的世界</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">16页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 159个">159</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/11/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/gradle_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/11/index.html">Gradle实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/7.html">EZLippi</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gradle">gradle</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 299个">299</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/29/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/9/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/9/index.html">分布式 Java</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">27页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 176个">176</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/111/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/kubernetes_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/111/index.html">和我一步步部署 kubernetes 集群</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="kubernetes">kubernetes</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/40/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/foreword_id.html" title="序言" data-book-page-rel-url="foreword_id.html" data-book-page-id="9242">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="9243">前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/_who_should_read_this_book.html" title="谁应该读这本书" data-book-page-rel-url="_who_should_read_this_book.html" data-book-page-id="9244">谁应该读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_why_we_wrote_this_book.html" title="为什么我们要写这本书" data-book-page-rel-url="_why_we_wrote_this_book.html" data-book-page-id="9245">为什么我们要写这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_elasticsearch_version.html" title="Elasticsearch 版本" data-book-page-rel-url="_elasticsearch_version.html" data-book-page-id="9246">Elasticsearch 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_how_to_read_this_book.html" title="如何读这本书" data-book-page-rel-url="_how_to_read_this_book.html" data-book-page-id="9247">如何读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_navigating_this_book.html" title="本书导航" data-book-page-rel-url="_navigating_this_book.html" data-book-page-id="9248">本书导航</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_online_resources.html" title="在线资源" data-book-page-rel-url="_online_resources.html" data-book-page-id="9249">在线资源</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_conventions_used_in_this_book.html" title="本书协议约定" data-book-page-rel-url="_conventions_used_in_this_book.html" data-book-page-id="9250">本书协议约定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_using_code_examples.html" title="使用代码示例" data-book-page-rel-url="_using_code_examples.html" data-book-page-id="9251">使用代码示例</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_acknowledgments.html" title="鸣谢" data-book-page-rel-url="_acknowledgments.html" data-book-page-id="9252">鸣谢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/getting-started.html" title="基础入门" data-book-page-rel-url="getting-started.html" data-book-page-id="9253">基础入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/intro.html" title="你知道的, 为了搜索&#8230;&#8203;" data-book-page-rel-url="intro.html" data-book-page-id="9254">你知道的, 为了搜索&#8230;&#8203;</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-cluster.html" title="集群内的原理" data-book-page-rel-url="distributed-cluster.html" data-book-page-id="9255">集群内的原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/data-in-data-out.html" title="数据输入和输出" data-book-page-rel-url="data-in-data-out.html" data-book-page-id="9256">数据输入和输出</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-docs.html" title="分布式文档存储" data-book-page-rel-url="distributed-docs.html" data-book-page-id="9257">分布式文档存储</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search.html" title="搜索——最基本的工具" data-book-page-rel-url="search.html" data-book-page-id="9258">搜索——最基本的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/mapping-analysis.html" title="映射和分析" data-book-page-rel-url="mapping-analysis.html" data-book-page-id="9259">映射和分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-body-search.html" title="请求体查询" data-book-page-rel-url="full-body-search.html" data-book-page-id="9260">请求体查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/sorting.html" title="排序与相关性" data-book-page-rel-url="sorting.html" data-book-page-id="9261">排序与相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-search.html" title="执行分布式检索" data-book-page-rel-url="distributed-search.html" data-book-page-id="9262">执行分布式检索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/index-management.html" title="索引管理" data-book-page-rel-url="index-management.html" data-book-page-id="9263">索引管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/inside-a-shard.html" title="分片内部原理" data-book-page-rel-url="inside-a-shard.html" data-book-page-id="9264">分片内部原理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search-in-depth.html" title="深入搜索" data-book-page-rel-url="search-in-depth.html" data-book-page-id="9265">深入搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/structured-search.html" title="结构化搜索" data-book-page-rel-url="structured-search.html" data-book-page-id="9266">结构化搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-text-search.html" title="全文搜索" data-book-page-rel-url="full-text-search.html" data-book-page-id="9267">全文搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/multi-field-search.html" title="多字段搜索" data-book-page-rel-url="multi-field-search.html" data-book-page-id="9268">多字段搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/proximity-matching.html" title="近似匹配" data-book-page-rel-url="proximity-matching.html" data-book-page-id="9269">近似匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/partial-matching.html" title="部分匹配" data-book-page-rel-url="partial-matching.html" data-book-page-id="9270">部分匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/controlling-relevance.html" title="控制相关度" data-book-page-rel-url="controlling-relevance.html" data-book-page-id="9271">控制相关度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/languages.html" title="处理人类语言" data-book-page-rel-url="languages.html" data-book-page-id="9272">处理人类语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/language-intro.html" title="开始处理各种语言" data-book-page-rel-url="language-intro.html" data-book-page-id="9273">开始处理各种语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/identifying-words.html" title="词汇识别" data-book-page-rel-url="identifying-words.html" data-book-page-id="9274">词汇识别</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/token-normalization.html" title="归一化词元" data-book-page-rel-url="token-normalization.html" data-book-page-id="9275">归一化词元</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stemming.html" title="将单词还原为词根" data-book-page-rel-url="stemming.html" data-book-page-id="9276">将单词还原为词根</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stopwords.html" title="停用词: 性能与精度" data-book-page-rel-url="stopwords.html" data-book-page-id="9277">停用词: 性能与精度</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/synonyms.html" title="同义词" data-book-page-rel-url="synonyms.html" data-book-page-id="9278">同义词</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/fuzzy-matching.html" title="拼写错误" data-book-page-rel-url="fuzzy-matching.html" data-book-page-id="9279">拼写错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/aggregations.html" title="聚合" data-book-page-rel-url="aggregations.html" data-book-page-id="9280">聚合</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/aggs-high-level.html" title="高阶概念" data-book-page-rel-url="aggs-high-level.html" data-book-page-id="9281">高阶概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_aggregation_test_drive.html" title="尝试聚合" data-book-page-rel-url="_aggregation_test_drive.html" data-book-page-id="9282">尝试聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_building_bar_charts.html" title="条形图" data-book-page-rel-url="_building_bar_charts.html" data-book-page-id="9283">条形图</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_looking_at_time.html" title="按时间统计" data-book-page-rel-url="_looking_at_time.html" data-book-page-id="9284">按时间统计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_scoping_aggregations.html" title="范围限定的聚合" data-book-page-rel-url="_scoping_aggregations.html" data-book-page-id="9285">范围限定的聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_filtering_queries_and_aggregations.html" title="过滤和聚合" data-book-page-rel-url="_filtering_queries_and_aggregations.html" data-book-page-id="9286">过滤和聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_sorting_multivalue_buckets.html" title="多桶排序" data-book-page-rel-url="_sorting_multivalue_buckets.html" data-book-page-id="9287">多桶排序</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_approximate_aggregations.html" title="近似聚合" data-book-page-rel-url="_approximate_aggregations.html" data-book-page-id="9288">近似聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/significant-terms.html" title="通过聚合发现异常指标" data-book-page-rel-url="significant-terms.html" data-book-page-id="9289">通过聚合发现异常指标</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/docvalues-and-fielddata.html" title="Doc Values and Fielddata" data-book-page-rel-url="docvalues-and-fielddata.html" data-book-page-id="9290">Doc Values and Fielddata</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_closing_thoughts.html" title="总结" data-book-page-rel-url="_closing_thoughts.html" data-book-page-id="9291">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geoloc.html" title="地理位置" data-book-page-rel-url="geoloc.html" data-book-page-id="9292">地理位置</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/geopoints.html" title="地理坐标点" data-book-page-rel-url="geopoints.html" data-book-page-id="9293">地理坐标点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geohashes.html" title="Geohashes" data-book-page-rel-url="geohashes.html" data-book-page-id="9294">Geohashes</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-aggs.html" title="地理位置聚合" data-book-page-rel-url="geo-aggs.html" data-book-page-id="9295">地理位置聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-shapes.html" title="地理形状" data-book-page-rel-url="geo-shapes.html" data-book-page-id="9296">地理形状</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/modeling-your-data.html" title="数据建模" data-book-page-rel-url="modeling-your-data.html" data-book-page-id="9297">数据建模</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/relations.html" title="关联关系处理" data-book-page-rel-url="relations.html" data-book-page-id="9298">关联关系处理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/nested-objects.html" title="嵌套对象" data-book-page-rel-url="nested-objects.html" data-book-page-id="9299">嵌套对象</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/parent-child.html" title="父-子关系文档" data-book-page-rel-url="parent-child.html" data-book-page-id="9300">父-子关系文档</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/scale.html" title="扩容设计" data-book-page-rel-url="scale.html" data-book-page-id="9301">扩容设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/administration.html" title="管理、监控和部署" data-book-page-rel-url="administration.html" data-book-page-id="9302">管理、监控和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/cluster-admin.html" title="监控" data-book-page-rel-url="cluster-admin.html" data-book-page-id="9303">监控</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/deploy.html" title="部署" data-book-page-rel-url="deploy.html" data-book-page-id="9304">部署</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/post_deploy.html" title="部署后" data-book-page-rel-url="post_deploy.html" data-book-page-id="9305">部署后</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =40;var bookPageId =9257;var bookPageRelUrl ='distributed-docs.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

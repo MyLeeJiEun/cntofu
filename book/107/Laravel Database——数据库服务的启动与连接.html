@@ -1,0 +1,1113 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Database——数据库服务的启动与连接-Laravel 源码详解</title>
+<meta content='Laravel Database——数据库服务的启动与连接,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Database——数据库服务的启动与连接,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Pro..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html">
+<span class="">Laravel Dat..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="前言"><strong>前言</strong></h2>
+<p>数据库是 <code>laravel</code> 及其重要的组成部分，大致的讲，<code>laravel</code> 的数据库功能可以分为两部分：数据库 <code>DB</code>、数据库 <code>Eloquent Model</code>。数据库的 <code>Eloquent</code> 是功能十分丰富的 <code>ORM</code>，让我们可以避免写繁杂的 <code>sql</code> 语句。数据库 <code>DB</code> 是比较底层的与 <code>pdo</code> 交互的功能，<code>Eloquent</code> 的底层依赖于 <code>DB</code>。本文将会介绍数据库 <code>DB</code> 中关于数据库服务的启动与连接部分。</p>
+<p>在详细讲解数据库各个功能之前，我们先看看支撑着整个 <code>laravel</code> 数据库功能的框架：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/17-9-23/18341131.jpg" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/17-9-23/18341131.jpg" alt="Markdown"></a></p>
+<ul>
+<li><code>DB</code> 也就是 <code>DatabaseManager</code>，承担着数据库接口的工作，一切数据库相关的操作，例如查询、更新、插入、删除都可以通过 <code>DB</code> 这个接口来完成。但是，具体的调用 <code>pdo</code> API 的工作却不是由该类完成的，它仅仅是一个对外的接口而已。</li>
+<li><code>ConnectionFactory</code> 顾名思义专门为 <code>DB</code> 构造初始化 <code>connector</code>、<code>connection</code> 对象，</li>
+<li><code>connector</code> 负责数据库的连接功能，为保障程序的高效，<code>laravel</code> 将其包装成为闭包函数，并将闭包函数作为 <code>connection</code> 的一个成员对象，实现懒加载。</li>
+<li><code>connection</code> 负责数据库的具体功能，负责底层与 <code>pdo</code> API 的交互。</li>
+</ul>
+<p>&nbsp;</p>
+<h2 id="数据库服务的注册与启动"><strong>数据库服务的注册与启动</strong></h2>
+<p>数据库服务也是一种服务提供者：<code>Illuminate\Database\DatabaseServiceProvider</code></p>
+<pre><code class="language-php">public function register()
+{
+    Model::clearBootedModels();
+
+    $this-&gt;registerConnectionServices();
+
+    $this-&gt;registerEloquentFactory();
+
+    $this-&gt;registerQueueableEntityResolver();
+}
+</code></pre>
+<p>我们先来看这个注册函数的第一句: <code>Model::clearBootedModels()</code>。这一句其实是为了 <code>Eloquent</code> 服务的启动做准备。数据库的 <code>Eloquent Model</code> 有一个静态的成员变量数组 <code>$booted</code>，这个静态数组存储了所有已经被初始化的数据库 <code>model</code> ，以便加载数据库模型时更加迅速。因此，在 <code>Eloquent</code> 服务启动之前需要初始化静态成员变量 <code>$booted</code>：</p>
+<pre><code class="language-php">public static function clearBootedModels()
+{
+    static::$booted = [];
+
+    static::$globalScopes = [];
+}
+</code></pre>
+<p>接下来我们就开始看数据库服务的注册最重要的两部分：<code>ConnectionServices</code> 与 <code>Eloquent</code>.</p>
+<h3 id="connectionservices-注册"><strong>ConnectionServices 注册</strong></h3>
+<pre><code class="language-php">protected function registerConnectionServices()
+{
+    $this-&gt;app-&gt;singleton('db.factory', function ($app) {
+        return new ConnectionFactory($app);
+    });
+
+   $this-&gt;app-&gt;singleton('db', function ($app) {
+        return new DatabaseManager($app, $app['db.factory']);
+    });
+
+    $this-&gt;app-&gt;bind('db.connection', function ($app) {
+        return $app['db']-&gt;connection();
+    });
+}
+</code></pre>
+<p>可以看出，数据库服务向 <code>IOC</code> 容器注册了 <code>db</code>、<code>db.factory</code> 与 <code>db.connection</code>。</p>
+<ul>
+<li>最重要的莫过于 <code>db</code> 对象，它有一个 <code>Facade</code> 是 <code>DB</code>， 我们可以利用 <code>DB::connection()</code> 来连接任意数据库，可以利用 <code>DB::select()</code> 来进行数据库的查询，可以说 <code>DB</code> 就是我们操作数据库的接口。</li>
+<li><code>db.factory</code> 负责为 <code>DB</code> 创建 <code>connector</code> 提供数据库的底层连接服务，负责为 <code>DB</code> 创建 <code>connection</code> 对象来进行数据库的查询等操作。</li>
+<li><code>db.cønnection</code> 是 <code>laravel</code> 用于与数据库 <code>pdo</code> 接口进行交互的底层类，可用于数据库的查询、更新、创建等操作。</li>
+</ul>
+<h3 id="eloquent-注册"><strong>Eloquent 注册</strong></h3>
+<pre><code class="language-php">protected function registerEloquentFactory()
+{
+    $this-&gt;app-&gt;singleton(FakerGenerator::class, function () {
+        return FakerFactory::create();
+    });
+
+    $this-&gt;app-&gt;singleton(EloquentFactory::class, function ($app) {
+        return EloquentFactory::construct(
+            $app-&gt;make(FakerGenerator::class), database_path('factories')
+        );
+    });
+}
+</code></pre>
+<p><code>EloquentFactory</code> 用于创建 <code>Eloquent Model</code>，用于全局函数 <code>factory()</code> 来创建数据库模型。</p>
+<h3 id="数据库服务的启动"><strong>数据库服务的启动</strong></h3>
+<pre><code class="language-php">public function boot()
+{
+    Model::setConnectionResolver($this-&gt;app['db']);
+
+    Model::setEventDispatcher($this-&gt;app['events']);
+}
+</code></pre>
+<p>数据库服务的启动主要设置 <code>Eloquent Model</code> 的 <code>connection resolver</code>，用于数据库模型 <code>model</code> 利用 <code>db</code> 来来连接数据库。 还有设置数据库事件的分发器 <code>dispatcher</code>，用于监听数据库的事件。</p>
+<p>&nbsp;</p>
+<h2 id="databasemanager数据库的接口"><strong>DatabaseManager——数据库的接口</strong></h2>
+<p>如果我们想要使用任何数据库服务，首先要做的事情当然是利用用户名与密码来连接数据库。在 <code>laravel</code> 中，数据库的用户名与密码一般放在 <code>.env</code> 文件中或者放入 <code>nginx</code> 配置中，并且利用数据库的接口 <code>DB</code> 来与 <code>pdo</code> 进行交互，利用 <code>pdo</code> 来连接数据库。</p>
+<p><code>DB</code> 即是类 <code>Illuminate\Database\DatabaseManager</code>，首先我们来看看其构造函数：</p>
+<pre><code class="language-php">public function __construct($app, ConnectionFactory $factory)
+{
+    $this-&gt;app = $app;
+    $this-&gt;factory = $factory;
+}
+</code></pre>
+<p>我们称 <code>DB</code> 为一个接口，或者是一个门面模式，是因为数据库操作，例如数据库的连接或者查询、更新等操作均不是 <code>DB</code> 的功能，数据库的连接使用类 <code>Illuminate\Database\Connectors\Connector</code> 完成，数据库的查询等操作由类 <code>Illuminate\Database\Connection</code> 完成，</p>
+<p>因此，我们不必直接操作 <code>connector</code> 或者 <code>connection</code>，仅仅会操作 <code>DB</code> 即可。</p>
+<p>那么 <code>DB</code> 是如何实现 <code>connector</code> 或者 <code>connection</code> 的功能的呢？关键还是这个 <code>ConnectionFactory</code> 类，这个工厂类专门为 <code>DB</code> 来生成 <code>connection</code> 对象，并将其放入 <code>DB</code> 的成员变量数组 <code>$connections</code> 中去。<code>connection</code> 中会包含 <code>connector</code> 对象来实现数据库的连接工作。</p>
+<pre><code class="language-php">class DatabaseManager implements ConnectionResolverInterface
+{
+	protected $app;
+	protected $factory;
+	protected $connections = [];
+	
+	public function __call($method, $parameters)
+    {
+        return $this-&gt;connection()-&gt;$method(...$parameters);
+    }
+}
+</code></pre>
+<p>魔术函数实现了 <code>DB</code> 与 <code>connection</code> 的无缝连接，任何对数据库的操作，例如 <code>DB::select()</code>、<code>DB::table('user')-&gt;save()</code>，都会被转移至 <code>connection</code> 中去。</p>
+<h3 id="connection-函数获取数据库连接对象"><strong>connection 函数——获取数据库连接对象</strong></h3>
+<pre><code class="language-php">public function connection($name = null)
+{
+    list($database, $type) = $this-&gt;parseConnectionName($name);
+
+    $name = $name ?: $database;
+
+    if (! isset($this-&gt;connections[$name])) {
+        $this-&gt;connections[$name] = $this-&gt;configure(
+                $connection = $this-&gt;makeConnection($database), $type
+        );
+    }
+
+    return $this-&gt;connections[$name];
+}
+</code></pre>
+<p>具体流程如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/17-9-23/11296035.jpg" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/17-9-23/11296035.jpg" alt="Markdown"></a></p>
+<p><code>DB</code> 的 <code>connection</code> 函数可以传入数据库的名字，也可以不传任何参数，此时会连接默认数据库，默认数据库的设置在 <code>config/database</code> 文件中。</p>
+<p><code>connection</code> 函数流程：</p>
+<ul>
+<li>解析数据库名称与数据库类型，例如只读、写</li>
+<li>若没有创建过与该数据库的连接，则开始创建数据库连接</li>
+<li>返回数据库连接对象 <code>connection</code></li>
+</ul>
+<pre><code class="language-php">protected function parseConnectionName($name)
+{
+    $name = $name ?: $this-&gt;getDefaultConnection();
+
+    return Str::endsWith($name, ['::read', '::write'])
+                        ? explode('::', $name, 2) : [$name, null];
+}
+
+public function getDefaultConnection()
+{
+    return $this-&gt;app['config']['database.default'];
+}
+</code></pre>
+<p>可以看出，若没有特别指定连接的数据库名称，那么就会利用文件 <code>config/database</code> 文件中设置的 <code>default</code> 数据库名称作为默认连接数据库名称。若数据库支持读写分离，那么还可以指定数据库的读写属性，例如 <code>mysql::read</code>。</p>
+<h3 id="makeconnection-函数创建新的数据库连接对象"><strong>makeConnection 函数——创建新的数据库连接对象</strong></h3>
+<p>当框架从未连接过当前数据库的时候，就要对数据库进行连接操作，首先程序会调用 <code>makeConnection</code> 函数：</p>
+<pre><code class="language-php">protected function makeConnection($name)
+{
+    $config = $this-&gt;configuration($name);
+
+    if (isset($this-&gt;extensions[$name])) {
+        return call_user_func($this-&gt;extensions[$name], $config, $name);
+    }
+
+    if (isset($this-&gt;extensions[$driver = $config['driver']])) {
+        return call_user_func($this-&gt;extensions[$driver], $config, $name);
+    }
+
+    return $this-&gt;factory-&gt;make($config, $name);
+}
+
+</code></pre>
+<p>可以看出，连接数据库仅仅需要两个步骤：获取数据库配置、利用 <code>connection factory</code> 获取 <code>connection</code> 对象。</p>
+<p>获取数据库配置：</p>
+<pre><code class="language-php">protected function configuration($name)
+{
+    $name = $name ?: $this-&gt;getDefaultConnection();
+
+    $connections = $this-&gt;app['config']['database.connections'];
+
+    if (is_null($config = Arr::get($connections, $name))) {
+        throw new InvalidArgumentException("Database [$name] not configured.");
+    }
+
+    return $config;
+}
+</code></pre>
+<p>也是非常简单，直接从配置文件中获取当前数据库的配置：</p>
+<pre><code class="language-php">'connections' =&gt; [
+    'mysql' =&gt; [
+        'driver' =&gt; 'mysql',
+        'host' =&gt; env('DB_HOST', '127.0.0.1'),
+        'port' =&gt; env('DB_PORT', '3306'),
+        'database' =&gt; env('DB_DATABASE', 'forge'),
+        'username' =&gt; env('DB_USERNAME', 'forge'),
+        'password' =&gt; env('DB_PASSWORD', ''),
+        'charset' =&gt; 'utf8mb4',
+        'collation' =&gt; 'utf8mb4_unicode_ci',
+        'prefix' =&gt; '',
+        'strict' =&gt; true,
+        'engine' =&gt; null,
+        'read' =&gt; [
+            'database'  =&gt; env('DB_DATABASE', 'forge'),
+        ],
+        'write' =&gt; [
+            'database'  =&gt; env('DB_DATABASE', 'forge'),
+        ],
+    ],
+],
+</code></pre>
+<p><code>$this-&gt;factory-&gt;make($config, $name)</code> 函数向我们提供了数据库连接对象。</p>
+<h3 id="configure连接对象读写配置"><strong>configure——连接对象读写配置</strong></h3>
+<p>当我们从 <code>connection factory</code> 中获取到连接对象 <code>connection</code> 之后，我们就要根据传入的参数进行读写配置：</p>
+<pre><code class="language-php">protected function configure(Connection $connection, $type)
+{
+    $connection = $this-&gt;setPdoForType($connection, $type);
+
+    if ($this-&gt;app-&gt;bound('events')) {
+        $connection-&gt;setEventDispatcher($this-&gt;app['events']);
+    }
+
+    $connection-&gt;setReconnector(function ($connection) {
+        $this-&gt;reconnect($connection-&gt;getName());
+    });
+
+    return $connection;
+}
+</code></pre>
+<p><code>setPdoForType</code> 函数就是根据 <code>type</code> 来设置读写：</p>
+<p>当我们需要 <code>read</code> 数据库连接时，我们将 <code>read-pdo</code> 设置为主 <code>pdo</code>。当我们需要 <code>write</code> 数据库连接时，我们将读写 <code>pdo</code> 都设置为 <code>write-pdo</code>：</p>
+<pre><code class="language-php">protected function setPdoForType(Connection $connection, $type = null)
+{
+    if ($type == 'read') {
+        $connection-&gt;setPdo($connection-&gt;getReadPdo());
+    } elseif ($type == 'write') {
+        $connection-&gt;setReadPdo($connection-&gt;getPdo());
+    }
+
+    return $connection;
+}
+</code></pre>
+<p>&nbsp;</p>
+<h2 id="connectionfactory数据库连接对象工厂"><strong>ConnectionFactory——数据库连接对象工厂</strong></h2>
+<p><a href="http://owql68l6p.bkt.clouddn.com/17-9-23/26227209.jpg" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/17-9-23/26227209.jpg" alt="Markdown"></a></p>
+<h3 id="make-函数工厂接口"><strong>make 函数——工厂接口</strong></h3>
+<p>获取到了数据库的配置参数之后，就要利用 <code>ConnectionFactory</code> 来获取 <code>connection</code> 对象了：</p>
+<pre><code class="language-php">public function make(array $config, $name = null)
+{
+    $config = $this-&gt;parseConfig($config, $name);
+
+    if (isset($config['read'])) {
+        return $this-&gt;createReadWriteConnection($config);
+    }
+
+    return $this-&gt;createSingleConnection($config);
+}
+
+protected function parseConfig(array $config, $name)
+{
+    return Arr::add(Arr::add($config, 'prefix', ''), 'name', $name);
+}
+</code></pre>
+<p>在建立连接之前，要先向配置参数中添加默认的 <code>prefix</code> 属性与 <code>name</code> 属性。</p>
+<p>接着，就要判断我们在配置文件中是否设置了读写分离。如果设置了读写分离，那么就会调用 <code>createReadWriteConnection</code> 函数，生成具有读、写两个功能的 <code>connection</code>；否则的话，就会调用 <code>createSingleConnection</code> 函数，生成普通的连接对象。</p>
+<h3 id="createsingleconnection-函数制造数据库连接对象"><strong>createSingleConnection 函数——制造数据库连接对象</strong></h3>
+<p><code>createSingleConnection</code> 函数是类 <code>ConnectionFactory</code> 的核心，用于生成新的数据库连接对象。</p>
+<pre><code class="language-php">protected function createSingleConnection(array $config)
+{
+    $pdo = $this-&gt;createPdoResolver($config);
+
+    return $this-&gt;createConnection(
+        $config['driver'], $pdo, $config['database'], $config['prefix'], $config
+    );
+}
+</code></pre>
+<p><code>ConnectionFactory</code> 也很简单，只做了两件事情：制造 <code>pdo</code> 连接的闭包函数、构造一个新的 <code>connection</code> 对象。</p>
+<h3 id="createpdoresolver数据库连接器闭包函数"><strong>createPdoResolver——数据库连接器闭包函数</strong></h3>
+<p>根据配置参数中是否含有 <code>host</code>，创建不同的闭包函数：</p>
+<pre><code class="language-php">protected function createPdoResolver(array $config)
+{
+    return array_key_exists('host', $config)
+                        ? $this-&gt;createPdoResolverWithHosts($config)
+                        : $this-&gt;createPdoResolverWithoutHosts($config);
+}
+</code></pre>
+<p>不带有 <code>host</code> 的 <code>pdo</code> 闭包函数：</p>
+<pre><code class="language-php">protected function createPdoResolverWithoutHosts(array $config)
+{
+    return function () use ($config) {
+        return $this-&gt;createConnector($config)-&gt;connect($config);
+    };
+}
+</code></pre>
+<p>可以看出，不带有 <code>pdo</code> 的闭包函数非常简单，仅仅创建 <code>connector</code> 对象，利用 <code>connector</code> 对象进行数据库的连接。</p>
+<p>带有 <code>host</code> 的 <code>pdo</code> 闭包函数：</p>
+<pre><code class="language-php">protected function createPdoResolverWithHosts(array $config)
+{
+    return function () use ($config) {
+        foreach (Arr::shuffle($hosts = $this-&gt;parseHosts($config)) as $key =&gt; $host) {
+            $config['host'] = $host;
+
+            try {
+                return $this-&gt;createConnector($config)-&gt;connect($config);
+            } catch (PDOException $e) {
+                if (count($hosts) - 1 === $key &amp;&amp; $this-&gt;container-&gt;bound(ExceptionHandler::class)) {
+                    $this-&gt;container-&gt;make(ExceptionHandler::class)-&gt;report($e);
+                }
+            }
+        }
+
+        throw $e;
+    };
+}
+
+protected function parseHosts(array $config)
+{
+    $hosts = array_wrap($config['host']);
+
+    if (empty($hosts)) {
+        throw new InvalidArgumentException('Database hosts array is empty.');
+    }
+
+    return $hosts;
+}
+</code></pre>
+<p>带有 <code>host</code> 的闭包函数相对比较复杂，首先程序会随机选择不同的数据库依次来建立数据库连接，若均失败，就会报告异常。</p>
+<h3 id="createconnector创建连接器"><strong>createConnector——创建连接器</strong></h3>
+<p>程序会根据配置参数中 <code>driver</code> 的不同来创建不同的连接器，每个连接器都继承自 <code>connector</code> 类，用于连接数据库。</p>
+<pre><code class="language-php">public function createConnector(array $config)
+{
+    if (! isset($config['driver'])) {
+        throw new InvalidArgumentException('A driver must be specified.');
+    }
+
+    if ($this-&gt;container-&gt;bound($key = "db.connector.{$config['driver']}")) {
+        return $this-&gt;container-&gt;make($key);
+    }
+
+    switch ($config['driver']) {
+        case 'mysql':
+            return new MySqlConnector;
+        case 'pgsql':
+            return new PostgresConnector;
+        case 'sqlite':
+            return new SQLiteConnector;
+        case 'sqlsrv':
+            return new SqlServerConnector;
+    }
+
+    throw new InvalidArgumentException("Unsupported driver [{$config['driver']}]");
+}
+</code></pre>
+<h3 id="createconnection创建连接对象"><strong>createConnection——创建连接对象</strong></h3>
+<pre><code class="language-php">protected function createConnection($driver, $connection, $database, $prefix = '', array $config = [])
+{
+    if ($resolver = Connection::getResolver($driver)) {
+        return $resolver($connection, $database, $prefix, $config);
+    }
+
+    switch ($driver) {
+        case 'mysql':
+            return new MySqlConnection($connection, $database, $prefix, $config);
+        case 'pgsql':
+            return new PostgresConnection($connection, $database, $prefix, $config);
+        case 'sqlite':
+            return new SQLiteConnection($connection, $database, $prefix, $config);
+        case 'sqlsrv':
+            return new SqlServerConnection($connection, $database, $prefix, $config);
+    }
+
+    throw new InvalidArgumentException("Unsupported driver [$driver]");
+}
+</code></pre>
+<p>创建 <code>pdo</code> 闭包函数之后，会将该闭包函数放入 <code>connection</code> 对象当中去。以后我们利用 <code>connection</code> 对象进行查询或者更新数据库时，程序便会运行该闭包函数，与数据库进行连接。</p>
+<h3 id="createreadwriteconnection创建读写连接对象"><strong>createReadWriteConnection——创建读写连接对象</strong></h3>
+<p>当配置文件中有 <code>read</code>、<code>write</code> 等配置项时，说明用户希望创建一个可以读写分离的数据库连接，此时：</p>
+<pre><code class="language-php">protected function createReadWriteConnection(array $config)
+{
+    $connection = $this-&gt;createSingleConnection($this-&gt;getWriteConfig($config));
+
+    return $connection-&gt;setReadPdo($this-&gt;createReadPdo($config));
+}
+
+protected function getWriteConfig(array $config)
+{
+    return $this-&gt;mergeReadWriteConfig(
+        $config, $this-&gt;getReadWriteConfig($config, 'write')
+    );
+}
+
+protected function getReadWriteConfig(array $config, $type)
+{
+    return isset($config[$type][0])
+                    ? $config[$type][array_rand($config[$type])]
+                    : $config[$type];
+}
+
+protected function mergeReadWriteConfig(array $config, array $merge)
+{
+    return Arr::except(array_merge($config, $merge), ['read', 'write']);
+}
+</code></pre>
+<p>可以看出，程序先读出关于 <code>write</code> 数据库的配置，之后将其合并到总配置当中，删除关于 <code>read</code> 数据库的配置，然后进行 <code>createSingleConnection</code> 建立新的连接对象。</p>
+<p>建立连接对象之后，再根据 <code>read</code> 数据库的配置，生成 <code>read</code> 数据库的 <code>pdo</code> 闭包函数，并调用 <code>setReadPdo</code> 将其设置为读库 <code>pdo</code>。</p>
+<pre><code class="language-php">protected function createReadPdo(array $config)
+{
+    return $this-&gt;createPdoResolver($this-&gt;getReadConfig($config));
+}
+
+protected function getReadConfig(array $config)
+{
+    return $this-&gt;mergeReadWriteConfig(
+        $config, $this-&gt;getReadWriteConfig($config, 'read')
+    );
+}
+</code></pre>
+<p>&nbsp;</p>
+<h2 id="connector-连接"><strong>connector 连接</strong></h2>
+<p>我们以 <code>mysql</code> 为例：</p>
+<pre><code class="language-php">class MySqlConnector extends Connector implements ConnectorInterface 
+{
+	public function connect(array $config)
+	{
+    	$dsn = $this-&gt;getDsn($config);
+
+    	$options = $this-&gt;getOptions($config);
+
+    	$connection = $this-&gt;createConnection($dsn, $config, $options);
+
+   		if (! empty($config['database'])) {
+       	 $connection-&gt;exec("use `{$config['database']}`;");
+    	}
+
+    	$this-&gt;configureEncoding($connection, $config);
+
+    	$this-&gt;configureTimezone($connection, $config);
+
+   		$this-&gt;setModes($connection, $config);
+
+      return $connection;
+    }
+}
+</code></pre>
+<h3 id="getdsn获取数据库连接dsn参数"><strong>getDsn——获取数据库连接DSN参数</strong></h3>
+<pre><code class="language-php">protected function getDsn(array $config)
+{
+    return $this-&gt;hasSocket($config)
+                        ? $this-&gt;getSocketDsn($config)
+                        : $this-&gt;getHostDsn($config);
+}
+
+protected function hasSocket(array $config)
+{
+    return isset($config['unix_socket']) &amp;&amp; ! empty($config['unix_socket']);
+}
+
+protected function getSocketDsn(array $config)
+{
+    return "mysql:unix_socket={$config['unix_socket']};dbname={$config['database']}";
+}
+
+protected function getHostDsn(array $config)
+{
+    extract($config, EXTR_SKIP);
+
+    return isset($port)
+                ? "mysql:host={$host};port={$port};dbname={$database}"
+                : "mysql:host={$host};dbname={$database}";
+}
+
+</code></pre>
+<p><code>mysql</code> 数据库的连接有两种：tcp连接与socket连接。</p>
+<p><code>socket</code> 连接更快，但是它要求应用程序与数据库在同一台机器，更普通的是使用 <code>tcp</code> 的方式连接数据库。框架根据配置参数来选择是采用 <code>socket</code> 还是 <code>tcp</code> 的方式连接数据库。</p>
+<h3 id="getoptionspdo-属性设置"><strong>getOptions——pdo 属性设置</strong></h3>
+<pre><code class="language-php">protected $options = [
+    PDO::ATTR_CASE =&gt; PDO::CASE_NATURAL,
+    PDO::ATTR_ERRMODE =&gt; PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_ORACLE_NULLS =&gt; PDO::NULL_NATURAL,
+    PDO::ATTR_STRINGIFY_FETCHES =&gt; false,
+    PDO::ATTR_EMULATE_PREPARES =&gt; false,
+];
+
+public function getOptions(array $config)
+{
+    $options = Arr::get($config, 'options', []);
+
+    return array_diff_key($this-&gt;options, $options) + $options;
+}
+</code></pre>
+<p><code>pdo</code> 的属性主要有以下几种：</p>
+<ul>
+<li><code>PDO::ATTR_CASE</code> 强制列名为指定的大小写。他的$value可为：
+<ul>
+<li><code>PDO::CASE_LOWER</code>：强制列名小写。</li>
+<li><code>PDO::CASE_NATURAL</code>：保留数据库驱动返回的列名。</li>
+<li><code>PDO::CASE_UPPER</code>：强制列名大写。</li>
+</ul> </li>
+<li><code>PDO::ATTR_ERRMODE</code>：错误报告。他的$value可为：
+<ul>
+<li><code>PDO::ERRMODE_SILENT</code>： 仅设置错误代码。</li>
+<li><code>PDO::ERRMODE_WARNING</code>: 引发 E_WARNING 错误.</li>
+<li><code>PDO::ERRMODE_EXCEPTION</code>: 抛出 exceptions 异常。</li>
+</ul> </li>
+<li><code>PDO::ATTR_ORACLE_NULLS</code> （在所有驱动中都可用，不仅限于Oracle）： 转换 NULL 和空字符串。他的$value可为:
+<ul>
+<li><code>PDO::NULL_NATURAL</code>: 不转换。</li>
+<li><code>PDO::NULL_EMPTY_STRING</code>： 将空字符串转换成 NULL 。</li>
+<li><code>PDO::NULL_TO_STRING</code>: 将 NULL 转换成空字符串。</li>
+</ul> </li>
+<li><code>PDO::ATTR_STRINGIFY_FETCHES</code>: 提取的时候将数值转换为字符串。</li>
+<li><code>PDO::ATTR_EMULATE_PREPARES</code> 启用或禁用预处理语句的模拟。 有些驱动不支持或有限度地支持本地预处理。使用此设置强制PDO总是模拟预处理语句（如果为 TRUE ），或试着使用本地预处理语句（如果为 <code>FALSE</code> ）。如果驱动不能成功预处理当前查询，它将总是回到模拟预处理语句上。 需要 <code>bool</code> 类型。</li>
+<li><code>PDO::ATTR_AUTOCOMMIT</code>：设置当前连接 <code>Mysql</code> 服务器的客户端的SQL语句是否自动执行，默认是自动提交.</li>
+<li><code>PDO::ATTR_PERSISTENT</code>：当前对Mysql服务器的连接是否是长连接.</li>
+</ul>
+<h3 id="createconnection创建数据库连接"><strong>createConnection——创建数据库连接</strong></h3>
+<pre><code class="language-php">public function createConnection($dsn, array $config, array $options)
+{
+    list($username, $password) = [
+        Arr::get($config, 'username'), Arr::get($config, 'password'),
+    ];
+
+    try {
+        return $this-&gt;createPdoConnection(
+            $dsn, $username, $password, $options
+        );
+    } catch (Exception $e) {
+        return $this-&gt;tryAgainIfCausedByLostConnection(
+            $e, $dsn, $username, $password, $options
+        );
+    }
+}
+
+protected function createPdoConnection($dsn, $username, $password, $options)
+{
+    if (class_exists(PDOConnection::class) &amp;&amp; ! $this-&gt;isPersistentConnection($options)) {
+        return new PDOConnection($dsn, $username, $password, $options);
+    }
+
+    return new PDO($dsn, $username, $password, $options);
+}
+</code></pre>
+<p>当 <code>pdo</code> 对象成功的建立起来后，说明我们已经与数据库成功地建立起来了一个连接，接下来我们就可以利用这个 <code>pdo</code> 对象进行查询或者更新等操作。</p>
+<p>当创建 <code>pdo</code> 的时候抛出异常时：</p>
+<pre><code class="language-php">protected function tryAgainIfCausedByLostConnection(Exception $e, $dsn, $username, $password, $options)
+{
+    if ($this-&gt;causedByLostConnection($e)) {
+        return $this-&gt;createPdoConnection($dsn, $username, $password, $options);
+    }
+
+    throw $e;
+}
+
+protected function causedByLostConnection(Exception $e)
+{
+    $message = $e-&gt;getMessage();
+
+    return Str::contains($message, [
+        'server has gone away',
+        'no connection to the server',
+        'Lost connection',
+        'is dead or not enabled',
+        'Error while sending',
+        'decryption failed or bad record mac',
+        'server closed the connection unexpectedly',
+        'SSL connection has been closed unexpectedly',
+        'Error writing data to the connection',
+        'Resource deadlock avoided',
+    ]);
+}
+</code></pre>
+<p>当判断出的异常是上面几种情况时，框架会再次尝试连接数据库。</p>
+<h3 id="configureencoding设置字符集与校对集"><strong>configureEncoding——设置字符集与校对集</strong></h3>
+<pre><code class="language-php">protected function configureEncoding($connection, array $config)
+{
+    if (! isset($config['charset'])) {
+        return $connection;
+    }
+
+    $connection-&gt;prepare(
+        "set names '{$config['charset']}'".$this-&gt;getCollation($config)
+    )-&gt;execute();
+}
+
+protected function getCollation(array $config)
+{
+    return ! is_null($config['collation']) ? " collate '{$config['collation']}'" : '';
+}
+</code></pre>
+<p>如果配置参数中设置了字符集与校对集，程序会利用配置的参数对数据库进行相关设置。</p>
+<p>所谓的字符集与校对集设置，可以参考<a href="http://www.360doc.com/content/11/0303/01/2588264_97631236.shtml">mysql 中 character set 与 collation 的点滴理解</a></p>
+<h3 id="configuretimezone设置时间区"><strong>configureTimezone——设置时间区</strong></h3>
+<pre><code class="language-php">protected function configureTimezone($connection, array $config)~
+{
+    if (isset($config['timezone'])) {
+        $connection-&gt;prepare('set time_zone="'.$config['timezone'].'"')-&gt;execute();
+    }
+}
+</code></pre>
+<h3 id="setmodes设置-sql-mode-模式"><strong>setModes——设置 SQL_MODE 模式</strong></h3>
+<pre><code class="language-php">protected function setModes(PDO $connection, array $config)
+{
+    if (isset($config['modes'])) {
+        $this-&gt;setCustomModes($connection, $config);
+    } elseif (isset($config['strict'])) {
+        if ($config['strict']) {
+            $connection-&gt;prepare($this-&gt;strictMode())-&gt;execute();
+        } else {
+            $connection-&gt;prepare("set session sql_mode='NO_ENGINE_SUBSTITUTION'")-&gt;execute();
+        }
+    }
+}
+
+protected function setCustomModes(PDO $connection, array $config)
+{
+    $modes = implode(',', $config['modes']);
+
+    $connection-&gt;prepare("set session sql_mode='{$modes}'")-&gt;execute();
+}
+
+protected function strictMode()
+{
+    return "set session sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'";
+}
+</code></pre>
+<p>以下内容参考：<a href="http://www.xlaoyu.info/mysql/2016/06/07/mysql-sql_mode-setting.html">mysql的sql_mode设置简介</a>:</p>
+<p><code>SQL_MODE</code> 直接理解就是：sql的运作模式。官方的说法是：sql_mode可以影响sql支持的语法以及数据的校验执行，这使得MySQL可以运行在不同的环境中以及和其他数据库一起运作。</p>
+<p>想设置sql_mode有三种方式：</p>
+<ul>
+<li>在命令行启动MySQL时添加参数 --sql-mode="modes"</li>
+<li>在MySQL的配置文件（my.cnf或者my.ini）中添加一个配置sql-mode="modes"</li>
+<li>运行时修改SQL mode可以通过以下命令之一：</li>
+</ul>
+<pre><code class="language-php">SET GLOBAL sql_mode = 'modes';
+SET SESSION sql_mode = 'modes';
+</code></pre>
+<p>几种常见的mode介绍</p>
+<ul>
+<li> <p><code>ONLY_FULL_GROUP_BY</code>： 出现在 <code>select</code> 语句、<code>HAVING</code> 条件和 <code>ORDER BY</code> 语句中的列，必须是 <code>GROUP BY</code> 的列或者依赖于 <code>GROUP BY</code> 列的函数列。</p> </li>
+<li> <p><code>NO_AUTO_VALUE_ON_ZERO</code>： 该值影响自增长列的插入。默认设置下，插入0或 <code>NULL</code> 代表生成下一个自增长值。如果用户 希望插入的值为0，而该列又是自增长的，那么这个选项就有用了。</p> </li>
+<li> <p><code>STRICT_TRANS_TABLES</code>： 在该模式下，如果一个值不能插入到一个事务表中，则中断当前的操作，对非事务表不做限制</p> </li>
+<li> <p><code>NO_ZERO_IN_DATE</code>： 这个模式影响了是否允许日期中的月份和日包含0。如果开启此模式，2016-01-00是不允许的，但是0000-02-01是允许的。它实际的行为受到 <code>strict mode</code> 是否开启的影响1。</p> </li>
+<li> <p><code>NO_ZERO_DATE</code>： 设置该值，<code>mysql</code> 数据库不允许插入零日期。它实际的行为受到 <code>strict mode</code> 是否开启的影响2。</p> </li>
+<li> <p><code>ERROR_FOR_DIVISION_BY_ZERO</code>： 在 <code>INSERT</code> 或 <code>UPDATE</code> 过程中，如果数据被零除，则产生错误而非警告。如 果未给出该模式，那么数据被零除时 <code>MySQL</code> 返回 <code>NULL</code></p> </li>
+<li> <p><code>NO_AUTO_CREATE_USER</code>： 禁止 <code>GRANT</code> 创建密码为空的用户</p> </li>
+<li> <p><code>NO_ENGINE_SUBSTITUTION</code>： 如果需要的存储引擎被禁用或未编译，那么抛出错误。不设置此值时，用默认的存储引擎替代，并抛出一个异常</p> </li>
+<li> <p><code>PIPES_AS_CONCAT</code>： 将”||”视为字符串的连接操作符而非或运算符，这和Oracle数据库是一样的，也和字符串的拼接函数Concat相类似</p> </li>
+<li> <p><code>ANSI_QUOTES</code>： 启用 <code>ANSI_QUOTES</code> 后，不能用双引号来引用字符串，因为它被解释为识别符</p> </li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/62/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/62/index.html">Google 深度学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/38.html">ahangchen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1243个">1243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/155/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/155/index.html">CHNote，Apple设备、Git、Shell等使用教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/87.html">wanggw911</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/43/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/43/index.html">C 语言编程透视</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 369个">369</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/149/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/149/index.html">Git Cheat Sheet 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/81.html">flyhigher139</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 642个">642</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/199/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/199/index.html">什么是 Markdown</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">38页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/194/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/postgresql_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/194/index.html">postgresql教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/110.html">hfpp2012</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="postgresql">postgresql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9个">9</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7762;var bookPageRelUrl ='Laravel%20Database——数据库服务的启动与连接.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

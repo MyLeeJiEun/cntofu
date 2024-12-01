@@ -1,0 +1,1468 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>部分匹配-Elasticsearch权威指南(Elasticsearch Definitive Guide)</title>
+<meta content='部分匹配,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='keywords'>
+<meta content='部分匹配,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/asciidoc.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/40/proximity-matching.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">近似匹配</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/40/controlling-relevance.html">
+<span class="">控制相关度</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/40/index.html">Elasticsearch权威指南 (Elasticsearch Definitive Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/elasticsearch-cn/elasticsearch-definitive-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  asc-content-section  uk-margin-bottom">
+<h2 id="partial-matching">部分匹配</h2>
+<div class="paragraph">
+<p>敏锐的读者会注意，目前为止本书介绍的所有查询都是针对整个词的操作。为了能匹配，只能查找倒排索引中存在的词，最小的单元为单个词。</p>
+</div>
+<div class="paragraph">
+<p>但如果想匹配部分而不是全部的词该怎么办？ <em>部分匹配</em> 允许用户指定查找词的一部分并找出所有包含这部分片段的词。</p>
+</div>
+<div class="paragraph">
+<p>与想象的不太一样，对词进行部分匹配的需求在全文搜索引擎领域并不常见，但是如果读者有 SQL 方面的背景，可能会在某个时候实现一个 <em>低效的全文搜索</em> 用下面的 SQL 语句对全文进行搜索：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">    WHERE text LIKE "%quick%"
+      AND text LIKE "%brown%"
+      AND text LIKE "%fox%" <b class="conum">(1)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code><strong>fox</strong></code> 会与 “fox” 和 “foxes” 匹配。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>当然， Elasticsearch 提供分析过程，倒排索引让我们不需要使用这种粗笨的技术。为了能应对同时匹配 “fox” 和 “foxes” 的情况，只需简单的将它们的词干作为索引形式，没有必要做部分匹配。</p>
+</div>
+<div class="paragraph">
+<p>也就是说，在某些情况下部分匹配会比较有用，常见的应用如下：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>匹配邮编、产品序列号或其他 <code>not_analyzed</code> 未分析值，这些值可以是以某个特定前缀开始，也可以是与某种模式匹配的，甚至可以是与某个正则式相匹配的。</p> </li>
+<li> <p><em>输入即搜索（search-as-you-type）</em> ——在用户键入搜索词过程的同时就呈现最可能的结果。</p> </li>
+<li> <p>匹配如德语或荷兰语这样有长组合词的语言，如： <em>Weltgesundheitsorganisation</em> （世界卫生组织，英文 World Health Organization）。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>本章始于检验 <code>not_analyzed</code> 精确值字段的前缀匹配。</p>
+</div>
+<div class="sect2">
+<h3 id="_postcodes_and_structured_data">邮编与结构化数据</h3>
+<div class="paragraph">
+<p>我们会使用美国目前使用的邮编形式（United Kingdom postcodes 标准）来说明如何用部分匹配查询结构化数据。这种邮编形式有很好的结构定义。例如，邮编 <code>W1V 3DG</code> 可以分解成如下形式：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>W1V</code> ：这是邮编的外部，它定义了邮件的区域和行政区：</p>
+<div class="ulist">
+<ul>
+<li> <p><code>W</code> 代表区域（ 1 或 2 个字母）</p> </li>
+<li> <p><code>1V</code> 代表行政区（ 1 或 2 个数字，可能跟着一个字符）</p> </li>
+</ul>
+</div> </li>
+<li> <p><code>3DG</code> ：内部定义了街道或建筑：</p>
+<div class="ulist">
+<ul>
+<li> <p><code>3</code> 代表街区区块（ 1 个数字）</p> </li>
+<li> <p><code>DG</code> 代表单元（ 2 个字母）</p> </li>
+</ul>
+</div> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>假设将邮编作为 <code>not_analyzed</code> 的精确值字段索引，所以可以为其创建索引，如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index
+{
+    "mappings": {
+        "address": {
+            "properties": {
+                "postcode": {
+                    "type":  "string",
+                    "index": "not_analyzed"
+                }
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>然后索引一些邮编：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index/address/1
+{ "postcode": "W1V 3DG" }
+
+PUT /my_index/address/2
+{ "postcode": "W2F 8HW" }
+
+PUT /my_index/address/3
+{ "postcode": "W1F 7HW" }
+
+PUT /my_index/address/4
+{ "postcode": "WC1N 1LZ" }
+
+PUT /my_index/address/5
+{ "postcode": "SW5 0BE" }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>现在这些数据已可查询。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="prefix-query">prefix 前缀查询</h3>
+<div class="paragraph">
+<p>为了找到所有以 <code>W1</code> 开始的邮编，可以使用简单的 <code>prefix</code> 查询：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/address/_search
+{
+    "query": {
+        "prefix": {
+            "postcode": "W1"
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>prefix</code> 查询是一个词级别的底层的查询，它不会在搜索之前分析查询字符串，它假定传入前缀就正是要查找的前缀。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>默认状态下， <code>prefix</code> 查询不做相关度评分计算，它只是将所有匹配的文档返回，并为每条结果赋予评分值 <code>1</code> 。它的行为更像是过滤器而不是查询。 <code>prefix</code> 查询和 <code>prefix</code> 过滤器这两者实际的区别就是过滤器是可以被缓存的，而查询不行。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>之前已经提过：“只能在倒排索引中找到存在的词”，但我们并没有对这些邮编的索引进行特殊处理，每个邮编还是以它们精确值的方式存在于每个文档的索引中，那么 <code>prefix</code> 查询是如何工作的呢？</p>
+</div>
+<div class="paragraph pagebreak-after">
+<p>回想倒排索引包含了一个有序的唯一词列表（本例是邮编）。对于每个词，倒排索引都会将包含词的文档 ID 列入 <em>倒排表（postings list）</em> 。与示例对应的倒排索引是：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>Term:          Doc IDs:
+-------------------------
+"SW5 0BE"    |  5
+"W1F 7HW"    |  3
+"W1V 3DG"    |  1
+"W2F 8HW"    |  2
+"WC1N 1LZ"   |  4
+-------------------------</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>为了支持前缀匹配，查询会做以下事情：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>扫描词列表并查找到第一个以 <code>W1</code> 开始的词。</p> </li>
+<li> <p>搜集关联的文档 ID 。</p> </li>
+<li> <p>移动到下一个词。</p> </li>
+<li> <p>如果这个词也是以 <code>W1</code> 开头，查询跳回到第二步再重复执行，直到下一个词不以 <code>W1</code> 为止。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这对于小的例子当然可以正常工作，但是如果倒排索引中有数以百万的邮编都是以 <code>W1</code> 开头时，前缀查询则需要访问每个词然后计算结果！</p>
+</div>
+<div class="paragraph">
+<p>前缀越短所需访问的词越多。如果我们要以 <code>W</code> 作为前缀而不是 <code>W1</code> ，那么就可能需要做千万次的匹配。</p>
+</div>
+<div class="admonitionblock caution">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Caution
+</div> </td>
+<td class="content"> <code>prefix</code> 查询或过滤对于一些特定的匹配是有效的，但使用方式还是应当注意。当字段中词的集合很小时，可以放心使用，但是它的伸缩性并不好，会对我们的集群带来很多压力。可以使用较长的前缀来限制这种影响，减少需要访问的量。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>本章后面会介绍另一个索引时的解决方案，这个方案能使前缀匹配更高效，不过在此之前，需要先看看两个相关的查询： <code>wildcard</code> 和 <code>regexp</code> （模糊和正则）。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_wildcard_and_regexp_queries">通配符与正则表达式查询</h3>
+<div class="paragraph">
+<p>与 <code>prefix</code> 前缀查询的特性类似， <code>wildcard</code> 通配符查询也是一种底层基于词的查询，与前缀查询不同的是它允许指定匹配的正则式。它使用标准的 shell 通配符查询： <code>?</code> 匹配任意字符， <code>*</code> 匹配 0 或多个字符。</p>
+</div>
+<div class="paragraph">
+<p>这个查询会匹配包含 <code>W1F 7HW</code> 和 <code>W2F 8HW</code> 的文档：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/address/_search
+{
+    "query": {
+        "wildcard": {
+            "postcode": "W?F*HW" <b class="conum">(1)</b>
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>?</code> 匹配 <code>1</code> 和 <code>2</code> ， <code>*</code> 与空格及 <code>7</code> 和 <code>8</code> 匹配。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>设想如果现在只想匹配 <code>W</code> 区域的所有邮编，前缀匹配也会包括以 <code>WC</code> 开头的所有邮编，与通配符匹配碰到的问题类似，如果想匹配只以 <code>W</code> 开始并跟随一个数字的所有邮编， <code>regexp</code> 正则式查询允许写出这样更复杂的模式：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/address/_search
+{
+    "query": {
+        "regexp": {
+            "postcode": "W[0-9].+" <b class="conum">(1)</b>
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>这个正则表达式要求词必须以 <code>W</code> 开头，紧跟 0 至 9 之间的任何一个数字，然后接一或多个其他字符。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p><code>wildcard</code> 和 <code>regexp</code> 查询的工作方式与 <code>prefix</code> 查询完全一样，它们也需要扫描倒排索引中的词列表才能找到所有匹配的词，然后依次获取每个词相关的文档 ID ，与 <code>prefix</code> 查询的唯一不同是：它们能支持更为复杂的匹配模式。</p>
+</div>
+<div class="paragraph">
+<p>这也意味着需要同样注意前缀查询存在性能问题，对有很多唯一词的字段执行这些查询可能会消耗非常多的资源，所以要避免使用左通配这样的模式匹配（如： <code>*foo</code> 或 <code>.*foo</code> 这样的正则式）。</p>
+</div>
+<div class="paragraph">
+<p>数据在索引时的预处理有助于提高前缀匹配的效率，而通配符和正则表达式查询只能在查询时完成，尽管这些查询有其应用场景，但使用仍需谨慎。</p>
+</div>
+<div class="admonitionblock caution">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Caution
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p><code>prefix</code> 、 <code>wildcard</code> 和 <code>regexp</code> 查询是基于词操作的，如果用它们来查询 <code>analyzed</code> 字段，它们会检查字段里面的每个词，而不是将字段作为整体来处理。</p>
+</div>
+<div class="paragraph">
+<p>比方说包含 “Quick brown fox” （快速的棕色狐狸）的 <code>title</code> 字段会生成词： <code>quick</code> 、 <code>brown</code> 和 <code>fox</code> 。</p>
+</div>
+<div class="paragraph">
+<p>会匹配以下这个查询：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">{ "regexp": { "title": "br.*" }}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>但是不会匹配以下两个查询：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">{ "regexp": { "title": "Qu.*" }} <b class="conum">(1)</b>
+{ "regexp": { "title": "quick br*" }} <b class="conum">(2)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>在索引里的词是 <code>quick</code> 而不是 <code>Quick</code> 。</p> </li>
+<li> <p><code>quick</code> 和 <code>brown</code> 在词表中是分开的。</p> </li>
+</ol>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_query_time_search_as_you_type">查询时输入即搜索</h3>
+<div class="paragraph">
+<p>把邮编的事情先放一边，让我们先看看前缀查询是如何在全文查询中起作用的。用户已经渐渐习惯在输完查询内容之前，就能为他们展现搜索结果，这就是所谓的 <em>即时搜索（instant search）</em> 或 <em>输入即搜索（search-as-you-type）</em> 。不仅用户能在更短的时间内得到搜索结果，我们也能引导用户搜索索引中真实存在的结果。</p>
+</div>
+<div class="paragraph">
+<p>例如，如果用户输入 <code>johnnie walker bl</code> ，我们希望在它们完成输入搜索条件前就能得到：Johnnie Walker Black Label 和 Johnnie Walker Blue Label 。</p>
+</div>
+<div class="paragraph">
+<p>生活总是这样，就像猫的花色远不只一种！我们希望能找到一种最简单的实现方式。并不需要对数据做任何准备，在查询时就能对任意的全文字段实现 <em>输入即搜索（search-as-you-type）</em> 的查询。</p>
+</div>
+<div class="paragraph">
+<p>在 <a href="#phrase-matching">短语匹配</a> 中，我们引入了 <code>match_phrase</code> 短语匹配查询，它匹配相对顺序一致的所有指定词语，对于查询时的输入即搜索，可以使用 <code>match_phrase</code> 的一种特殊形式， <code>match_phrase_prefix</code> 查询：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "match_phrase_prefix" : {
+        "brand" : "johnnie walker bl"
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这种查询的行为与 <code>match_phrase</code> 查询一致，不同的是它将查询字符串的最后一个词作为前缀使用，换句话说，可以将之前的例子看成如下这样：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>johnnie</code></p> </li>
+<li> <p>跟着 <code>walker</code></p> </li>
+<li> <p>跟着以 <code>bl</code> 开始的词</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>如果通过 <code>validate-query</code> API 运行这个查询查询，explanation 的解释结果为：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>"johnnie walker bl*"</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>与 <code>match_phrase</code> 一样，它也可以接受 <code>slop</code> 参数（参照 <a href="#slop">slop</a> ）让相对词序位置不那么严格：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "match_phrase_prefix" : {
+        "brand" : {
+            "query": "walker johnnie bl", <b class="conum">(1)</b>
+            "slop":  10
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>尽管词语的顺序不正确，查询仍然能匹配，因为我们为它设置了足够高的 <code>slop</code> 值使匹配时的词序有更大的灵活性。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>但是只有查询字符串的最后一个词才能当作前缀使用。</p>
+</div>
+<div class="paragraph">
+<p>在之前的 <a href="#prefix-query">前缀查询</a> 中，我们警告过使用前缀的风险，即 <code>prefix</code> 查询存在严重的资源消耗问题，短语查询的这种方式也同样如此。前缀 <code>a</code> 可能会匹配成千上万的词，这不仅会消耗很多系统资源，而且结果的用处也不大。</p>
+</div>
+<div class="paragraph">
+<p>可以通过设置 <code>max_expansions</code> 参数来限制前缀扩展的影响，一个合理的值是可能是 50 ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "match_phrase_prefix" : {
+        "brand" : {
+            "query":          "johnnie walker bl",
+            "max_expansions": 50
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>参数 <code>max_expansions</code> 控制着可以与前缀匹配的词的数量，它会先查找第一个与前缀 <code>bl</code> 匹配的词，然后依次查找搜集与之匹配的词（按字母顺序），直到没有更多可匹配的词或当数量超过 <code>max_expansions</code> 时结束。</p>
+</div>
+<div class="paragraph">
+<p>不要忘记，当用户每多输入一个字符时，这个查询又会执行一遍，所以查询需要快，如果第一个结果集不是用户想要的，他们会继续输入直到能搜出满意的结果为止。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_index_time_optimizations">索引时优化</h3>
+<div class="paragraph">
+<p>到目前为止，所有谈论过的解决方案都是在 <em>查询时（query time）</em> 实现的。这样做并不需要特殊的映射或特殊的索引模式，只是简单使用已经索引的数据。</p>
+</div>
+<div class="paragraph">
+<p>查询时的灵活性通常会以牺牲搜索性能为代价，有时候将这些消耗从查询过程中转移到别的地方是有意义的。在实时 web 应用中， 100 毫秒可能是一个难以忍受的巨大延迟。</p>
+</div>
+<div class="paragraph">
+<p>可以通过在索引时处理数据提高搜索的灵活性以及提升系统性能。为此仍然需要付出应有的代价：增加的索引空间与变慢的索引能力，但这与每次查询都需要付出代价不同，索引时的代价只用付出一次。</p>
+</div>
+<div class="paragraph">
+<p>用户会感谢我们。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_ngrams_for_partial_matching">Ngrams 在部分匹配的应用</h3>
+<div class="paragraph">
+<p>之前提到：“只能在倒排索引中找到存在的词。” 尽管 <code>prefix</code> 、 <code>wildcard</code> 、 <code>regexp</code> 查询告诉我们这种说法并不完全正确，但单个词的查找 <em>确实</em> 要比在词列表中盲目挨个查找的效率要高得多。在搜索之前准备好供部分匹配的数据可以提高搜索的性能。</p>
+</div>
+<div class="paragraph">
+<p>在索引时准备数据意味着要选择合适的分析链，这里部分匹配使用的工具是 <em>n-gram</em> 。可以将 <em>n-gram</em> 看成一个在词语上 <em>滑动窗口</em> ， <em>n</em> 代表这个 “窗口” 的长度。如果我们要 n-gram <code>quick</code> 这个词 —— 它的结果取决于 <em>n</em> 的选择长度：</p>
+</div>
+<div class="ulist horizontal">
+<ul class="horizontal">
+<li> <p>长度 1（unigram）： [ <code>q</code>, <code>u</code>, <code>i</code>, <code>c</code>, <code>k</code> ]</p> </li>
+<li> <p>长度 2（bigram）： [ <code>qu</code>, <code>ui</code>, <code>ic</code>, <code>ck</code> ]</p> </li>
+<li> <p>长度 3（trigram）： [ <code>qui</code>, <code>uic</code>, <code>ick</code> ]</p> </li>
+<li> <p>长度 4（four-gram）： [ <code>quic</code>, <code>uick</code> ]</p> </li>
+<li> <p>长度 5（five-gram）： [ <code>quick</code> ]</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>朴素的 n-gram 对 <em>词语内部的匹配</em> 非常有用，即在 <a href="#ngrams-compound-words">Ngram 匹配复合词</a> 介绍的那样。但对于输入即搜索（search-as-you-type）这种应用场景，我们会使用一种特殊的 n-gram 称为 <em>边界 n-grams</em> （edge n-grams）。所谓的边界 n-gram 是说它会固定词语开始的一边，以单词 <code>quick</code> 为例，它的边界 n-gram 的结果为：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>q</code></p> </li>
+<li> <p><code>qu</code></p> </li>
+<li> <p><code>qui</code></p> </li>
+<li> <p><code>quic</code></p> </li>
+<li> <p><code>quick</code></p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>可能会注意到这与用户在搜索时输入 “quick” 的字母次序是一致的，换句话说，这种方式正好满足即时搜索（instant search）！</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_index_time_search_as_you_type">索引时输入即搜索</h3>
+<div class="paragraph">
+<p>设置索引时输入即搜索的第一步是需要定义好分析链，我们已在 <a href="#configuring-analyzers">配置分析器</a> 中讨论过，这里会对这些步骤再次说明。</p>
+</div>
+<div class="sect3">
+<h4 id="_准备索引">准备索引</h4>
+<div class="paragraph">
+<p>第一步需要配置一个自定义的 <code>edge_ngram</code> token 过滤器，称为 <code>autocomplete_filter</code> ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "filter": {
+        "autocomplete_filter": {
+            "type":     "edge_ngram",
+            "min_gram": 1,
+            "max_gram": 20
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这个配置的意思是：对于这个 token 过滤器接收的任意词项，过滤器会为之生成一个最小固定值为 1 ，最大为 20 的 n-gram 。</p>
+</div>
+<div class="paragraph">
+<p>然后会在一个自定义分析器 <code>autocomplete</code> 中使用上面这个 token 过滤器：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "analyzer": {
+        "autocomplete": {
+            "type":      "custom",
+            "tokenizer": "standard",
+            "filter": [
+                "lowercase",
+                "autocomplete_filter" <b class="conum">(1)</b>
+            ]
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>自定义的 edge-ngram token 过滤器。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个分析器使用 <code>standard</code> 分词器将字符串拆分为独立的词，并且将它们都变成小写形式，然后为每个词生成一个边界 n-gram，这要感谢 <code>autocomplete_filter</code> 起的作用。</p>
+</div>
+<div class="paragraph">
+<p>创建索引、实例化 token 过滤器和分析器的完整示例如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index
+{
+    "settings": {
+        "number_of_shards": 1, <b class="conum">(1)</b>
+        "analysis": {
+            "filter": {
+                "autocomplete_filter": { <b class="conum">(2)</b>
+                    "type":     "edge_ngram",
+                    "min_gram": 1,
+                    "max_gram": 20
+                }
+            },
+            "analyzer": {
+                "autocomplete": {
+                    "type":      "custom",
+                    "tokenizer": "standard",
+                    "filter": [
+                        "lowercase",
+                        "autocomplete_filter" <b class="conum">(3)</b>
+                    ]
+                }
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>参考 <a href="#relevance-is-broken">被破坏的相关度</a> 。</p> </li>
+<li> <p>首先自定义 token 过滤器。</p> </li>
+<li> <p>然后在分析器中使用它。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>可以拿 <code>analyze</code> API 测试这个新的分析器确保它行为正确：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/_analyze?analyzer=autocomplete
+quick brown</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>结果表明分析器能正确工作，并返回以下词：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>q</code></p> </li>
+<li> <p><code>qu</code></p> </li>
+<li> <p><code>qui</code></p> </li>
+<li> <p><code>quic</code></p> </li>
+<li> <p><code>quick</code></p> </li>
+<li> <p><code>b</code></p> </li>
+<li> <p><code>br</code></p> </li>
+<li> <p><code>bro</code></p> </li>
+<li> <p><code>brow</code></p> </li>
+<li> <p><code>brown</code></p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>可以用 <code>update-mapping</code> API 将这个分析器应用到具体字段：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index/_mapping/my_type
+{
+    "my_type": {
+        "properties": {
+            "name": {
+                "type":     "string",
+                "analyzer": "autocomplete"
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>现在创建一些测试文档：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">POST /my_index/my_type/_bulk
+{ "index": { "_id": 1            }}
+{ "name": "Brown foxes"    }
+{ "index": { "_id": 2            }}
+{ "name": "Yellow furballs" }</code></pre>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_查询字段">查询字段</h4>
+<div class="paragraph">
+<p>如果使用简单 <code>match</code> 查询测试查询 “brown fo” ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/my_type/_search
+{
+    "query": {
+        "match": {
+            "name": "brown fo"
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>可以看到两个文档同时 <em>都能</em> 匹配，尽管 <code>Yellow furballs</code> 这个文档并不包含 <code>brown</code> 和 <code>fo</code> ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+
+  "hits": [
+     {
+        "_id": "1",
+        "_score": 1.5753809,
+        "_source": {
+           "name": "Brown foxes"
+        }
+     },
+     {
+        "_id": "2",
+        "_score": 0.012520773,
+        "_source": {
+           "name": "Yellow furballs"
+        }
+     }
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>如往常一样， <code>validate-query</code> API 总能提供一些线索：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/my_type/_validate/query?explain
+{
+    "query": {
+        "match": {
+            "name": "brown fo"
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>explanation</code> 表明查询会查找边界 n-grams 里的每个词：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>name:b name:br name:bro name:brow name:brown name:f name:fo</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>name:f</code> 条件可以满足第二个文档，因为 <code>furballs</code> 是以 <code>f</code> 、 <code>fu</code> 、 <code>fur</code> 形式索引的。回过头看这并不令人惊讶，相同的 <code>autocomplete</code> 分析器同时被应用于索引时和搜索时，这在大多数情况下是正确的，只有在少数场景下才需要改变这种行为。</p>
+</div>
+<div class="paragraph">
+<p>我们需要保证倒排索引表中包含边界 n-grams 的每个词，但是我们只想匹配用户输入的完整词组（ <code>brown</code> 和 <code>fo</code> ），可以通过在索引时使用 <code>autocomplete</code> 分析器，并在搜索时使用 <code>standard</code> 标准分析器来实现这种想法，只要改变查询使用的搜索分析器 <code>analyzer</code> 参数即可：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/my_type/_search
+{
+    "query": {
+        "match": {
+            "name": {
+                "query":    "brown fo",
+                "analyzer": "standard" <b class="conum">(1)</b>
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>覆盖了 <code>name</code> 字段 <code>analyzer</code> 的设置。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>换种方式，我们可以在映射中，为 <code>name</code> 字段分别指定 <code>index_analyzer</code> 和 <code>search_analyzer</code> 。因为我们只想改变 <code>search_analyzer</code> ，这里只要更新现有的映射而不用对数据重新创建索引：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index/my_type/_mapping
+{
+    "my_type": {
+        "properties": {
+            "name": {
+                "type":            "string",
+                "index_analyzer":  "autocomplete", <b class="conum">(1)</b>
+                "search_analyzer": "standard" <b class="conum">(2)</b>
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>在索引时，使用 <code>autocomplete</code> 分析器生成边界 n-grams 的每个词。</p> </li>
+<li> <p>在搜索时，使用 <code>standard</code> 分析器只搜索用户输入的词。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>如果再次请求 <code>validate-query</code> API ，当前的解释为：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>name:brown name:fo</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>再次执行查询就能正确返回 <code>Brown foxes</code> 这个文档。</p>
+</div>
+<div class="paragraph">
+<p>因为大多数工作是在索引时完成的，所有的查询只要查找 <code>brown</code> 和 <code>fo</code> 这两个词，这比使用 <code>match_phrase_prefix</code> 查找所有以 <code>fo</code> 开始的词的方式要高效许多。</p>
+</div>
+<div class="sidebarblock">
+<div class="content">
+<div class="title">
+补全提示（Completion Suggester）
+</div>
+<div class="paragraph">
+<p>使用边界 n-grams 进行输入即搜索（search-as-you-type）的查询设置简单、灵活且快速，但有时候它并不够快，特别是当试图立刻获得反馈时，延迟的问题就会凸显，很多时候不搜索才是最快的搜索方式。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 里的 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/search-suggesters-completion.html">completion suggester</a> 采用与上面完全不同的方式，需要为搜索条件生成一个所有可能完成的词列表，然后将它们置入一个 <em>有限状态机（finite state transducer）</em> 内，这是个经优化的图结构。为了搜索建议提示，Elasticsearch 从图的开始处顺着匹配路径一个字符一个字符地进行匹配，一旦它处于用户输入的末尾，Elasticsearch 就会查找所有可能结束的当前路径，然后生成一个建议列表。</p>
+</div>
+<div class="paragraph">
+<p>本数据结构存于内存中，能使前缀查找非常快，比任何一种基于词的查询都要快很多，这对名字或品牌的自动补全非常适用，因为这些词通常是以普通顺序组织的：用 “Johnny Rotten” 而不是 “Rotten Johnny” 。</p>
+</div>
+<div class="paragraph">
+<p>当词序不是那么容易被预见时，边界 n-grams 比完成建议者（Completion Suggester）更合适。即使说不是所有猫都是一个花色，那这只猫的花色也是相当特殊的。</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_边界_n_grams_与邮编">边界 n-grams 与邮编</h4>
+<div class="paragraph">
+<p>边界 n-gram 的方式可以用来查询结构化的数据，比如 <a href="#prefix-query">本章之前示例</a> 中的邮编（postcode）。当然 <code>postcode</code> 字段需要 <code>analyzed</code> 而不是 <code>not_analyzed</code> ，不过可以用 <code>keyword</code> 分词器来处理它，就好像他们是 <code>not_analyzed</code> 的一样。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p><code>keyword</code> 分词器是一个非操作型分词器，这个分词器不做任何事情，它接收的任何字符串都会被原样发出，因此它可以用来处理 <code>not_analyzed</code> 的字段值，但这也需要其他的一些分析转换，如将字母转换成小写。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>下面示例使用 <code>keyword</code> 分词器将邮编转换成 token 流，这样就能使用边界 n-gram token 过滤器：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+    "analysis": {
+        "filter": {
+            "postcode_filter": {
+                "type":     "edge_ngram",
+                "min_gram": 1,
+                "max_gram": 8
+            }
+        },
+        "analyzer": {
+            "postcode_index": { <b class="conum">(1)</b>
+                "tokenizer": "keyword",
+                "filter":    [ "postcode_filter" ]
+            },
+            "postcode_search": { <b class="conum">(2)</b>
+                "tokenizer": "keyword"
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>postcode_index</code> 分析器使用 <code>postcode_filter</code> 将邮编转换成边界 n-gram 形式。</p> </li>
+<li> <p><code>postcode_search</code> 分析器可以将搜索词看成 <code>not_analyzed</code> 未分析的。</p> </li>
+</ol>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="ngrams-compound-words">Ngrams 在复合词的应用</h3>
+<div class="paragraph">
+<p>最后，来看看 n-gram 是如何应用于搜索复合词的语言中的。德语的特点是它可以将许多小词组合成一个庞大的复合词以表达它准确或复杂的意义。例如：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<em>Aussprachewörterbuch</em>
+</dt>
+<dd>
+<p>发音字典（Pronunciation dictionary）</p>
+</dd>
+<dt class="hdlist1">
+<em>Militärgeschichte</em>
+</dt>
+<dd>
+<p>战争史（Military history）</p>
+</dd>
+<dt class="hdlist1">
+<em>Weißkopfseeadler</em>
+</dt>
+<dd>
+<p>秃鹰（White-headed sea eagle, or bald eagle）</p>
+</dd>
+<dt class="hdlist1">
+<em>Weltgesundheitsorganisation</em>
+</dt>
+<dd>
+<p>世界卫生组织（World Health Organization）</p>
+</dd>
+<dt class="hdlist1">
+<em>Rindfleischetikettierungsüberwachungsaufgabenübertragungsgesetz</em>
+</dt>
+<dd>
+<p>法案考虑代理监管牛和牛肉的标记的职责（The law concerning the delegation of duties for the supervision of cattle marking and the labeling of beef）</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>有些人希望在搜索 “Wörterbuch”（字典）的时候，能在结果中看到 “Aussprachewörtebuch”（发音字典）。同样，搜索 “Adler”（鹰）的时候，能将 “Weißkopfseeadler”（秃鹰）包括在结果中。</p>
+</div>
+<div class="paragraph">
+<p>处理这种语言的一种方式可以用 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/analysis-compound-word-tokenfilter.html">组合词 token 过滤器（compound word token filter）</a> 将复合词拆分成各自部分，但这种方式的结果质量依赖于组合词字典的质量。</p>
+</div>
+<div class="paragraph">
+<p>另一种方式就是将所有的词用 n-gram 进行处理，然后搜索任何匹配的片段——能匹配的片段越多，文档的相关度越大。</p>
+</div>
+<div class="paragraph">
+<p>假设某个 n-gram 是一个词上的滑动窗口，那么任何长度的 n-gram 都可以遍历这个词。我们既希望选择足够长的值让拆分的词项具有意义，又不至于因为太长而生成过多的唯一词。一个长度为 3 的 <em>trigram</em> 可能是一个不错的开始：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">PUT /my_index
+{
+    "settings": {
+        "analysis": {
+            "filter": {
+                "trigrams_filter": {
+                    "type":     "ngram",
+                    "min_gram": 3,
+                    "max_gram": 3
+                }
+            },
+            "analyzer": {
+                "trigrams": {
+                    "type":      "custom",
+                    "tokenizer": "standard",
+                    "filter":   [
+                        "lowercase",
+                        "trigrams_filter"
+                    ]
+                }
+            }
+        }
+    },
+    "mappings": {
+        "my_type": {
+            "properties": {
+                "text": {
+                    "type":     "string",
+                    "analyzer": "trigrams" <b class="conum">(1)</b>
+                }
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>text</code> 字段用 <code>trigrams</code> 分析器索引它的内容，这里 n-gram 的长度是 3 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>使用 <code>analyze</code> API 测试 trigram 分析器：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/_analyze?analyzer=trigrams
+Weißkopfseeadler</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>返回以下词项：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>wei, eiß, ißk, ßko, kop, opf, pfs, fse, see, eea,ead, adl, dle, ler</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>索引前述示例中的复合词来测试：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">POST /my_index/my_type/_bulk
+{ "index": { "_id": 1 }}
+{ "text": "Aussprachewörterbuch" }
+{ "index": { "_id": 2 }}
+{ "text": "Militärgeschichte" }
+{ "index": { "_id": 3 }}
+{ "text": "Weißkopfseeadler" }
+{ "index": { "_id": 4 }}
+{ "text": "Weltgesundheitsorganisation" }
+{ "index": { "_id": 5 }}
+{ "text": "Rindfleischetikettierungsüberwachungsaufgabenübertragungsgesetz" }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>“Adler”（鹰）的搜索转化为查询三个词 <code>adl</code> 、 <code>dle</code> 和 <code>ler</code> ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/my_type/_search
+{
+    "query": {
+        "match": {
+            "text": "Adler"
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>正好与 “Weißkopfsee-<em>adler</em>” 相匹配：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">{
+  "hits": [
+     {
+        "_id": "3",
+        "_score": 3.3191128,
+        "_source": {
+           "text": "Weißkopfseeadler"
+        }
+     }
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>类似查询 “Gesundheit”（健康）可以与 “Welt-gesundheit-sorganisation” 匹配，同时也能与 “Militär-<em>ges</em>-chichte” 和 “Rindfleischetikettierungsüberwachungsaufgabenübertragungs-<em>ges</em>-etz” 匹配，因为它们同时都有 trigram 生成的 <code>ges</code> ：</p>
+</div>
+<div class="paragraph">
+<p>使用合适的 <code>minimum_should_match</code> 可以将这些奇怪的结果排除，只有当 trigram 最少匹配数满足要求时，文档才能被认为是匹配的：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /my_index/my_type/_search
+{
+    "query": {
+        "match": {
+            "text": {
+                "query":                "Gesundheit",
+                "minimum_should_match": "80%"
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这有点像全文搜索中霰弹枪式的策略，可能会导致倒排索引内容变多，尽管如此，在索引具有很多复合词的语言，或词之间没有空格的语言（如：泰语）时，它仍不失为一种通用且有效的方法。</p>
+</div>
+<div class="paragraph">
+<p>这种技术可以用来提升 <em>召回率</em> ——搜索结果中相关的文档数。它通常会与其他技术一起使用，例如 shingles（参见 <a href="#shingles">shingles 瓦片词</a> ），以提高精度和每个文档的相关度评分。</p>
+</div>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/21/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/99/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/99/index.html">ECMAScript 6入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/140/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/haskell_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/140/index.html">HASKELL 趣學指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/73.html">MnO2</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="haskell">haskell</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 301个">301</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/160/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/160/index.html">Python - 100天从新手到大师</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/92.html">jackfrued</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">75页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33569个">33569</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/64/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/64/index.html">免费的编程中文书籍索引</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/40.html">justjavac</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33914个">33914</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/72/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/72/index.html">前端开发规范手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/45.html">Aaaaaashu</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 693个">693</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/40/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/foreword_id.html" title="序言" data-book-page-rel-url="foreword_id.html" data-book-page-id="9242">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="9243">前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/_who_should_read_this_book.html" title="谁应该读这本书" data-book-page-rel-url="_who_should_read_this_book.html" data-book-page-id="9244">谁应该读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_why_we_wrote_this_book.html" title="为什么我们要写这本书" data-book-page-rel-url="_why_we_wrote_this_book.html" data-book-page-id="9245">为什么我们要写这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_elasticsearch_version.html" title="Elasticsearch 版本" data-book-page-rel-url="_elasticsearch_version.html" data-book-page-id="9246">Elasticsearch 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_how_to_read_this_book.html" title="如何读这本书" data-book-page-rel-url="_how_to_read_this_book.html" data-book-page-id="9247">如何读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_navigating_this_book.html" title="本书导航" data-book-page-rel-url="_navigating_this_book.html" data-book-page-id="9248">本书导航</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_online_resources.html" title="在线资源" data-book-page-rel-url="_online_resources.html" data-book-page-id="9249">在线资源</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_conventions_used_in_this_book.html" title="本书协议约定" data-book-page-rel-url="_conventions_used_in_this_book.html" data-book-page-id="9250">本书协议约定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_using_code_examples.html" title="使用代码示例" data-book-page-rel-url="_using_code_examples.html" data-book-page-id="9251">使用代码示例</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_acknowledgments.html" title="鸣谢" data-book-page-rel-url="_acknowledgments.html" data-book-page-id="9252">鸣谢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/getting-started.html" title="基础入门" data-book-page-rel-url="getting-started.html" data-book-page-id="9253">基础入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/intro.html" title="你知道的, 为了搜索&#8230;&#8203;" data-book-page-rel-url="intro.html" data-book-page-id="9254">你知道的, 为了搜索&#8230;&#8203;</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-cluster.html" title="集群内的原理" data-book-page-rel-url="distributed-cluster.html" data-book-page-id="9255">集群内的原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/data-in-data-out.html" title="数据输入和输出" data-book-page-rel-url="data-in-data-out.html" data-book-page-id="9256">数据输入和输出</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-docs.html" title="分布式文档存储" data-book-page-rel-url="distributed-docs.html" data-book-page-id="9257">分布式文档存储</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search.html" title="搜索——最基本的工具" data-book-page-rel-url="search.html" data-book-page-id="9258">搜索——最基本的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/mapping-analysis.html" title="映射和分析" data-book-page-rel-url="mapping-analysis.html" data-book-page-id="9259">映射和分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-body-search.html" title="请求体查询" data-book-page-rel-url="full-body-search.html" data-book-page-id="9260">请求体查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/sorting.html" title="排序与相关性" data-book-page-rel-url="sorting.html" data-book-page-id="9261">排序与相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-search.html" title="执行分布式检索" data-book-page-rel-url="distributed-search.html" data-book-page-id="9262">执行分布式检索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/index-management.html" title="索引管理" data-book-page-rel-url="index-management.html" data-book-page-id="9263">索引管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/inside-a-shard.html" title="分片内部原理" data-book-page-rel-url="inside-a-shard.html" data-book-page-id="9264">分片内部原理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search-in-depth.html" title="深入搜索" data-book-page-rel-url="search-in-depth.html" data-book-page-id="9265">深入搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/structured-search.html" title="结构化搜索" data-book-page-rel-url="structured-search.html" data-book-page-id="9266">结构化搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-text-search.html" title="全文搜索" data-book-page-rel-url="full-text-search.html" data-book-page-id="9267">全文搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/multi-field-search.html" title="多字段搜索" data-book-page-rel-url="multi-field-search.html" data-book-page-id="9268">多字段搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/proximity-matching.html" title="近似匹配" data-book-page-rel-url="proximity-matching.html" data-book-page-id="9269">近似匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/partial-matching.html" title="部分匹配" data-book-page-rel-url="partial-matching.html" data-book-page-id="9270">部分匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/controlling-relevance.html" title="控制相关度" data-book-page-rel-url="controlling-relevance.html" data-book-page-id="9271">控制相关度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/languages.html" title="处理人类语言" data-book-page-rel-url="languages.html" data-book-page-id="9272">处理人类语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/language-intro.html" title="开始处理各种语言" data-book-page-rel-url="language-intro.html" data-book-page-id="9273">开始处理各种语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/identifying-words.html" title="词汇识别" data-book-page-rel-url="identifying-words.html" data-book-page-id="9274">词汇识别</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/token-normalization.html" title="归一化词元" data-book-page-rel-url="token-normalization.html" data-book-page-id="9275">归一化词元</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stemming.html" title="将单词还原为词根" data-book-page-rel-url="stemming.html" data-book-page-id="9276">将单词还原为词根</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stopwords.html" title="停用词: 性能与精度" data-book-page-rel-url="stopwords.html" data-book-page-id="9277">停用词: 性能与精度</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/synonyms.html" title="同义词" data-book-page-rel-url="synonyms.html" data-book-page-id="9278">同义词</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/fuzzy-matching.html" title="拼写错误" data-book-page-rel-url="fuzzy-matching.html" data-book-page-id="9279">拼写错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/aggregations.html" title="聚合" data-book-page-rel-url="aggregations.html" data-book-page-id="9280">聚合</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/aggs-high-level.html" title="高阶概念" data-book-page-rel-url="aggs-high-level.html" data-book-page-id="9281">高阶概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_aggregation_test_drive.html" title="尝试聚合" data-book-page-rel-url="_aggregation_test_drive.html" data-book-page-id="9282">尝试聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_building_bar_charts.html" title="条形图" data-book-page-rel-url="_building_bar_charts.html" data-book-page-id="9283">条形图</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_looking_at_time.html" title="按时间统计" data-book-page-rel-url="_looking_at_time.html" data-book-page-id="9284">按时间统计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_scoping_aggregations.html" title="范围限定的聚合" data-book-page-rel-url="_scoping_aggregations.html" data-book-page-id="9285">范围限定的聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_filtering_queries_and_aggregations.html" title="过滤和聚合" data-book-page-rel-url="_filtering_queries_and_aggregations.html" data-book-page-id="9286">过滤和聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_sorting_multivalue_buckets.html" title="多桶排序" data-book-page-rel-url="_sorting_multivalue_buckets.html" data-book-page-id="9287">多桶排序</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_approximate_aggregations.html" title="近似聚合" data-book-page-rel-url="_approximate_aggregations.html" data-book-page-id="9288">近似聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/significant-terms.html" title="通过聚合发现异常指标" data-book-page-rel-url="significant-terms.html" data-book-page-id="9289">通过聚合发现异常指标</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/docvalues-and-fielddata.html" title="Doc Values and Fielddata" data-book-page-rel-url="docvalues-and-fielddata.html" data-book-page-id="9290">Doc Values and Fielddata</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_closing_thoughts.html" title="总结" data-book-page-rel-url="_closing_thoughts.html" data-book-page-id="9291">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geoloc.html" title="地理位置" data-book-page-rel-url="geoloc.html" data-book-page-id="9292">地理位置</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/geopoints.html" title="地理坐标点" data-book-page-rel-url="geopoints.html" data-book-page-id="9293">地理坐标点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geohashes.html" title="Geohashes" data-book-page-rel-url="geohashes.html" data-book-page-id="9294">Geohashes</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-aggs.html" title="地理位置聚合" data-book-page-rel-url="geo-aggs.html" data-book-page-id="9295">地理位置聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-shapes.html" title="地理形状" data-book-page-rel-url="geo-shapes.html" data-book-page-id="9296">地理形状</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/modeling-your-data.html" title="数据建模" data-book-page-rel-url="modeling-your-data.html" data-book-page-id="9297">数据建模</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/relations.html" title="关联关系处理" data-book-page-rel-url="relations.html" data-book-page-id="9298">关联关系处理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/nested-objects.html" title="嵌套对象" data-book-page-rel-url="nested-objects.html" data-book-page-id="9299">嵌套对象</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/parent-child.html" title="父-子关系文档" data-book-page-rel-url="parent-child.html" data-book-page-id="9300">父-子关系文档</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/scale.html" title="扩容设计" data-book-page-rel-url="scale.html" data-book-page-id="9301">扩容设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/administration.html" title="管理、监控和部署" data-book-page-rel-url="administration.html" data-book-page-id="9302">管理、监控和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/cluster-admin.html" title="监控" data-book-page-rel-url="cluster-admin.html" data-book-page-id="9303">监控</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/deploy.html" title="部署" data-book-page-rel-url="deploy.html" data-book-page-id="9304">部署</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/post_deploy.html" title="部署后" data-book-page-rel-url="post_deploy.html" data-book-page-id="9305">部署后</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =40;var bookPageId =9270;var bookPageRelUrl ='partial-matching.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

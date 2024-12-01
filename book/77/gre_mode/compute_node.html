@@ -1,0 +1,556 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>计算节点-深入理解 Neutron -- OpenStack 网络实现(Openstack Understand Neutron)</title>
+<meta content='计算节点,深入理解 Neutron -- OpenStack 网络实现,Openstack Understand Neutron' name='keywords'>
+<meta content='计算节点,深入理解 Neutron -- OpenStack 网络实现,Openstack Understand Neutron' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/77/gre_mode/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">GRE 模式</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/77/gre_mode/network_node.html">
+<span class="">网络节点</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/77/index.html">深入理解 Neutron -- OpenStack 网络实现 (Openstack Understand Neutron)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/yeasy/openstack_understand_Neutron" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="计算节点">计算节点</h2>
+<p>以抽象系统架构的图表为例，Compute 节点上包括两台虚拟机 VM1 和 VM2，分别经过一个网桥（如 qbr-XXX）连接到 br-int 网桥上。br-int 网桥再经过 br-tun 网桥（物理网络是 GRE 实现）连接到物理主机外部网络。</p>
+<p>对于物理网络通过 vlan 来隔离的情况，则一般会存在一个 br-eth 网桥，替代 br-tun 网桥。</p>
+<h3 id="qbr">qbr</h3>
+<p>在 VM1 中，虚拟机的网卡实际上连接到了物理机的一个 TAP 设备（即 A，常见名称如 tap-XXX）上，A 则进一步通过VETH pair（A-B）连接到网桥 qbr-XXX 的端口 vnet0（端口 B）上，之后再通过 VETH pair（C-D）连到br-int网桥上。一般C的名字格式为 qvb-XXX，而 D 的名字格式为 qvo-XXX。注意它们的名称除了前缀外，后面的 id 都是一样的，表示位于同一个虚拟机网络到物理机网络的连接上。</p>
+<p>之所以 TAP 设备 A 没有直接连接到网桥br-int上，是因为 OpenStack 需要通过 iptables 实现 security group 的安全策略功能。目前 openvswitch 并不支持应用 iptables 规则的 Tap 设备。</p>
+<p>因为 qbr 的存在主要是为了辅助 iptables 来实现 security group功能，有时候也被称为<code>安全网桥</code>。详见 security group 部分的分析。</p>
+<h3 id="br-int">br-int</h3>
+<p>一个典型的 br-int 的端口如下所示：</p>
+<pre><code># ovs-vsctl show
+Bridge br-int
+    Port "qvo-XXX"
+        tag: 1
+        Interface "qvo-XXX"
+    Port patch-tun
+        Interface patch-tun
+            type: patch
+            options: {peer=patch-int}
+    Port br-int
+        Interface br-int
+            type: internal
+</code></pre>
+<p>其中，</p>
+<ul>
+<li>br-int 为内部端口。</li>
+<li>patch-tun（即端口E，端口号为1）连接到 br-tun 上，实现到外部网络的隧道。</li>
+<li>qvo-XXX（即端口D，端口号为2）带有 tag1，说明这个口是一个1号 vlan 的 access 端口。虚拟机发出的从该端口到达br-int的网包将被自动带上vlan tag 1，而其他带有 vlan tag 1 的网包则可以在去掉 vlan tag 后从该端口发出（即 vlan access 端口）。这个 vlan tag 是用来实现不同网络相互隔离的，比如租户创建一个网络（neutron net-create），则会被分配一个唯一的 vlan tag。</li>
+</ul>
+<p>br-int 在 GRE 模式中作为一个 NORMAL 交换机使用，因此有效规则只有一条正常转发。如果两个在同一主机上的 vm 属于同一个 tenant 的（同一个 vlan tag），则它们之间的通信只需要经过 br-int 即可。</p>
+<pre><code class="language-sh"># ovs-ofctl dump-flows br-int
+NXST_FLOW reply (xid=0x4):
+ cookie=0x0, duration=10727.864s, table=0, n_packets=198, n_bytes=17288, idle_age=13, priority=1 actions=NORMAL
+</code></pre>
+<h3 id="br-tun">br-tun</h3>
+<p>一个典型的 br-tun 上的端口类似：</p>
+<pre><code class="language-sh">Bridge br-tun
+        Port patch-int
+            Interface patch-int
+                type: patch
+                options: {peer=patch-tun}
+        Port "gre-1"
+            Interface "gre-1"
+                type: gre
+                options: {in_key=flow, local_ip="10.0.0.101", out_key=flow, remote_ip="10.0.0.100"}
+        Port br-tun
+            Interface br-tun
+                type: internal
+</code></pre>
+<p>其中，</p>
+<ul>
+<li>patch-int（即端口 F，端口号为1）是连接到 br-int 上的 veth pair 的端口</li>
+<li>gre-1 端口（即端口 G，端口号为2）对应vm到外面的隧道。gre-1 端口是虚拟 gre 端口，当网包发送到这个端口的时候，会经过内核封包，然后从 10.0.0.101 发送到 10.0.0.100，即从本地的物理网卡（10.0.0.101）发出。</li>
+</ul>
+<p>br-tun将带有 vlan tag 的 vm 跟外部通信的流量转换到对应的 gre 隧道，这上面要实现主要的转换逻辑，规则要复杂，一般通过多张表来实现。</p>
+<p>典型的转发规则为：</p>
+<pre><code class="language-sh"># ovs-ofctl dump-flows br-tun
+NXST_FLOW reply (xid=0x4):
+ cookie=0x0, duration=10970.064s, table=0, n_packets=189, n_bytes=16232, idle_age=16, priority=1,in_port=1 actions=resubmit(,1)
+ cookie=0x0, duration=10906.954s, table=0, n_packets=29, n_bytes=5736, idle_age=16, priority=1,in_port=2 actions=resubmit(,2)
+ cookie=0x0, duration=10969.922s, table=0, n_packets=3, n_bytes=230, idle_age=10962, priority=0 actions=drop
+ cookie=0x0, duration=10969.777s, table=1, n_packets=26, n_bytes=5266, idle_age=16, priority=0,dl_dst=00:00:00:00:00:00/01:00:00:00:00:00 actions=resubmit(,20)
+ cookie=0x0, duration=10969.631s, table=1, n_packets=163, n_bytes=10966, idle_age=21, priority=0,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00 actions=resubmit(,21)
+ cookie=0x0, duration=688.456s, table=2, n_packets=29, n_bytes=5736, idle_age=16, priority=1,tun_id=0x1 actions=mod_vlan_vid:1,resubmit(,10)
+ cookie=0x0, duration=10969.488s, table=2, n_packets=0, n_bytes=0, idle_age=10969, priority=0 actions=drop
+ cookie=0x0, duration=10969.343s, table=3, n_packets=0, n_bytes=0, idle_age=10969, priority=0 actions=drop
+ cookie=0x0, duration=10969.2s, table=10, n_packets=29, n_bytes=5736, idle_age=16, priority=1 actions=learn(table=20,hard_timeout=300,priority=1,NXM_OF_VLAN_TCI[0..11],NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[],load:0-&gt;NXM_OF_VLAN_TCI[],load:NXM_NX_TUN_ID[]-&gt;NXM_NX_TUN_ID[],output:NXM_OF_IN_PORT[]),output:1
+ cookie=0x0, duration=682.603s, table=20, n_packets=26, n_bytes=5266, hard_timeout=300, idle_age=16, hard_age=16, priority=1,vlan_tci=0x0001/0x0fff,dl_dst=fa:16:3e:32:0d:db actions=load:0-&gt;NXM_OF_VLAN_TCI[],load:0x1-&gt;NXM_NX_TUN_ID[],output:2
+ cookie=0x0, duration=10969.057s, table=20, n_packets=0, n_bytes=0, idle_age=10969, priority=0 actions=resubmit(,21)
+ cookie=0x0, duration=688.6s, table=21, n_packets=161, n_bytes=10818, idle_age=21, priority=1,dl_vlan=1 actions=strip_vlan,set_tunnel:0x1,output:2
+ cookie=0x0, duration=10968.912s, table=21, n_packets=2, n_bytes=148, idle_age=689, priority=0 actions=drop
+</code></pre>
+<h4 id="表-0">表 0</h4>
+<p>其中，表 0 中有 3 条规则：从内部端口 1（即patch-int）来的，扔到表 1，从外部端口2（即 gre-1）来的，扔到表2。</p>
+<pre><code class="language-sh">cookie=0x0, duration=10970.064s, table=0, n_packets=189, n_bytes=16232, idle_age=16, priority=1,in_port=1 actions=resubmit(,1)
+ cookie=0x0, duration=10906.954s, table=0, n_packets=29, n_bytes=5736, idle_age=16, priority=1,in_port=2 actions=resubmit(,2)
+ cookie=0x0, duration=10969.922s, table=0, n_packets=3, n_bytes=230, idle_age=10962, priority=0 actions=drop
+</code></pre>
+<h4 id="表-1">表 1</h4>
+<p>表 1 处理内部过来的网包，有 2 条规则：如果是单播（00:00:00:00:00:00/01:00:00:00:00:00），则扔到表 20；如果是多播等（01:00:00:00:00:00/01:00:00:00:00:00），则扔到表 21。</p>
+<pre><code>cookie=0x0, duration=10969.777s, table=1, n_packets=26, n_bytes=5266, idle_age=16, priority=0,dl_dst=00:00:00:00:00:00/01:00:00:00:00:00 actions=resubmit(,20)
+ cookie=0x0, duration=10969.631s, table=1, n_packets=163, n_bytes=10966, idle_age=21, priority=0,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00 actions=resubmit(,21)
+</code></pre>
+<h4 id="表-2">表 2</h4>
+<p>表 2 处理外部过来的包。有 2 条规则：如果是 tunnel 1（合法的 tunnel id）的网包，则修改其 vlan id 为1，并扔到表 10 学习记录来源；非 tunnel 1（非法的 tunnel id）的网包，则丢弃。</p>
+<pre><code class="language-sh">cookie=0x0, duration=688.456s, table=2, n_packets=29, n_bytes=5736, idle_age=16, priority=1,tun_id=0x1 actions=mod_vlan_vid:1,resubmit(,10)
+ cookie=0x0, duration=10969.488s, table=2, n_packets=0, n_bytes=0, idle_age=10969, priority=0 actions=drop
+</code></pre>
+<h4 id="表-3">表 3</h4>
+<p>表 3 只有 1 条规则：丢弃。</p>
+<h4 id="表-10">表 10</h4>
+<p>表 10 负责学习。有一条规则，基于 learn 行动来创建反向（内部网包从 gre 端口发出去）的规则。learn 行动并非标准的 openflow 行动，是 openvswitch 自身的扩展行动，这个行动可以根据流内容动态来修改流表内容。</p>
+<p>这条规则首先创建了一条新的流（该流对应 vm 从 br-tun 的 gre 端口发出的规则）：其中 table=20 表示规则添加在表 20；NXM_OF_VLAN_TCI[0..11] 表示匹配包自带的v lan id；NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[] 表示 L2 目标地址需要匹配当前包的 L2 源地址；load:0-&gt;NXM_OF_VLAN_TCI[]，去掉vlan，load:NXM_NX_TUN_ID[]-&gt;NXM_NX_TUN_ID[]，添加 tunnel 号为原始 tunnel 号；output:NXM_OF_IN_PORT[]，发出端口为原始包抵达的端口。</p>
+<p>向表 20 添加完规则后，最后将匹配的当前网包从端口 1（即 patch-int）发出。</p>
+<pre><code class="language-sh">cookie=0x0, duration=10969.2s, table=10, n_packets=29, n_bytes=5736, idle_age=16, priority=1 actions=learn(table=20,hard_timeout=300,priority=1,NXM_OF_VLAN_TCI[0..11],NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[],load:0-&gt;NXM_OF_VLAN_TCI[],load:NXM_NX_TUN_ID[]-&gt;NXM_NX_TUN_ID[],output:NXM_OF_IN_PORT[]),output:1
+</code></pre>
+<h4 id="表-20">表 20</h4>
+<p>表 20 中有两条规则，其中第一条即表 10 中规则利用 learn 行动创建的内部向外部发包的流表项，第 2 条提交其他流到表 21。</p>
+<pre><code>cookie=0x0, duration=682.603s, table=20, n_packets=26, n_bytes=5266, hard_timeout=300, idle_age=16, hard_age=16, priority=1,vlan_tci=0x0001/0x0fff,dl_dst=fa:16:3e:32:0d:db actions=load:0-&gt;NXM_OF_VLAN_TCI[],load:0x1-&gt;NXM_NX_TUN_ID[],output:2
+ cookie=0x0, duration=10969.057s, table=20, n_packets=0, n_bytes=0, idle_age=10969, priority=0 actions=resubmit(,21)
+</code></pre>
+<p>表21有2条规则，第一条是匹配所有目标vlan为1的网包，去掉vlan，然后从端口2（gre 端口）发出。第二条是丢弃。</p>
+<pre><code>cookie=0x0, duration=688.6s, table=21, n_packets=161, n_bytes=10818, idle_age=21, priority=1,dl_vlan=1 actions=strip_vlan,set_tunnel:0x1,output:2
+ cookie=0x0, duration=10968.912s, table=21, n_packets=2, n_bytes=148, idle_age=689, priority=0 actions=drop
+</code></pre>
+<p>这些规则所组成的整体转发逻辑如下图所示。</p>
+<p><a href="https://img.cntofu.com/book/openstack_understand_Neutron/_images/compute_br_tun_fwd_logic.png" data-uk-lightbox><img src="https://img.cntofu.com/book/openstack_understand_Neutron/_images/compute_br_tun_fwd_logic.png" alt="Compute节点br-tun的转发逻辑"></a></p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/138/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/138/index.html">开发经验总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 641个">641</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/7/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/7/index.html">Netty 4.x 用户指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1131个">1131</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/109/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/blockchain_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/109/index.html">区块链(BlockChain)技术开发相关资料</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="blockchain">blockchain</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">6页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/153/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/153/index.html">你不懂JS：ES6与未来</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/85.html">getify</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 98514个">98514</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/182/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/amazonwebservices_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/182/index.html">亚马逊(aws)web服务实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/102.html">open-guides</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="amazonwebservices">amazonwebservices</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">314页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 24000个">24000</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/77/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/README.html" title="前言" data-book-page-rel-url="README.html" data-book-page-id="6053">前言</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/intro/README.html" title="概述" data-book-page-rel-url="intro/README.html" data-book-page-id="6054">概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/concept/README.html" title="基本概念" data-book-page-rel-url="concept/README.html" data-book-page-id="6055">基本概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/gre_mode/README.html" title="GRE 模式" data-book-page-rel-url="gre_mode/README.html" data-book-page-id="6056">GRE 模式</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/gre_mode/compute_node.html" title="计算节点" data-book-page-rel-url="gre_mode/compute_node.html" data-book-page-id="6057">计算节点</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/gre_mode/network_node.html" title="网络节点" data-book-page-rel-url="gre_mode/network_node.html" data-book-page-id="6058">网络节点</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vlan_mode/README.html" title="VLAN 模式" data-book-page-rel-url="vlan_mode/README.html" data-book-page-id="6059">VLAN 模式</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/vlan_mode/compute_node.html" title="计算节点" data-book-page-rel-url="vlan_mode/compute_node.html" data-book-page-id="6060">计算节点</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vlan_mode/network_node.html" title="网络节点" data-book-page-rel-url="vlan_mode/network_node.html" data-book-page-id="6061">网络节点</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/README.html" title="VXLAN 模式" data-book-page-rel-url="vxlan_mode/README.html" data-book-page-id="6062">VXLAN 模式</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/compute_node/README.html" title="计算节点" data-book-page-rel-url="vxlan_mode/compute_node/README.html" data-book-page-id="6063">计算节点</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/compute_node/br-int.html" title="br-int" data-book-page-rel-url="vxlan_mode/compute_node/br-int.html" data-book-page-id="6064">br-int</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/compute_node/br-tun.html" title="br-tun" data-book-page-rel-url="vxlan_mode/compute_node/br-tun.html" data-book-page-id="6065">br-tun</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/network_node/README.html" title="网络节点" data-book-page-rel-url="vxlan_mode/network_node/README.html" data-book-page-id="6066">网络节点</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/network_node/br-tun.html" title="br-tun" data-book-page-rel-url="vxlan_mode/network_node/br-tun.html" data-book-page-id="6067">br-tun</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/network_node/br-int.html" title="br-int" data-book-page-rel-url="vxlan_mode/network_node/br-int.html" data-book-page-id="6068">br-int</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/vxlan_mode/network_node/br-ex.html" title="br-ex" data-book-page-rel-url="vxlan_mode/network_node/br-ex.html" data-book-page-id="6069">br-ex</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/namespace/README.html" title="网络命名空间" data-book-page-rel-url="namespace/README.html" data-book-page-id="6070">网络命名空间</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/namespace/dhcp.html" title="DHCP 服务" data-book-page-rel-url="namespace/dhcp.html" data-book-page-id="6071">DHCP 服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/namespace/router.html" title="路由服务" data-book-page-rel-url="namespace/router.html" data-book-page-id="6072">路由服务</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/README.html" title="安全组" data-book-page-rel-url="security_group/README.html" data-book-page-id="6073">安全组</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/security_group/input.html" title="INPUT" data-book-page-rel-url="security_group/input.html" data-book-page-id="6074">INPUT</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/output.html" title="OUTPUT" data-book-page-rel-url="security_group/output.html" data-book-page-id="6075">OUTPUT</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/forward.html" title="FORWARD" data-book-page-rel-url="security_group/forward.html" data-book-page-id="6076">FORWARD</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/global_logic.html" title="整体逻辑" data-book-page-rel-url="security_group/global_logic.html" data-book-page-id="6077">整体逻辑</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/quick_find.html" title="快速查找安全组规则" data-book-page-rel-url="security_group/quick_find.html" data-book-page-id="6078">快速查找安全组规则</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/security_group/other.html" title="其它" data-book-page-rel-url="security_group/other.html" data-book-page-id="6079">其它</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/lbaas/README.html" title="LBaaS（负载均衡即服务）" data-book-page-rel-url="lbaas/README.html" data-book-page-id="6080">LBaaS（负载均衡即服务）</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/lbaas/scenario.html" title="典型场景" data-book-page-rel-url="lbaas/scenario.html" data-book-page-id="6081">典型场景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/lbaas/arch.html" title="实现细节" data-book-page-rel-url="lbaas/arch.html" data-book-page-id="6082">实现细节</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/lbaas/other.html" title="其它问题" data-book-page-rel-url="lbaas/other.html" data-book-page-id="6083">其它问题</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/fwaas/README.html" title="FWaaS（防火墙即服务）" data-book-page-rel-url="fwaas/README.html" data-book-page-id="6084">FWaaS（防火墙即服务）</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/fwaas/scenario.html" title="典型场景" data-book-page-rel-url="fwaas/scenario.html" data-book-page-id="6085">典型场景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/fwaas/arch.html" title="实现细节" data-book-page-rel-url="fwaas/arch.html" data-book-page-id="6086">实现细节</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/fwaas/other.html" title="其它问题" data-book-page-rel-url="fwaas/other.html" data-book-page-id="6087">其它问题</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/README.html" title="DVR（分布式路由）" data-book-page-rel-url="dvr/README.html" data-book-page-id="6088">DVR（分布式路由）</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/dvr/scenario.html" title="典型场景" data-book-page-rel-url="dvr/scenario.html" data-book-page-id="6089">典型场景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/network_node.html" title="网络节点" data-book-page-rel-url="dvr/network_node.html" data-book-page-id="6090">网络节点</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/compute_node.html" title="计算节点" data-book-page-rel-url="dvr/compute_node.html" data-book-page-id="6091">计算节点</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/config.html" title="配置" data-book-page-rel-url="dvr/config.html" data-book-page-id="6092">配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/workflow.html" title="工作流程" data-book-page-rel-url="dvr/workflow.html" data-book-page-id="6093">工作流程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/dvr/implementation.html" title="实现细节" data-book-page-rel-url="dvr/implementation.html" data-book-page-id="6094">实现细节</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/tool/README.html" title="工具" data-book-page-rel-url="tool/README.html" data-book-page-id="6095">工具</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/77/tool/easyovs.html" title="easyOVS" data-book-page-rel-url="tool/easyovs.html" data-book-page-id="6096">easyOVS</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/ref/README.html" title="参考" data-book-page-rel-url="ref/README.html" data-book-page-id="6097">参考</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/77/appendix_install/README.html" title="附：安装配置" data-book-page-rel-url="appendix_install/README.html" data-book-page-id="6098">附：安装配置</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =77;var bookPageId =6057;var bookPageRelUrl ='gre_mode/compute_node.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

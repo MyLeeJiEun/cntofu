@@ -1,0 +1,421 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>HBase and Schema Design-HBase中文参考指南 3.0</title>
+<meta content='HBase and Schema Design,HBase中文参考指南 3.0' name='keywords'>
+<meta content='HBase and Schema Design,HBase中文参考指南 3.0' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/173/docs/5.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Data Model</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/173/docs/7.html">
+<span class="">RegionServe..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/173/index.html">HBase中文参考指南 3.0</a>
+<a target="_blank" rel="nofollow" href="https://github.com/apachecn/hbase-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="hbase-和-schema-设计">HBase 和 Schema 设计</h1>
+<blockquote>
+<p>贡献者：<a href="https://github.com/raymondcode">Raymondcode</a></p>
+</blockquote>
+<p>关于各种非 RDBMS 数据存储建模的优缺点，可以在 Ian Varley 的硕士论文 <a href="http://ianvarley.com/UT/MR/Varley_MastersReport_Full_2009-08-07.pdf">No Relation: The Mixed Blessings of Non-Relational Databases</a> 中找到。虽然有点过时，但是如果你想了解 HBase schema 的建模方式和 RDBMS 的实现方式有什么区别的话，可以当做背景知识阅读一下。另外，阅读 <a href="#keyvalue">keyvalue</a> 来了解 HBase 内部是如何存储数据的，以及 <a href="#schema.casestudies">schema.casestudies</a> 章节。</p>
+<p>Cloud Bigtable 网站上的 <a href="https://cloud.google.com/bigtable/docs/schema-design">Designing Your Schema</a> 是很好的相关文档，从里面学到的内容同样适用于 HBase 领域；只要把文档里任何引用的值除 10 左右即可得到对 HBase 适用的值。比如：文档中提到单个值的大小可以到约 10MBs，HBase 也类似，或者最好尽可能的小一些；同时文档中提到，Cloud Bigtable 最多有 100 个列族，在 HBase 建模时考虑改为 约 10 个列族。</p>
+<p>另请参阅 Robert Yokota 的 <a href="https://blogs.apache.org/hbase/entry/hbase-application-archetypes-redux">HBase Application Archetypes</a> (其他 HBaser 所完成工作的最新信息)，以便对 HBase 模型上的使用案例进行有用的分类。</p>
+<h2 id="34-schema-创建">34. Schema 创建</h2>
+<p>HBase schemas 可以通过 <a href="#shell">The Apache HBase Shell</a> 或者 Java API <a href="https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/client/Admin.html">Admin</a> 来创建或者更新。</p>
+<p>当进行列族的修改时，必须禁用表，比如：</p>
+<pre><code>Configuration config = HBaseConfiguration.create();
+Admin admin = new Admin(conf);
+TableName table = TableName.valueOf("myTable");
+
+admin.disableTable(table);
+
+HColumnDescriptor cf1 = ...;
+admin.addColumn(table, cf1);      // adding new ColumnFamily
+HColumnDescriptor cf2 = ...;
+admin.modifyColumn(table, cf2);    // modifying existing ColumnFamily
+
+admin.enableTable(table);
+</code></pre>
+<p>阅读 <a href="#client_dependencies">client dependencies</a> 获取关于配置客户端连接的更多信息。</p>
+<blockquote>
+<p>0.92.x 可以支持在线 scheme 变更, 但是 0.90.x 版本需要禁用表。</p>
+</blockquote>
+<h3 id="341-schema-更新">34.1. Schema 更新</h3>
+<p>当表或者列族被修改时(比如 region 大小，block 大小)，这些更改会在下一次 major 合并时生效，同时 StoreFiles 会被重写。</p>
+<p>阅读 <a href="#store">store</a> 获取更多关于 StoreFiles 的信息。</p>
+<h2 id="35-表-schema-的经验法则">35. 表 Schema 的经验法则</h2>
+<p>因为存在许多种不同的数据集，不同的访问模式和服务层级的要求。所以，以下经验法则只是概述。阅读完此列表后，请阅读这一章的剩余部分以获得更多详细信息。</p>
+<ul>
+<li> <p>目标是把 region 的大小限制在 10 到 50 GB 之间。</p> </li>
+<li> <p>目标是限制 cell 的大小在 10 MB 之内，如果使用的是 <a href="#hbase_mob">mob</a> 类型，限制在 50 MB 之内。否则，考虑把 cell 的数据存储在 HDFS 中，并在 HBase 中存储指向该数据的指针。</p> </li>
+<li> <p>典型的 scheme 每张表包含 1 到 3 个列族。HBase 表设计不应当和 RDBMS 表设计类似。</p> </li>
+<li> <p>对于拥有 1 或 2 个列族的表来说，50-100 个 region 是比较合适的。请记住， region 是列族的连续段。</p> </li>
+<li> <p>保持列族名称尽可能短。每个值都会存储列族的名称(忽略前缀编码)。它们不应该像典型 RDBMS 那样，是自文档化，描述性的名称。</p> </li>
+<li> <p>如果你正在存储基于时间的机器数据或者日志信息，并且 row key 是基于设备 ID 或者服务 ID + 时间，最终会出现这样一种情况，即更旧的数据 region 永远不会有额外写入。在这种情况下，最终会存在少量的活动 region 和大量不会再有新写入的 region。对于这种情况，可以接受更多的 region 数量，因为资源的消耗只取决于活动 region。</p> </li>
+<li> <p>如果只有一个列族会频繁写，那么只让这个列族占用内存。当分配资源的时候注意写入模式。</p> </li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/185/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/185/index.html">技术面试必备基础知识、Leetcode 题解、后端面试、Java 面试、春招、秋招、操作系统、计算机网络、系统设计</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/104.html">CyC2018</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 63551个">63551</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/152/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/152/index.html">简明Excel VBA</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/84.html">Youchien</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="visualstudio">visualstudio</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">53页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10个">10</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/136/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/136/index.html">Serverless 架构应用开发指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 396个">396</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/27/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/27/index.html">Sklearn 与 TensorFlow 机器学习实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 916个">916</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/156/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/173/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/README.html" title="HBase™ 中文参考指南 3.0" data-book-page-rel-url="README.html" data-book-page-id="11767">HBase™ 中文参考指南 3.0</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/0.html" title="Preface" data-book-page-rel-url="docs/0.html" data-book-page-id="11768">Preface</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/1.html" title="Getting Started" data-book-page-rel-url="docs/1.html" data-book-page-id="11769">Getting Started</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/2.html" title="Apache HBase Configuration" data-book-page-rel-url="docs/2.html" data-book-page-id="11770">Apache HBase Configuration</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/3.html" title="Upgrading" data-book-page-rel-url="docs/3.html" data-book-page-id="11771">Upgrading</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/4.html" title="The Apache HBase Shell" data-book-page-rel-url="docs/4.html" data-book-page-id="11772">The Apache HBase Shell</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/5.html" title="Data Model" data-book-page-rel-url="docs/5.html" data-book-page-id="11773">Data Model</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/6.html" title="HBase and Schema Design" data-book-page-rel-url="docs/6.html" data-book-page-id="11774">HBase and Schema Design</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/7.html" title="RegionServer Sizing Rules of Thumb" data-book-page-rel-url="docs/7.html" data-book-page-id="11775">RegionServer Sizing Rules of Thumb</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/8.html" title="HBase and MapReduce" data-book-page-rel-url="docs/8.html" data-book-page-id="11776">HBase and MapReduce</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/9.html" title="Securing Apache HBase" data-book-page-rel-url="docs/9.html" data-book-page-id="11777">Securing Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/10.html" title="Architecture" data-book-page-rel-url="docs/10.html" data-book-page-id="11778">Architecture</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/11.html" title="In-memory Compaction" data-book-page-rel-url="docs/11.html" data-book-page-id="11779">In-memory Compaction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/12.html" title="Backup and Restore" data-book-page-rel-url="docs/12.html" data-book-page-id="11780">Backup and Restore</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/13.html" title="Synchronous Replication" data-book-page-rel-url="docs/13.html" data-book-page-id="11781">Synchronous Replication</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/14.html" title="Apache HBase APIs" data-book-page-rel-url="docs/14.html" data-book-page-id="11782">Apache HBase APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/15.html" title="Apache HBase External APIs" data-book-page-rel-url="docs/15.html" data-book-page-id="11783">Apache HBase External APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/16.html" title="Thrift API and Filter Language" data-book-page-rel-url="docs/16.html" data-book-page-id="11784">Thrift API and Filter Language</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/17.html" title="HBase and Spark" data-book-page-rel-url="docs/17.html" data-book-page-id="11785">HBase and Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/18.html" title="Apache HBase Coprocessors" data-book-page-rel-url="docs/18.html" data-book-page-id="11786">Apache HBase Coprocessors</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/19.html" title="Apache HBase Performance Tuning" data-book-page-rel-url="docs/19.html" data-book-page-id="11787">Apache HBase Performance Tuning</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/20.html" title="Troubleshooting and Debugging Apache HBase" data-book-page-rel-url="docs/20.html" data-book-page-id="11788">Troubleshooting and Debugging Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/21.html" title="Apache HBase Case Studies" data-book-page-rel-url="docs/21.html" data-book-page-id="11789">Apache HBase Case Studies</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/22.html" title="Apache HBase Operational Management" data-book-page-rel-url="docs/22.html" data-book-page-id="11790">Apache HBase Operational Management</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/23.html" title="Building and Developing Apache HBase" data-book-page-rel-url="docs/23.html" data-book-page-id="11791">Building and Developing Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/24.html" title="Unit Testing HBase Applications" data-book-page-rel-url="docs/24.html" data-book-page-id="11792">Unit Testing HBase Applications</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/25.html" title="Protobuf in HBase" data-book-page-rel-url="docs/25.html" data-book-page-id="11793">Protobuf in HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/26.html" title="Procedure Framework (Pv2): HBASE-12439" data-book-page-rel-url="docs/26.html" data-book-page-id="11794">Procedure Framework (Pv2): HBASE-12439</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/27.html" title="AMv2 Description for Devs" data-book-page-rel-url="docs/27.html" data-book-page-id="11795">AMv2 Description for Devs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/28.html" title="ZooKeeper" data-book-page-rel-url="docs/28.html" data-book-page-id="11796">ZooKeeper</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/29.html" title="Community" data-book-page-rel-url="docs/29.html" data-book-page-id="11797">Community</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/30.html" title="Appendix" data-book-page-rel-url="docs/30.html" data-book-page-id="11798">Appendix</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =173;var bookPageId =11774;var bookPageRelUrl ='docs/6.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

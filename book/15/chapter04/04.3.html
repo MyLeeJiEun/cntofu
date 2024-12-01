@@ -1,0 +1,667 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Time类型详解-Go语言标准库(The Golang Standard Library by Example)</title>
+<meta content='Time类型详解,Go语言标准库,The Golang Standard Library by Example' name='keywords'>
+<meta content='Time类型详解,Go语言标准库,The Golang Standard Library by Example' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/15/chapter04/04.2.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">时区</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/15/chapter04/04.4.html">
+<span class="">定时器</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/15/index.html">Go语言标准库 (The Golang Standard Library by Example)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/polaris1119/The-Golang-Standard-Library-by-Example" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="43-time-类型详解">4.3 Time 类型详解</h1>
+<p><code>Time</code> 代表一个纳秒精度的时间点。</p>
+<p>程序中应使用 Time 类型值来保存和传递时间，而不是指针。就是说，表示时间的变量和字段，应为time.Time类型，而不是*time.Time.类型。一个Time类型值可以被多个go程同时使用。时间点可以使用Before、After和Equal方法进行比较。Sub方法让两个时间点相减，生成一个Duration类型值（代表时间段）。Add方法给一个时间点加上一个时间段，生成一个新的Time类型时间点。</p>
+<p>Time 零值代表时间点 January 1, year 1, 00:00:00.000000000 UTC。因为本时间点一般不会出现在使用中，IsZero 方法提供了检验时间是否是显式初始化的一个简单途径。</p>
+<p>每一个时间都具有一个地点信息（及对应地点的时区信息），当计算时间的表示格式时，如Format、Hour和Year等方法，都会考虑该信息。Local、UTC和In方法返回一个指定时区（但指向同一时间点）的Time。修改地点/时区信息只是会改变其表示；不会修改被表示的时间点，因此也不会影响其计算。</p>
+<p>通过 == 比较 Time 时，Location 信息也会参与比较，因此 Time 不应该作为 map 的 key。</p>
+<h2 id="time-的内部结构">Time 的内部结构</h2>
+<pre><code>type Time struct {
+	// sec gives the number of seconds elapsed since
+	// January 1, year 1 00:00:00 UTC.
+	sec int64
+
+	// nsec specifies a non-negative nanosecond
+	// offset within the second named by Seconds.
+	// It must be in the range [0, 999999999].
+	nsec int32
+
+	// loc specifies the Location that should be used to
+	// determine the minute, hour, month, day, and year
+	// that correspond to this Time.
+	// Only the zero Time has a nil Location.
+	// In that case it is interpreted to mean UTC.
+	loc *Location
+}
+</code></pre>
+<p>要讲解 <code>time.Time</code> 的内部结构，得先看 <code>time.Now()</code> 函数。</p>
+<pre><code>// Now returns the current local time.
+func Now() Time {
+	sec, nsec := now()
+	return Time{sec + unixToInternal, nsec, Local}
+}
+</code></pre>
+<p>now() 的具体实现在 <code>runtime</code> 包中，以 linux/amd64 为例，在 sys_linux_amd64.s 中的 <code>time·now</code>，这是汇编实现的：</p>
+<ul>
+<li>调用系统调用 <code>clock_gettime</code> 获取时钟值（这是 POSIX 时钟）。其中 clockid_t 时钟类型是 CLOCK_REALTIME，也就是可设定的系统级实时时钟。得到的是 struct timespec 类型。（可以到纳秒）</li>
+<li>如果 <code>clock_gettime</code> 不存在，则使用精度差些的系统调用 <code>gettimeofday</code>。得到的是 struct timeval 类型。（最多到微妙）</li>
+</ul>
+<p><em>注意：</em> 这里使用了 Linux 的 vdso 特性，不了解的，可以查阅相关知识。</p>
+<p>虽然 <code>timespec</code> 和 <code>timeval</code> 不一样，但结构类似。因为 <code>now()</code> 函数返回两个值：sec(秒)和 nsec(纳秒)，所以，<code>time·now</code> 的实现将这两个结构转为需要的返回值。需要注意的是，Linux 系统调用返回的 sec(秒) 是 Unix 时间戳，也就是从 1970-1-1 算起的。</p>
+<p>回到 <code>time.Now()</code> 的实现，现在我们得到了 sec 和 nsec，从 <code>Time{sec + unixToInternal, nsec, Local}</code> 这句可以看出，Time 结构的 sec 并非 Unix 时间戳，实际上，加上的 <code>unixToInternal</code> 是 1-1-1 到 1970-1-1 经历的秒数。也就是 <code>Time</code> 中的 sec 是从 1-1-1 算起的秒数，而不是 Unix 时间戳。</p>
+<p><code>Time</code> 的最后一个字段表示地点时区信息。本章后面会专门介绍。</p>
+<h2 id="常用函数或方法">常用函数或方法</h2>
+<p><code>Time</code> 相关的函数和方法较多，有些很容易理解，不赘述，查文档即可。</p>
+<h3 id="零值的判断">零值的判断</h3>
+<p>因为 <code>Time</code> 的零值是 sec 和 nsec 都是0，表示 1年1月1日。</p>
+<p>Time.IsZero() 函数用于判断 Time 表示的时间是否是 0 值。</p>
+<h3 id="与-unix-时间戳的转换">与 Unix 时间戳的转换</h3>
+<p>相关函数或方法：</p>
+<ul>
+<li>time.Unix(sec, nsec int64) 通过 Unix 时间戳生成 <code>time.Time</code> 实例；</li>
+<li>time.Time.Unix() 得到 Unix 时间戳；</li>
+<li>time.Time.UnixNano() 得到 Unix 时间戳的纳秒表示；</li>
+</ul>
+<h3 id="格式化和解析">格式化和解析</h3>
+<p>这是实际开发中常用到的。</p>
+<ul>
+<li>time.Parse 和 time.ParseInLocation</li>
+<li>time.Time.Format</li>
+</ul>
+<h4 id="解析">解析</h4>
+<p>对于解析，要特别注意时区问题，否则很容易出 bug。比如：</p>
+<pre><code>t, _ := time.Parse("2006-01-02 15:04:05", "2016-06-13 09:14:00")
+fmt.Println(time.Now().Sub(t).Hours())
+</code></pre>
+<p><code>2016-06-13 09:14:00</code> 这个时间可能是参数传递过来的。这段代码的结果跟预期的不一样。</p>
+<p>原因是 <code>time.Now()</code> 的时区是 <code>time.Local</code>，而 <code>time.Parse</code> 解析出来的时区却是 time.UTC（可以通过 <code>Time.Location()</code> 函数知道是哪个时区）。在中国，它们相差 8 小时。</p>
+<p>所以，一般的，我们应该总是使用 <code>time.ParseInLocation</code> 来解析时间，并给第三个参数传递 <code>time.Local</code>。</p>
+<h4 id="为什么是-2006-01-02-150405">为什么是 2006-01-02 15:04:05</h4>
+<p>可能你已经注意到：<code>2006-01-02 15:04:05</code> 这个字符串了。没错，这是固定写法，类似于其他语言中 <code>Y-m-d H:i:s</code> 等。为什么采用这种形式？又为什么是这个时间点而不是其他时间点？</p>
+<ul>
+<li>官方说，使用具体的时间，比使用 <code>Y-m-d H:i:s</code> 更容易理解和记忆；这么一说还真是~</li>
+<li>而选择这个时间点，也是出于好记的考虑，官方的例子：<code>Mon Jan 2 15:04:05 MST 2006</code>，另一种形式 <code>01/02 03:04:05PM '06 -0700</code>，对应是 1、2、3、4、5、6、7；常见的格式：<code>2006-01-02 15:04:05</code>，很好记：2006年1月2日3点4分5秒~</li>
+</ul>
+<p><em>如果你是 PHPer，喜欢 PHP 的格式，可以试试 <a href="https://github.com/polaris1119/times">times</a> 这个包。</em></p>
+<h4 id="格式化">格式化</h4>
+<p>时间格式化输出，使用 <code>Format</code> 方法，<code>layout</code> 参数和 <code>Parse</code> 的一样。<code>Time.String()</code> 方法使用了 <code>2006-01-02 15:04:05.999999999 -0700 MST</code> 这种 <code>layout</code>。</p>
+<h3 id="实现-序列化反序列化-相关接口">实现 序列化/反序列化 相关接口</h3>
+<p><code>Time</code> 实现了 <code>encoding</code> 包中的 <code>BinaryMarshaler</code>、<code>BinaryUnmarshaler</code>、<code>TextMarshaler</code> 和 <code>TextUnmarshaler</code> 接口；<code>encoding/json</code> 包中的 <code>Marshaler</code> 和 <code>Unmarshaler</code> 接口。</p>
+<p>它还实现了 <code>gob</code> 包中的 <code>GobEncoder</code> 和 <code>GobDecoder</code> 接口。</p>
+<p>对于文本序列化/反序列化，通过 <code>Parse</code> 和 <code>Format</code> 实现；对于二进制序列化，需要单独实现。</p>
+<p>对于 json，使用的是 <code>time.RFC3339Nano</code> 这种格式。通常程序中不使用这种格式。解决办法是定义自己的类型。如：</p>
+<pre><code>type OftenTime time.Time
+
+func (self OftenTime) MarshalJSON() ([]byte, error) {
+	t := time.Time(self)
+	if y := t.Year(); y &lt; 0 || y &gt;= 10000 {
+		return nil, errors.New("Time.MarshalJSON: year outside of range [0,9999]")
+	}
+	// 注意 `"2006-01-02 15:04:05"`。因为是 JSON，双引号不能少
+	return []byte(t.Format(`"2006-01-02 15:04:05"`)), nil
+}
+</code></pre>
+<h3 id="round-和-truncate-方法">Round 和 Truncate 方法</h3>
+<p>比如，有这么个需求：获取当前时间整点的 <code>Time</code> 实例。例如，当前时间是 15:54:23，需要的是 15:00:00。我们可以这么做：</p>
+<pre><code>t, _ := time.ParseInLocation("2006-01-02 15:04:05", time.Now().Format("2006-01-02 15:00:00"), time.Local)
+fmt.Println(t)
+</code></pre>
+<p>实际上，<code>time</code> 包给我们提供了专门的方法，功能更强大，性能也更好，这就是 <code>Round</code> 和 <code>Trunate</code>，它们区别，一个是取最接近的，一个是向下取整。</p>
+<p>使用示例：</p>
+<pre><code>t, _ := time.ParseInLocation("2006-01-02 15:04:05", "2016-06-13 15:34:39", time.Local)
+// 整点（向下取整）
+fmt.Println(t.Truncate(1 * time.Hour))
+// 整点（最接近）
+fmt.Println(t.Round(1 * time.Hour))
+
+// 整分（向下取整）
+fmt.Println(t.Truncate(1 * time.Minute))
+// 整分（最接近）
+fmt.Println(t.Round(1 * time.Minute))
+
+t2, _ := time.ParseInLocation("2006-01-02 15:04:05", t.Format("2006-01-02 15:00:00"), time.Local)
+fmt.Println(t2)
+</code></pre>
+<h1 id="导航">导航</h1>
+<ul>
+<li>上一节：<a href="04.2.html">时区</a></li>
+<li>下一节：<a href="04.4.html">定时器</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/17/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/17/index.html">Go语言博客实践</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/12.html">achun</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 298个">298</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/14/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/14/index.html">Go入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/10.html">Unknwon</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8842个">8842</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/76/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gitbook_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/76/index.html">GitBook 開發者手冊</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/47.html">wastemobile</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/25/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/153/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/153/index.html">你不懂JS：ES6与未来</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/85.html">getify</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 98514个">98514</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/15/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="1282">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.0.html" title="第一章 输入输出 (Input/Output)" data-book-page-rel-url="chapter01/01.0.html" data-book-page-id="1283">第一章 输入输出 (Input/Output)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.1" disabled data-book-page-rel-url="" data-book-page-id="1284">1.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.1.html" title="io — 基本的 IO 接口" data-book-page-rel-url="chapter01/01.1.html" data-book-page-id="1285">io — 基本的 IO 接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.2" disabled data-book-page-rel-url="" data-book-page-id="1286">1.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.2.html" title="ioutil — 方便的 IO 操作函数集" data-book-page-rel-url="chapter01/01.2.html" data-book-page-id="1287">ioutil — 方便的 IO 操作函数集</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.3" disabled data-book-page-rel-url="" data-book-page-id="1288">1.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.3.html" title="fmt — 格式化 IO" data-book-page-rel-url="chapter01/01.3.html" data-book-page-id="1289">fmt — 格式化 IO</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.4" disabled data-book-page-rel-url="" data-book-page-id="1290">1.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter01/01.4.html" title="bufio — 缓存 IO" data-book-page-rel-url="chapter01/01.4.html" data-book-page-id="1291">bufio — 缓存 IO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.0.html" title="第二章 文本" data-book-page-rel-url="chapter02/02.0.html" data-book-page-id="1292">第二章 文本</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.1" disabled data-book-page-rel-url="" data-book-page-id="1293">2.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.1.html" title="strings — 字符串操作" data-book-page-rel-url="chapter02/02.1.html" data-book-page-id="1294">strings — 字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.2" disabled data-book-page-rel-url="" data-book-page-id="1295">2.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.2.html" title="bytes — byte slice 便利操作" data-book-page-rel-url="chapter02/02.2.html" data-book-page-id="1296">bytes — byte slice 便利操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.3" disabled data-book-page-rel-url="" data-book-page-id="1297">2.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.3.html" title="strconv — 字符串和基本数据类型之间转换" data-book-page-rel-url="chapter02/02.3.html" data-book-page-id="1298">strconv — 字符串和基本数据类型之间转换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.4" disabled data-book-page-rel-url="" data-book-page-id="1299">2.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.4.html" title="regexp — 正则表达式" data-book-page-rel-url="chapter02/02.4.html" data-book-page-id="1300">regexp — 正则表达式</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.5" disabled data-book-page-rel-url="" data-book-page-id="1301">2.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter02/02.5.html" title="unicode — Unicode 码点、UTF-8/16 编码" data-book-page-rel-url="chapter02/02.5.html" data-book-page-id="1302">unicode — Unicode 码点、UTF-8/16 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.0.html" title="第三章 数据结构与算法" data-book-page-rel-url="chapter03/03.0.html" data-book-page-id="1303">第三章 数据结构与算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.1" disabled data-book-page-rel-url="" data-book-page-id="1304">3.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.1.html" title="sort — 排序算法" data-book-page-rel-url="chapter03/03.1.html" data-book-page-id="1305">sort — 排序算法</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.3" disabled data-book-page-rel-url="" data-book-page-id="1306">3.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter03/03.3.html" title="container — 容器数据类型：heap、list 和 ring" data-book-page-rel-url="chapter03/03.3.html" data-book-page-id="1307">container — 容器数据类型：heap、list 和 ring</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.0.html" title="第四章 日期与时间" data-book-page-rel-url="chapter04/04.0.html" data-book-page-id="1308">第四章 日期与时间</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1" disabled data-book-page-rel-url="" data-book-page-id="1309">4.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.1.html" title="主要类型概述" data-book-page-rel-url="chapter04/04.1.html" data-book-page-id="1310">主要类型概述</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2" disabled data-book-page-rel-url="" data-book-page-id="1311">4.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.2.html" title="时区" data-book-page-rel-url="chapter04/04.2.html" data-book-page-id="1312">时区</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3" disabled data-book-page-rel-url="" data-book-page-id="1313">4.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.3.html" title="Time类型详解" data-book-page-rel-url="chapter04/04.3.html" data-book-page-id="1314">Time类型详解</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4" disabled data-book-page-rel-url="" data-book-page-id="1315">4.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter04/04.4.html" title="定时器" data-book-page-rel-url="chapter04/04.4.html" data-book-page-id="1316">定时器</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.1" disabled data-book-page-rel-url="" data-book-page-id="1317">5.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter05/05.1.html" title="math — 基本数学函数" data-book-page-rel-url="chapter05/05.1.html" data-book-page-id="1318">math — 基本数学函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.0.html" title="第六章 文件系统" data-book-page-rel-url="chapter06/06.0.html" data-book-page-id="1319">第六章 文件系统</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.1" disabled data-book-page-rel-url="" data-book-page-id="1320">6.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.1.html" title="os — 平台无关的操作系统功能实现" data-book-page-rel-url="chapter06/06.1.html" data-book-page-id="1321">os — 平台无关的操作系统功能实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.2" disabled data-book-page-rel-url="" data-book-page-id="1322">6.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter06/06.2.html" title="path/filepath — 操作路径" data-book-page-rel-url="chapter06/06.2.html" data-book-page-id="1323">path/filepath — 操作路径</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.0.html" title="第七章 数据持久存储与交换" data-book-page-rel-url="chapter07/07.0.html" data-book-page-id="1324">第七章 数据持久存储与交换</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.1" disabled data-book-page-rel-url="" data-book-page-id="1325">7.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter07/07.1.html" title="database/sql — SQL/SQL-Like 数据库操作接口" data-book-page-rel-url="chapter07/07.1.html" data-book-page-id="1326">database/sql — SQL/SQL-Like 数据库操作接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.0.html" title="第八章 数据压缩与归档" data-book-page-rel-url="chapter08/08.0.html" data-book-page-id="1327">第八章 数据压缩与归档</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.1" disabled data-book-page-rel-url="" data-book-page-id="1328">8.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter08/08.1.html" title="flate - DEFLATE 压缩算法" data-book-page-rel-url="chapter08/08.1.html" data-book-page-id="1329">flate - DEFLATE 压缩算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.0.html" title="第九章 测试" data-book-page-rel-url="chapter09/09.0.html" data-book-page-id="1330">第九章 测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.1" disabled data-book-page-rel-url="" data-book-page-id="1331">9.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.1.html" title="testing - 单元测试" data-book-page-rel-url="chapter09/09.1.html" data-book-page-id="1332">testing - 单元测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.2" disabled data-book-page-rel-url="" data-book-page-id="1333">9.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.2.html" title="testing - 基准测试" data-book-page-rel-url="chapter09/09.2.html" data-book-page-id="1334">testing - 基准测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.3" disabled data-book-page-rel-url="" data-book-page-id="1335">9.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.3.html" title="testing - 子测试" data-book-page-rel-url="chapter09/09.3.html" data-book-page-id="1336">testing - 子测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.4" disabled data-book-page-rel-url="" data-book-page-id="1337">9.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.4.html" title="testing - 运行并验证示例" data-book-page-rel-url="chapter09/09.4.html" data-book-page-id="1338">testing - 运行并验证示例</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.5" disabled data-book-page-rel-url="" data-book-page-id="1339">9.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.5.html" title="testing - 其他功能" data-book-page-rel-url="chapter09/09.5.html" data-book-page-id="1340">testing - 其他功能</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.6" disabled data-book-page-rel-url="" data-book-page-id="1341">9.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.6.html" title="httptest - HTTP 测试辅助工具" data-book-page-rel-url="chapter09/09.6.html" data-book-page-id="1342">httptest - HTTP 测试辅助工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.7" disabled data-book-page-rel-url="" data-book-page-id="1343">9.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter09/09.7.html" title="总结" data-book-page-rel-url="chapter09/09.7.html" data-book-page-id="1344">总结</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.0.html" title="第十章 进程、线程与 goroutine" data-book-page-rel-url="chapter10/10.0.html" data-book-page-id="1345">第十章 进程、线程与 goroutine</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.1" disabled data-book-page-rel-url="" data-book-page-id="1346">10.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.1.html" title="创建进程" data-book-page-rel-url="chapter10/10.1.html" data-book-page-id="1347">创建进程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.2" disabled data-book-page-rel-url="" data-book-page-id="1348">10.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.2.html" title="进程属性和控制" data-book-page-rel-url="chapter10/10.2.html" data-book-page-id="1349">进程属性和控制</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.3" disabled data-book-page-rel-url="" data-book-page-id="1350">10.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.3.html" title="线程" data-book-page-rel-url="chapter10/10.3.html" data-book-page-id="1351">线程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.4" disabled data-book-page-rel-url="" data-book-page-id="1352">10.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter10/10.4.html" title="进程间通信" data-book-page-rel-url="chapter10/10.4.html" data-book-page-id="1353">进程间通信</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.0.html" title="第十三章 应用构建 与 debug" data-book-page-rel-url="chapter13/13.0.html" data-book-page-id="1354">第十三章 应用构建 与 debug</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.1" disabled data-book-page-rel-url="" data-book-page-id="1355">13.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.1.html" title="flag - 命令行参数解析" data-book-page-rel-url="chapter13/13.1.html" data-book-page-id="1356">flag - 命令行参数解析</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.2" disabled data-book-page-rel-url="" data-book-page-id="1357">13.2</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="log - 日志记录" disabled data-book-page-rel-url="chapter13/13.2.html" data-book-page-id="1358">log - 日志记录</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.3" disabled data-book-page-rel-url="" data-book-page-id="1359">13.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter13/13.3.html" title="expvar - 公共变量的标准化接口" data-book-page-rel-url="chapter13/13.3.html" data-book-page-id="1360">expvar - 公共变量的标准化接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.4" disabled data-book-page-rel-url="" data-book-page-id="1361">13.4</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="runtime/debug - 运行时的调试工具" disabled data-book-page-rel-url="chapter13/13.4.html" data-book-page-id="1362">runtime/debug - 运行时的调试工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="15.2" disabled data-book-page-rel-url="" data-book-page-id="1363">15.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter15/15.02.html" title="unsafe — 非类型安全操作" data-book-page-rel-url="chapter15/15.02.html" data-book-page-id="1364">unsafe — 非类型安全操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.1" disabled data-book-page-rel-url="" data-book-page-id="1365">16.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.01.html" title="sync - 处理同步需求" data-book-page-rel-url="chapter16/16.01.html" data-book-page-id="1366">sync - 处理同步需求</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.2" disabled data-book-page-rel-url="" data-book-page-id="1367">16.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.02.html" title="sync/atomic - 原子操作" data-book-page-rel-url="chapter16/16.02.html" data-book-page-id="1368">sync/atomic - 原子操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="16.3" disabled data-book-page-rel-url="" data-book-page-id="1369">16.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/15/chapter16/16.03.html" title="os/signal - 信号" data-book-page-rel-url="chapter16/16.03.html" data-book-page-id="1370">os/signal - 信号</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =15;var bookPageId =1314;var bookPageRelUrl ='chapter04/04.3.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

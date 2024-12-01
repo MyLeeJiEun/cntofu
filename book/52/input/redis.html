@@ -1,0 +1,546 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>读取 Redis 数据-Logstash最佳实践</title>
+<meta content='读取 Redis 数据,Logstash最佳实践' name='keywords'>
+<meta content='读取 Redis 数据,Logstash最佳实践' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/52/input/syslog.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">读取 Syslog 数据</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/52/input/collectd.html">
+<span class="">读取 Collectd..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/52/index.html">Logstash最佳实践</a>
+<a target="_blank" rel="nofollow" href="https://github.com/chenryn/logstash-best-practice-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="读取-redis-数据">读取 Redis 数据</h1>
+<p>Redis 服务器是 logstash 官方推荐的 broker 选择。Broker 角色也就意味着会同时存在输入和输出俩个插件。这里我们先学习输入插件。</p>
+<p><code>LogStash::Inputs::Redis</code> 支持三种 <em>data_type</em>（实际上是<em>redis_type</em>），不同的数据类型会导致实际采用不同的 Redis 命令操作：</p>
+<ul>
+<li>list =&gt; BLPOP</li>
+<li>channel =&gt; SUBSCRIBE</li>
+<li>pattern_channel =&gt; PSUBSCRIBE</li>
+</ul>
+<p>注意到了么？<strong>这里面没有 GET 命令！</strong></p>
+<p>Redis 服务器通常都是用作 NoSQL 数据库，不过 logstash 只是用来做消息队列。所以不要担心 logstash 里的 Redis 会撑爆你的内存和磁盘。</p>
+<h2 id="配置示例">配置示例</h2>
+<pre><code>input {
+    redis {
+        data_type =&gt; "pattern_channel"
+        key =&gt; "logstash-*"
+        host =&gt; "192.168.0.2"
+        port =&gt; 6379
+        threads =&gt; 5
+    }
+}
+</code></pre>
+<h2 id="使用方式">使用方式</h2>
+<h3 id="基本方法">基本方法</h3>
+<p>首先确认你设置的 host 服务器上已经运行了 redis-server 服务，然后打开终端运行 logstash 进程等待输入数据，然后打开另一个终端，输入 <code>redis-cli</code> 命令(先安装好 redis 软件包)，在交互式提示符后面输入<code>PUBLISH logstash-demochan "hello world"</code>：</p>
+<pre><code># redis-cli
+127.0.0.1:6379&gt; PUBLISH logstash-demochan "hello world"
+</code></pre>
+<p>你会在第一个终端里看到 logstash 进程输出类似下面这样的内容：</p>
+<pre><code class="language-ruby">{
+       "message" =&gt; "hello world",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2014-08-08T16:26:29.399Z"
+}
+</code></pre>
+<p>注意：这个事件里没有 <strong>host</strong> 字段！（或许这算是 bug……）</p>
+<h3 id="输入-json-数据">输入 JSON 数据</h3>
+<p>如果你想通过 redis 的频道给 logstash 事件添加更多字段，直接向频道发布 JSON 字符串就可以了。 <code>LogStash::Inputs::Redis</code> 会直接把 JSON 转换成事件。</p>
+<p>继续在第二个终端的交互式提示符下输入如下内容：</p>
+<pre><code>127.0.0.1:6379&gt; PUBLISH logstash-chan '{"message":"hello world","@version":"1","@timestamp":"2014-08-08T16:34:21.865Z","host":"raochenlindeMacBook-Air.local","key1":"value1"}'
+</code></pre>
+<p>你会看到第一个终端里的 logstash 进程随即也返回新的内容，如下所示：</p>
+<pre><code class="language-ruby">{
+       "message" =&gt; "hello world",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2014-08-09T00:34:21.865+08:00",
+          "host" =&gt; "raochenlindeMacBook-Air.local",
+          "key1" =&gt; "value1"
+}
+</code></pre>
+<p>看，新的字段出现了！现在，你可以要求开发工程师直接向你的 redis 频道发送信息好了，一切自动搞定。</p>
+<h3 id="小贴士">小贴士</h3>
+<p>这里我们建议的是使用 <em>pattern_channel</em> 作为输入插件的 <em>data_type</em> 设置值。因为实际使用中，你的 redis 频道可能有很多不同的 <em>keys</em>，一般命名成 <em>logstash-chan-%{type}</em> 这样的形式。这时候 <em>pattern_channel</em> 类型就可以帮助你一次订阅全部 logstash 相关频道！</p>
+<h2 id="扩展方式">扩展方式</h2>
+<p>如上段"小贴士"提到的，之前两个使用场景采用了同样的配置，即数据类型为频道发布订阅方式。这种方式在需要扩展 logstash 成多节点集群的时候，会出现一个问题：<strong>通过频道发布的一条信息，会被所有订阅了该频道的 logstash 进程同时接收到，然后输出重复内容！</strong></p>
+<p><em>你可以尝试再做一次上面的实验，这次在两个终端同时启动 <code>logstash -f redis-input.conf</code> 进程，结果会是两个终端都输出消息。</em></p>
+<p>这种时候，就需要用 <em>list</em> 类型。在这种类型下，数据输入到 redis 服务器上暂存，logstash 则连上 redis 服务器取走 (<code>BLPOP</code> 命令，所以只要 logstash 不堵塞，redis 服务器上也不会有数据堆积占用空间)数据。</p>
+<h3 id="配置示例-1">配置示例</h3>
+<pre><code>input {
+    redis {
+        batch_count =&gt; 1
+        data_type =&gt; "list"
+        key =&gt; "logstash-list"
+        host =&gt; "192.168.0.2"
+        port =&gt; 6379
+        threads =&gt; 5
+    }
+}
+</code></pre>
+<h3 id="使用方式-1">使用方式</h3>
+<p>这次我们同时在两个终端运行 <code>logstash -f redis-input-list.conf</code> 进程。然后在第三个终端里启动 redis-cli 命令交互：</p>
+<pre><code>$ redis-cli 
+127.0.0.1:6379&gt; RPUSH logstash-list "hello world"
+(integer) 1
+</code></pre>
+<p>这时候你可以看到，只有一个终端输出了结果。</p>
+<p>连续 <code>RPUSH</code> 几次，可以看到两个终端近乎各自输出一半条目。</p>
+<h3 id="小贴士-1">小贴士</h3>
+<p>RPUSH 支持 batch 方式，修改 logstash 配置中的 <code>batch_count</code> 值，作为示例这里只改到 2，实际运用中可以更大(事实上 <code>LogStash::Outputs::Redis</code> 对应这点的 <code>batch_event</code> 配置默认值就是 50)。</p>
+<p>重启 logstash 进程后，redis-cli 命令中改成如下发送：</p>
+<pre><code>127.0.0.1:6379&gt; RPUSH logstash-list "hello world" "hello world" "hello world" "hello world" "hello world" "hello world"
+(integer) 3
+</code></pre>
+<p>可以看到，两个终端也各自输出一部分结果。而你只用了一次 RPUSH 命令。</p>
+<h2 id="推荐阅读">推荐阅读</h2>
+<ul>
+<li><a href="http://redis.io">http://redis.io</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/112/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/django_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/112/index.html">从Python到Django入门教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="django">django</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/203/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/203/index.html">Java Web 入门开发教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/115.html">skyline75489</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 647个">647</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/188/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/18/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/18/index.html">Go社区的知识图谱</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/13.html">golang foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1356个">1356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/97/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/97/index.html">Twisted与异步编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 158个">158</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/52/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="4835">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/README.html" title="基础知识" data-book-page-rel-url="get_start/README.html" data-book-page-id="4836">基础知识</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/get_start/introduction.html" title="介绍" data-book-page-rel-url="get_start/introduction.html" data-book-page-id="4837">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/install.html" title="安装" data-book-page-rel-url="get_start/install.html" data-book-page-id="4838">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/hello_world.html" title="Hello World" data-book-page-rel-url="get_start/hello_world.html" data-book-page-id="4839">Hello World</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/daemon.html" title="长期运行" data-book-page-rel-url="get_start/daemon.html" data-book-page-id="4840">长期运行</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/full_config.html" title="配置语法" data-book-page-rel-url="get_start/full_config.html" data-book-page-id="4841">配置语法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/README.html" title="输入插件(Input)" data-book-page-rel-url="input/README.html" data-book-page-id="4842">输入插件(Input)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/input/stdin.html" title="标准输入(Stdin)" data-book-page-rel-url="input/stdin.html" data-book-page-id="4843">标准输入(Stdin)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/file.html" title="读取文件(File)" data-book-page-rel-url="input/file.html" data-book-page-id="4844">读取文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/tcp.html" title="读取网络数据(TCP)" data-book-page-rel-url="input/tcp.html" data-book-page-id="4845">读取网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/generator.html" title="生成测试数据(Generator)" data-book-page-rel-url="input/generator.html" data-book-page-id="4846">生成测试数据(Generator)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/syslog.html" title="读取 Syslog 数据" data-book-page-rel-url="input/syslog.html" data-book-page-id="4847">读取 Syslog 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/redis.html" title="读取 Redis 数据" data-book-page-rel-url="input/redis.html" data-book-page-id="4848">读取 Redis 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/collectd.html" title="读取 Collectd 数据" data-book-page-rel-url="input/collectd.html" data-book-page-id="4849">读取 Collectd 数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/README.html" title="编码插件(Codec)" data-book-page-rel-url="codec/README.html" data-book-page-id="4850">编码插件(Codec)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/codec/json.html" title="采用 JSON 编码" data-book-page-rel-url="codec/json.html" data-book-page-id="4851">采用 JSON 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/multiline.html" title="合并多行数据(Multiline)" data-book-page-rel-url="codec/multiline.html" data-book-page-id="4852">合并多行数据(Multiline)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/README.html" title="过滤器插件(Filter)" data-book-page-rel-url="filter/README.html" data-book-page-id="4853">过滤器插件(Filter)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/filter/grok.html" title="Grok 正则捕获" data-book-page-rel-url="filter/grok.html" data-book-page-id="4854">Grok 正则捕获</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/date.html" title="时间处理(Date)" data-book-page-rel-url="filter/date.html" data-book-page-id="4855">时间处理(Date)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/mutate.html" title="数据修改(Mutate)" data-book-page-rel-url="filter/mutate.html" data-book-page-id="4856">数据修改(Mutate)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/geoip.html" title="GeoIP 查询归类" data-book-page-rel-url="filter/geoip.html" data-book-page-id="4857">GeoIP 查询归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/json.html" title="JSON 编解码" data-book-page-rel-url="filter/json.html" data-book-page-id="4858">JSON 编解码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/split.html" title="split 拆分事件" data-book-page-rel-url="filter/split.html" data-book-page-id="4859">split 拆分事件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/useragent.html" title="UserAgent 匹配归类" data-book-page-rel-url="filter/useragent.html" data-book-page-id="4860">UserAgent 匹配归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/kv.html" title="Key-Value 切分" data-book-page-rel-url="filter/kv.html" data-book-page-id="4861">Key-Value 切分</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/ruby.html" title="随心所欲的 Ruby 处理" data-book-page-rel-url="filter/ruby.html" data-book-page-id="4862">随心所欲的 Ruby 处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/metrics.html" title="数值统计(Metrics)" data-book-page-rel-url="filter/metrics.html" data-book-page-id="4863">数值统计(Metrics)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/README.html" title="输出插件(Output)" data-book-page-rel-url="output/README.html" data-book-page-id="4864">输出插件(Output)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/output/stdout.html" title="标准输出(Stdout)" data-book-page-rel-url="output/stdout.html" data-book-page-id="4865">标准输出(Stdout)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/file.html" title="保存成文件(File)" data-book-page-rel-url="output/file.html" data-book-page-id="4866">保存成文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/elasticsearch.html" title="保存进 Elasticsearch" data-book-page-rel-url="output/elasticsearch.html" data-book-page-id="4867">保存进 Elasticsearch</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/redis.html" title="输出到 Redis" data-book-page-rel-url="output/redis.html" data-book-page-id="4868">输出到 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/tcp.html" title="输出网络数据(TCP)" data-book-page-rel-url="output/tcp.html" data-book-page-id="4869">输出网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/statsd.html" title="输出到 Statsd" data-book-page-rel-url="output/statsd.html" data-book-page-id="4870">输出到 Statsd</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/nagios.html" title="报警到 Nagios" data-book-page-rel-url="output/nagios.html" data-book-page-id="4871">报警到 Nagios</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/email.html" title="发送邮件(Email)" data-book-page-rel-url="output/email.html" data-book-page-id="4872">发送邮件(Email)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/exec.html" title="调用命令执行(Exec)" data-book-page-rel-url="output/exec.html" data-book-page-id="4873">调用命令执行(Exec)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/README.html" title="尚未进入官方库的常用插件" data-book-page-rel-url="contrib_plugins/README.html" data-book-page-id="4874">尚未进入官方库的常用插件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/kafka.html" title="Kafka" data-book-page-rel-url="contrib_plugins/kafka.html" data-book-page-id="4875">Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/hdfs.html" title="HDFS" data-book-page-rel-url="contrib_plugins/hdfs.html" data-book-page-id="4876">HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/scribe.html" title="Scribe" data-book-page-rel-url="contrib_plugins/scribe.html" data-book-page-id="4877">Scribe</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/README.html" title="深入了解" data-book-page-rel-url="dive_into/README.html" data-book-page-id="4878">深入了解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/write_your_own.html" title="自己写一个插件" data-book-page-rel-url="dive_into/write_your_own.html" data-book-page-id="4879">自己写一个插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/why_jvm_and_howto_run_with_mri.html" title="为什么用 JRuby? 能用 MRI 运行么?" data-book-page-rel-url="dive_into/why_jvm_and_howto_run_with_mri.html" data-book-page-id="4880">为什么用 JRuby? 能用 MRI 运行么?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/README.html" title="周边项目" data-book-page-rel-url="ecosystem/README.html" data-book-page-id="4881">周边项目</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/rsyslog.html" title="Rsyslog" data-book-page-rel-url="ecosystem/rsyslog.html" data-book-page-id="4882">Rsyslog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/logstash_forwarder.html" title="logstash-forwarder" data-book-page-rel-url="ecosystem/logstash_forwarder.html" data-book-page-id="4883">logstash-forwarder</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/nxlog.html" title="nxlog" data-book-page-rel-url="ecosystem/nxlog.html" data-book-page-id="4884">nxlog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/heka.html" title="heka" data-book-page-rel-url="ecosystem/heka.html" data-book-page-id="4885">heka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/message_passing.html" title="Message::Passing" data-book-page-rel-url="ecosystem/message_passing.html" data-book-page-id="4886">Message::Passing</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/fluent.html" title="fluent" data-book-page-rel-url="ecosystem/fluent.html" data-book-page-id="4887">fluent</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =52;var bookPageId =4848;var bookPageRelUrl ='input/redis.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

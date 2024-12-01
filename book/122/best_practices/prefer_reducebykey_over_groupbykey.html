@@ -1,0 +1,359 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>避免使用 GroupByKey-Databricks Spark 知识库简体中文版</title>
+<meta content='避免使用 GroupByKey,Databricks Spark 知识库简体中文版' name='keywords'>
+<meta content='避免使用 GroupByKey,Databricks Spark 知识库简体中文版' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/122/best_practices/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">最佳实践</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/122/best_practices/dont_call_collect_on_a_very_large_rdd.html">
+<span class="">不要将大型 RDD 的..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/122/index.html">Databricks Spark 知识库简体中文版</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/databricks-spark-knowledge-base-zh-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="避免使用-groupbykey">避免使用 GroupByKey</h1>
+<p>让我们看一下使用两种不同的方式去计算单词的个数，第一种方式使用 <code>reduceByKey</code> 另外一种方式使用 <code>groupByKey</code>：</p>
+<pre><code class="language-scala">val words = Array("one", "two", "two", "three", "three", "three")
+val wordPairsRDD = sc.parallelize(words).map(word =&gt; (word, 1))
+
+val wordCountsWithReduce = wordPairsRDD
+  .reduceByKey(_ + _)
+  .collect()
+
+val wordCountsWithGroup = wordPairsRDD
+  .groupByKey()
+  .map(t =&gt; (t._1, t._2.sum))
+  .collect()
+</code></pre>
+<p>虽然两个函数都能得出正确的结果，<code>reduceByKey</code> 更适合使用在大数据集上。 这是因为 Spark 知道它可以在每个分区移动数据之前将输出数据与一个共用的 key 结合。</p>
+<p>借助下图可以理解在 <code>reduceByKey</code> 里发生了什么。 注意在数据对被搬移前同一机器上同样的 key 是怎样被组合的(<code>reduceByKey</code> 中的 lamdba 函数)。然后 lamdba 函数在每个区上被再次调用来将所有值 reduce 成一个最终结果。</p>
+<p><a href="https://img.cntofu.com/book/databricks-spark-knowledge-base-zh-cn/images/reduce_by.png" data-uk-lightbox><img src="https://img.cntofu.com/book/databricks-spark-knowledge-base-zh-cn/images/reduce_by.png" alt=""></a></p>
+<p>另一方面，当调用 <code>groupByKey</code> 时，所有的键值对(key-value pair) 都会被移动。在网络上传输这些数据非常没有必要。</p>
+<p>为了确定将数据对移到哪个主机，Spark 会对数据对的 key 调用一个分区算法。 当移动的数据量大于单台执行机器内存总量时 Spark 会把数据保存到磁盘上。 不过在保存时每次会处理一个 key 的数据，所以当单个 key 的键值对超过内存容量会存在内存溢出的异常。 这将会在之后发行的 Spark 版本中更加优雅地处理，这样的工作还可以继续完善。 尽管如此，仍应避免将数据保存到磁盘上，这会严重影响性能。</p>
+<p><a href="https://img.cntofu.com/book/databricks-spark-knowledge-base-zh-cn/images/group_by.png" data-uk-lightbox><img src="https://img.cntofu.com/book/databricks-spark-knowledge-base-zh-cn/images/group_by.png" alt=""></a></p>
+<p>你可以想象一个非常大的数据集，在使用 <code>reduceByKey</code> 和 <code>groupByKey</code> 时他们的差别会被放大更多倍。</p>
+<p>以下函数应该优先于 <code>groupByKey</code> ：</p>
+<ul>
+<li><code>combineByKey</code> 组合数据，但是组合之后的数据类型与输入时值的类型不一样。</li>
+<li><code>foldByKey</code> 合并每一个 key 的所有值，在级联函数和“零值”中使用。</li>
+</ul>
+<p><a href="http://databricks.gitbooks.io/databricks-spark-knowledge-base/content/best_practices/prefer_reducebykey_over_groupbykey.html">阅读原文</a></p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/120/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/106/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/106/index.html">Spark 编程指南简体中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/65.html">aiyanbo</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 150个">150</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/30/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/atom_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/30/index.html">Atom飞行手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="atom">atom</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 45个">45</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/128/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/128/index.html">写给人类的机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 29个">29</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/100/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/lua_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/100/index.html">Lua编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/61.html">andycai</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="lua">lua</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 192个">192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/122/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="8322">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/best_practices/README.html" title="最佳实践" data-book-page-rel-url="best_practices/README.html" data-book-page-id="8323">最佳实践</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/122/best_practices/prefer_reducebykey_over_groupbykey.html" title="避免使用 GroupByKey" data-book-page-rel-url="best_practices/prefer_reducebykey_over_groupbykey.html" data-book-page-id="8324">避免使用 GroupByKey</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/best_practices/dont_call_collect_on_a_very_large_rdd.html" title="不要将大型 RDD 的所有元素拷贝到请求驱动者" data-book-page-rel-url="best_practices/dont_call_collect_on_a_very_large_rdd.html" data-book-page-id="8325">不要将大型 RDD 的所有元素拷贝到请求驱动者</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/troubleshooting/README.html" title="常规故障处理" data-book-page-rel-url="troubleshooting/README.html" data-book-page-id="8326">常规故障处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/122/troubleshooting/java_io_not_serializable_exception.html" title="Job aborted due to stage failure: Task not serializable" data-book-page-rel-url="troubleshooting/java_io_not_serializable_exception.html" data-book-page-id="8327">Job aborted due to stage failure: Task not serializable</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/troubleshooting/missing_dependencies_in_jar_files.html" title="缺失依赖" data-book-page-rel-url="troubleshooting/missing_dependencies_in_jar_files.html" data-book-page-id="8328">缺失依赖</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/troubleshooting/port_22_connection_refused.html" title="执行 start-all.sh 错误 - Connection refused" data-book-page-rel-url="troubleshooting/port_22_connection_refused.html" data-book-page-id="8329">执行 start-all.sh 错误 - Connection refused</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/troubleshooting/connectivity_issues.html" title="Spark 组件之间的网络连接问题" data-book-page-rel-url="troubleshooting/connectivity_issues.html" data-book-page-id="8330">Spark 组件之间的网络连接问题</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/performance_optimization/README.html" title="性能 & 优化" data-book-page-rel-url="performance_optimization/README.html" data-book-page-id="8331">性能 & 优化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/122/performance_optimization/how_many_partitions_does_an_rdd_have.html" title="一个 RDD 有多少个分区" data-book-page-rel-url="performance_optimization/how_many_partitions_does_an_rdd_have.html" data-book-page-id="8332">一个 RDD 有多少个分区</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/performance_optimization/data_locality.html" title="数据本地性" data-book-page-rel-url="performance_optimization/data_locality.html" data-book-page-id="8333">数据本地性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/122/spark_streaming/README.html" title="Spark Streaming" data-book-page-rel-url="spark_streaming/README.html" data-book-page-id="8334">Spark Streaming</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/122/spark_streaming/error_oneforonestrategy.html" title="ERROR OneForOneStrategy" data-book-page-rel-url="spark_streaming/error_oneforonestrategy.html" data-book-page-id="8335">ERROR OneForOneStrategy</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =122;var bookPageId =8324;var bookPageRelUrl ='best_practices/prefer_reducebykey_over_groupbykey.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

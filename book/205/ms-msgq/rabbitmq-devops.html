@@ -1,0 +1,706 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>RabbitMQ 消息队列的运维-从0到1实战微服务架构</title>
+<meta content='RabbitMQ 消息队列的运维,从0到1实战微服务架构' name='keywords'>
+<meta content='RabbitMQ 消息队列的运维,从0到1实战微服务架构' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/205/ms-msgq/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">微服务的消息队列</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/205/ms-msgq/sb-rabitmq.html">
+<span class="">Spring Boot..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/205/index.html">从0到1实战微服务架构</a>
+<a target="_blank" rel="nofollow" href="https://github.com/skyline75489/hands-on-microservices" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="rabbitmq-消息队列">RabbitMQ 消息队列</h1>
+<p>RabbitMQ支持单击部署，也提供了"高可用"的集群部署方式，以提升性能和(或)可用性。</p>
+<p>RabbitMQ支持两种形式的集群模式：</p>
+<ul>
+<li>普通模式: 默认的模式。消息队列的数据结构存在于每个结点上，但实际消息只存储于某一个节点上。这种模式的优点是性能较高。缺点是，一旦存储数据的节点挂掉，消息就暂时不可用了，需要结点启动后才能恢复。</li>
+<li>镜像模式: 在普通模式的基础上可配置需要镜像的队列。配置队列后，消息数据会自动同步到集群中的每个结点上。该模式的优点是可用性高，缺点是性能相对较低。</li>
+</ul>
+<p>在本节，我们将首先配置普通模式的集群，然后配置镜像队列。</p>
+<h2 id="kubernetes下配置rabbitmq集群">Kubernetes下配置RabbitMQ集群</h2>
+<p>与Memcached类似，RabbitMQ集群中的节点，是相互独立的，而不是可替代的，因此我们也使用StatefulSet。</p>
+<p>然而，RabbitMQ比Memcached更为复杂，他需要磁盘存储，即在StatefulSet上的Volume。这种情况下，是无法直接创建Volume挂载点的，而是需要先手动创建Persistent Volume(简称PV)，然后再通过Persistent Volume Claim(简称PVC)去关联创建可用的PV。上述过程可以参考Kubernetes的<a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">Persistent Volume文档</a>。</p>
+<p>我们首先创建3个PV, pvs.yaml:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv001 
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 20Gi
+  hostPath:
+    path: /data/pv001/
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv002 
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 20Gi
+  hostPath:
+    path: /data/pv002/
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv003
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 20Gi
+  hostPath:
+    path: /data/pv003/
+</code></pre>
+<p>在这里，我们使用的是minikube做演示，因而直接创建基于路径的Volume，在实际生产中，你可能需要创建支持自动迁移的Volume，具体可以参考<a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">Storage Classes</a>。</p>
+<p>我们应用一下:</p>
+<pre><code class="language-yaml">kubectl apply -f pvs.yaml
+
+persistentvolume "pv001" created 
+persistentvolume "pv002" created 
+persistentvolume "pv003" created 
+</code></pre>
+<p>在创建RabbitMQ集群之前，我们先要针对rabnbitmq这个metadata修改rbac。rbac是Kubernetes的安全性访问限制，具体原因可以参考这个<a href="https://github.com/rabbitmq/rabbitmq-peer-discovery-k8s/issues/15">Issue</a></p>
+<p>rabbitmq-rbac.yaml:</p>
+<pre><code class="language-yaml">---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: rabbitmq
+rules:
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq
+subjects:
+- kind: ServiceAccount
+  name: rabbitmq
+
+</code></pre>
+<p>上述修改了rabbitmq的ServiceSccount、Role、RoleBinding默认安全设置，简要来说是允许其访问get和endpoints这两个Kubernetes提供的API。</p>
+<p>我们应用上述修改，修改成功:</p>
+<pre><code class="language-yaml">kubectl apply -f ./rabbitmq-rbac.yaml
+
+serviceaccount "rabbitmq" configured
+role.rbac.authorization.k8s.io "rabbitmq" configured
+rolebinding.rbac.authorization.k8s.io "rabbitmq" configured
+
+</code></pre>
+<p>在创建了pv，修改了rbac后，可以创建rabbitmq集群了，我们来看一下描述文件,rabbitmq-service.yaml:</p>
+<pre><code class="language-yaml">kind: Service
+apiVersion: v1
+metadata:
+  name: rabbitmq
+  labels:
+    app: rabbitmq
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    protocol: TCP
+    port: 15672
+    targetPort: 15672
+    nodePort: 31672
+  selector:
+    app: rabbitmq
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq
+  serviceName: rabbitmq
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      serviceAccountName: rabbitmq
+      terminationGracePeriodSeconds: 10
+      containers:        
+      - name: rabbitmq-autocluster
+        image: pivotalrabbitmq/rabbitmq-autocluster
+        ports:
+          - name: http
+            protocol: TCP
+            containerPort: 15672
+          - name: amqp
+            protocol: TCP
+            containerPort: 5672
+        livenessProbe:
+          exec:
+            command: ["rabbitmqctl", "status"]
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command: ["rabbitmqctl", "status"]
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - mountPath: /var/lib/rabbitmq/mnesia
+          name: rabbitmq-pvc
+        env:
+          - name: MY_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: RABBITMQ_USE_LONGNAME
+            value: "true"
+          - name: RABBITMQ_NODENAME
+            value: "rabbit@$(MY_POD_IP)"
+          - name: AUTOCLUSTER_TYPE
+            value: "k8s"
+          - name: AUTOCLUSTER_DELAY
+            value: "10"
+          - name: K8S_ADDRESS_TYPE
+            value: "ip" 
+          - name: AUTOCLUSTER_CLEANUP
+            value: "true"
+          - name: CLEANUP_WARN_ONLY
+            value: "false"
+  volumeClaimTemplates:
+  - metadata:
+      name: rabbitmq-pvc
+    spec:
+      storageClassName: standard
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 20Gi
+
+</code></pre>
+<p>解释一下上面的描述文件：</p>
+<ul>
+<li>创建了Headless Service用于暴露管理界面的Web端口31672。这里主要是为了演示，在实际应用中，这个可能是没必要的。</li>
+<li>创建了rabbitmq的StatefulSet，含有3个节点，其中每个节点通过livenessProbe和readinessProbe检查可用性。</li>
+<li>使用volumeClaimTemplates自动生成volumeClaim，这里的template即模板，会自动给StatefulSet中的每一个节点创建一个Volume Claim，命名为rabbitmq-pvc-0/1/2</li>
+</ul>
+<p>下面我们来应用下上面的描述:</p>
+<pre><code>kubectl apply -f ./rabbitmq-service.yaml
+
+service "rabbitmq" created
+statefulset.apps "rabbitmq" created
+
+</code></pre>
+<p>稍过一会后，我们来看一下Web服务器的管理界面，http://192.168.99.100，用户名密码都是guest:</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/ms-msgq/rabbitmq-cluster-status.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/ms-msgq/rabbitmq-cluster-status.png" alt="查看RabbitMQ集群" title="查看RabbitMQ集群"></a></p>
+<p>登录成功后，如上图所示。不难发现，已经成功启动了3个结点，并组成了集群，至此，我们的RabbitMQ基本集群配置成功。</p>
+<h2 id="配置镜像集群">配置镜像集群</h2>
+<p>下面，我们来配置镜像策略，在Web管理工具上点击"Admin" -&gt; "Policies" -&gt; "Add / update a policy"，如下填写:</p>
+<ul>
+<li>Name: ha_mirror_queue</li>
+<li>Pattern: ^</li>
+<li>Apply to: All exchange and queues</li>
+<li>Defination:</li>
+<li>ha-mode: all 天下好后点击"Add"</li>
+</ul>
+<p>配置好后，我们尝试创建一个Queue，在Web管理工具点击"Queues" -&gt; "Add queue"，name写test，其他保持默认，最后点击"Add queue"。</p>
+<p>添加完成后，可以发现队列有一个"+2"的标志，如下图所示。这个+2意思是队列有额外的2个备份(主1+镜2一共3个节点)，镜像配置成功。</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/ms-msgq/rabbitmq-mirror-queue.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/ms-msgq/rabbitmq-mirror-queue.png" alt="查看RabbitMQ镜像队列" title="查看RabbitMQ镜像队列"></a></p>
+<p>至此，我们已经完成了RabbitMQ的集群配置、镜像队列配置。</p>
+<p>关于Rabbit MQ的高可用、集群的更相信信息，可以查看官方文档:<a href="http://www.rabbitmq.com/clustering.html">RabbitMQ 集群</a>。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/173/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/173/index.html">HBase中文参考指南 3.0</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 51个">51</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/189/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/189/index.html">每日 30 秒 , 一段代码 ,一个场景</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/106.html">pushmetop</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">46页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 265个">265</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/200/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/200/index.html">软件开发基础知识宝典</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/168/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/189/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/189/index.html">每日 30 秒 , 一段代码 ,一个场景</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/106.html">pushmetop</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">46页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 265个">265</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/27/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/27/index.html">Sklearn 与 TensorFlow 机器学习实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 916个">916</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/205/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/README.html" title="从0到1实战微服务架构" data-book-page-rel-url="README.html" data-book-page-id="13723">从0到1实战微服务架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/README.html" title="架构概览" data-book-page-rel-url="architecture/README.html" data-book-page-id="13724">架构概览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/architecture/overview.html" title="微服务架构概览" data-book-page-rel-url="architecture/overview.html" data-book-page-id="13725">微服务架构概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/devops.html" title="运维技术链概览" data-book-page-rel-url="architecture/devops.html" data-book-page-id="13726">运维技术链概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/microservics.html" title="微服务技术栈概览" data-book-page-rel-url="architecture/microservics.html" data-book-page-id="13727">微服务技术栈概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/toolchain.html" title="研发工具链概览" data-book-page-rel-url="architecture/toolchain.html" data-book-page-id="13728">研发工具链概览</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/README.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/README.html" data-book-page-id="13729">微服务的自动发现与负载均衡</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/k8s-intro.html" title="Kubernetes 快速入门" data-book-page-rel-url="ms-discovery/k8s-intro.html" data-book-page-id="13730">Kubernetes 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/msd.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/msd.html" data-book-page-id="13731">微服务的自动发现与负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/README.html" title="微服务的开发框架" data-book-page-rel-url="spring-boot/README.html" data-book-page-id="13732">微服务的开发框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-gradle-structure.html" title="Gradle子项目划分与微服务的代码结构" data-book-page-rel-url="spring-boot/sb-gradle-structure.html" data-book-page-id="13733">Gradle子项目划分与微服务的代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-thrift.html" title="Spring Boot整合Thrift RPC" data-book-page-rel-url="spring-boot/sb-thrift.html" data-book-page-id="13734">Spring Boot整合Thrift RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-rest.html" title="Spring Boot整合REST服务" data-book-page-rel-url="spring-boot/sb-rest.html" data-book-page-id="13735">Spring Boot整合REST服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-mockito.html" title="Mockito 单元测试打桩神器" data-book-page-rel-url="spring-boot/sb-mockito.html" data-book-page-id="13736">Mockito 单元测试打桩神器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/README.html" title="微服务的存储与缓存" data-book-page-rel-url="ms-storage/README.html" data-book-page-id="13737">微服务的存储与缓存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/mysql-devops.html" title="MySQL 数据库的运维" data-book-page-rel-url="ms-storage/mysql-devops.html" data-book-page-id="13738">MySQL 数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-mysql.html" title="Spring Boot整合MySQL" data-book-page-rel-url="ms-storage/sb-mysql.html" data-book-page-id="13739">Spring Boot整合MySQL</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/memcached-devops.html" title="Memcached 缓存服务的运维" data-book-page-rel-url="ms-storage/memcached-devops.html" data-book-page-id="13740">Memcached 缓存服务的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-memcached.html" title="Spring Boot整合Memcached" data-book-page-rel-url="ms-storage/sb-memcached.html" data-book-page-id="13741">Spring Boot整合Memcached</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/redis-devops.html" title="Redis 内存数据库的运维" data-book-page-rel-url="ms-storage/redis-devops.html" data-book-page-id="13742">Redis 内存数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-redis.html" title="Spring Boot整合Redis" data-book-page-rel-url="ms-storage/sb-redis.html" data-book-page-id="13743">Spring Boot整合Redis</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/README.html" title="微服务的消息队列" data-book-page-rel-url="ms-msgq/README.html" data-book-page-id="13744">微服务的消息队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rabbitmq-devops.html" title="RabbitMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rabbitmq-devops.html" data-book-page-id="13745">RabbitMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rabitmq.html" title="Spring Boot整合RabbitMQ" data-book-page-rel-url="ms-msgq/sb-rabitmq.html" data-book-page-id="13746">Spring Boot整合RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rocketmq-devops.html" title="RocketMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rocketmq-devops.html" data-book-page-id="13747">RocketMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rocketmq.html" title="Spring Boot整合RocketMQ" data-book-page-rel-url="ms-msgq/sb-rocketmq.html" data-book-page-id="13748">Spring Boot整合RocketMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/kafka-devops.html" title="Kafka 流处理平台的运维" data-book-page-rel-url="ms-msgq/kafka-devops.html" data-book-page-id="13749">Kafka 流处理平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/dev-kafka.html" title="Kafka 流处理开发简介" data-book-page-rel-url="ms-msgq/dev-kafka.html" data-book-page-id="13750">Kafka 流处理开发简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/README.html" title="微服务日志监控" data-book-page-rel-url="ms-log/README.html" data-book-page-id="13751">微服务日志监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-logback.html" title="Spring Boot配置Logback日志" data-book-page-rel-url="ms-log/sb-logback.html" data-book-page-id="13752">Spring Boot配置Logback日志</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-trace.html" title="Spring Boot整合分布式追踪" data-book-page-rel-url="ms-log/sb-trace.html" data-book-page-id="13753">Spring Boot整合分布式追踪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/elk-devops.html" title="ELK日志分析平台的运维" data-book-page-rel-url="ms-log/elk-devops.html" data-book-page-id="13754">ELK日志分析平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-eblk.html" title="Spring Boot整合EBLK日志分析平台" data-book-page-rel-url="ms-log/sb-eblk.html" data-book-page-id="13755">Spring Boot整合EBLK日志分析平台</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/README.html" title="微服务平台监控" data-book-page-rel-url="ms-monitor/README.html" data-book-page-id="13756">微服务平台监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sentry-devops.html" title="Sentry 错误预警系统的运维" data-book-page-rel-url="ms-monitor/sentry-devops.html" data-book-page-id="13757">Sentry 错误预警系统的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sb-sentry.html" title="Spring Boot整合Sentry" data-book-page-rel-url="ms-monitor/sb-sentry.html" data-book-page-id="13758">Spring Boot整合Sentry</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/k8s-prometheus-grafana.html" title="Kubernetes + Prometheus + Grafana平台监控" data-book-page-rel-url="ms-monitor/k8s-prometheus-grafana.html" data-book-page-id="13759">Kubernetes + Prometheus + Grafana平台监控</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/README.html" title="微服务配置中心" data-book-page-rel-url="ms-config/README.html" data-book-page-id="13760">微服务配置中心</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/cfg4j.html" title="cfg4j及方案简介" data-book-page-rel-url="ms-config/cfg4j.html" data-book-page-id="13761">cfg4j及方案简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/sb-config.html" title="Spring Boot整合配置中心" data-book-page-rel-url="ms-config/sb-config.html" data-book-page-id="13762">Spring Boot整合配置中心</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/README.html" title="微服务熔断与限流" data-book-page-rel-url="ms-circuit-breaker-and-limit/README.html" data-book-page-id="13763">微服务熔断与限流</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-hystrix.html" title="熔断与Hystrix" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-hystrix.html" data-book-page-id="13764">熔断与Hystrix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-limit.html" title="限流的实现" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-limit.html" data-book-page-id="13765">限流的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/README.html" title="微服务持续交付" data-book-page-rel-url="ms-delivery/README.html" data-book-page-id="13766">微服务持续交付</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/jenkins-devops.html" title="Jenkins平台的运维" data-book-page-rel-url="ms-delivery/jenkins-devops.html" data-book-page-id="13767">Jenkins平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-ci.html" title="Jenkins持续集成" data-book-page-rel-url="ms-delivery/ms-ci.html" data-book-page-id="13768">Jenkins持续集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-cd.html" title="Jenkins持续部署" data-book-page-rel-url="ms-delivery/ms-cd.html" data-book-page-id="13769">Jenkins持续部署</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/README.html" title="研发工具链" data-book-page-rel-url="toolchain/README.html" data-book-page-id="13770">研发工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/ldap.html" title="LDAP 内部账号管理系统" data-book-page-rel-url="toolchain/ldap.html" data-book-page-id="13771">LDAP 内部账号管理系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/gerrit.html" title="gerrit 代码的版本管理与评审" data-book-page-rel-url="toolchain/gerrit.html" data-book-page-id="13772">gerrit 代码的版本管理与评审</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/nexus.html" title="Nexus 私有maven仓库" data-book-page-rel-url="toolchain/nexus.html" data-book-page-id="13773">Nexus 私有maven仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/bom.html" title="BOM 减少版本冲突" data-book-page-rel-url="toolchain/bom.html" data-book-page-id="13774">BOM 减少版本冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-template.html" title="Spring Boot 项目模板" data-book-page-rel-url="toolchain/spring-boot-template.html" data-book-page-id="13775">Spring Boot 项目模板</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-scripts.html" title="开发效率脚本" data-book-page-rel-url="toolchain/spring-boot-scripts.html" data-book-page-id="13776">开发效率脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/stress-test.html" title="打压工具" data-book-page-rel-url="toolchain/stress-test.html" data-book-page-id="13777">打压工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/README.html" title="运维工具链" data-book-page-rel-url="devops/README.html" data-book-page-id="13778">运维工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/devops/docker-repo.html" title="Docker 私有仓库" data-book-page-rel-url="devops/docker-repo.html" data-book-page-id="13779">Docker 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/discovery.html" title="Nginx REST 网关自动配置" data-book-page-rel-url="devops/discovery.html" data-book-page-id="13780">Nginx REST 网关自动配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/k8s-cluster.html" title="搭建Kubernetes集群" data-book-page-rel-url="devops/k8s-cluster.html" data-book-page-id="13781">搭建Kubernetes集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/openvpn-k8s.html" title="OpenVPN访问Kubernetes集群内网" data-book-page-rel-url="devops/openvpn-k8s.html" data-book-page-id="13782">OpenVPN访问Kubernetes集群内网</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/jump-server.html" title="线上跳板机" data-book-page-rel-url="devops/jump-server.html" data-book-page-id="13783">线上跳板机</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =205;var bookPageId =13745;var bookPageRelUrl ='ms-msgq/rabbitmq-devops.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

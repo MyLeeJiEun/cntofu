@@ -1,0 +1,1396 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Passport——OAuth2 API 认证系统源码解析(下)-Laravel 源码详解</title>
+<meta content='Laravel Passport——OAuth2 API 认证系统源码解析(下),Laravel 源码详解' name='keywords'>
+<meta content='Laravel Passport——OAuth2 API 认证系统源码解析(下),Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Pas..</span>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="laravel-passportoauth2-api-认证系统源码解析下">Laravel Passport——OAuth2 API 认证系统源码解析（下）</h1>
+<h2 id="隐式授权">隐式授权</h2>
+<p>隐式授权类似于授权码授权，但是它只令牌将返回给客户端而不交换授权码。这种授权最常用于无法安全存储客户端凭据的 JavaScript 或移动应用程序。通过调用 <code>AuthServiceProvider</code> 中的 <code>enableImplicitGrant</code> 方法来启用这种授权：</p>
+<pre><code class="language-php">public function boot()
+{
+    $this-&gt;registerPolicies();
+
+    Passport::routes();
+
+    Passport::enableImplicitGrant();
+}
+</code></pre>
+<p>调用上面方法开启授权后，开发者可以使用他们的客户端 ID 从应用程序请求访问令牌。接入的应用程序应该向你的应用程序的 /oauth/authorize 路由发出重定向请求，如下所示：</p>
+<pre><code class="language-php">Route::get('/redirect', function () {
+    $query = http_build_query([
+        'client_id' =&gt; 'client-id',
+        'redirect_uri' =&gt; 'http://example.com/callback',
+        'response_type' =&gt; 'token',
+        'scope' =&gt; '',
+    ]);
+
+    return redirect('http://your-app.com/oauth/authorize?'.$query);
+});
+</code></pre>
+<p>首先仍然是验证授权请求的合法性，其流程与授权码模式基本一致：</p>
+<pre><code class="language-php">public function validateAuthorizationRequest(ServerRequestInterface $request)
+{
+    $clientId = $this-&gt;getQueryStringParameter(
+        'client_id',
+        $request,
+        $this-&gt;getServerParameter('PHP_AUTH_USER', $request)
+    );
+    if (is_null($clientId)) {
+        throw OAuthServerException::invalidRequest('client_id');
+    }
+
+    $client = $this-&gt;clientRepository-&gt;getClientEntity(
+        $clientId,
+        $this-&gt;getIdentifier(),
+        null,
+        false
+    );
+
+    if ($client instanceof ClientEntityInterface === false) {
+        $this-&gt;getEmitter()-&gt;emit(new RequestEvent(RequestEvent::CLIENT_AUTHENTICATION_FAILED, $request));
+        throw OAuthServerException::invalidClient();
+    }
+
+    $redirectUri = $this-&gt;getQueryStringParameter('redirect_uri', $request);
+
+    $scopes = $this-&gt;validateScopes(
+        $this-&gt;getQueryStringParameter('scope', $request, $this-&gt;defaultScope),
+        is_array($client-&gt;getRedirectUri())
+            ? $client-&gt;getRedirectUri()[0]
+            : $client-&gt;getRedirectUri()
+    );
+
+    // Finalize the requested scopes
+    $finalizedScopes = $this-&gt;scopeRepository-&gt;finalizeScopes(
+        $scopes,
+        $this-&gt;getIdentifier(),
+        $client
+    );
+
+    $stateParameter = $this-&gt;getQueryStringParameter('state', $request);
+
+    $authorizationRequest = new AuthorizationRequest();
+    $authorizationRequest-&gt;setGrantTypeId($this-&gt;getIdentifier());
+    $authorizationRequest-&gt;setClient($client);
+    $authorizationRequest-&gt;setRedirectUri($redirectUri);
+    $authorizationRequest-&gt;setState($stateParameter);
+    $authorizationRequest-&gt;setScopes($finalizedScopes);
+
+    return $authorizationRequest;
+}
+</code></pre>
+<p>接着，当用户同意授权之后，就要直接返回 <code>access_token</code>，<code>League OAuth2</code> 直接将令牌放入 <code>JWT</code> 中发送回第三方客户端,值得注意的是依据 <code>OAuth2</code> 标准，参数都是以 <code>location hash</code> 的形式返回的，间隔符是 <code>#</code>，而不是 <code>?</code>:</p>
+<pre><code class="language-php">public function __construct(\DateInterval $accessTokenTTL, $queryDelimiter = '#')
+{
+    $this-&gt;accessTokenTTL = $accessTokenTTL;
+    $this-&gt;queryDelimiter = $queryDelimiter;
+}
+
+public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest)
+{
+    if ($authorizationRequest-&gt;getUser() instanceof UserEntityInterface === false) {
+        throw new \LogicException('An instance of UserEntityInterface should be set on the AuthorizationRequest');
+    }
+
+    $finalRedirectUri = ($authorizationRequest-&gt;getRedirectUri() === null)
+        ? is_array($authorizationRequest-&gt;getClient()-&gt;getRedirectUri())
+            ? $authorizationRequest-&gt;getClient()-&gt;getRedirectUri()[0]
+            : $authorizationRequest-&gt;getClient()-&gt;getRedirectUri()
+        : $authorizationRequest-&gt;getRedirectUri();
+
+    // The user approved the client, redirect them back with an access token
+    if ($authorizationRequest-&gt;isAuthorizationApproved() === true) {
+        $accessToken = $this-&gt;issueAccessToken(
+            $this-&gt;accessTokenTTL,
+            $authorizationRequest-&gt;getClient(),
+            $authorizationRequest-&gt;getUser()-&gt;getIdentifier(),
+            $authorizationRequest-&gt;getScopes()
+        );
+
+        $response = new RedirectResponse();
+        $response-&gt;setRedirectUri(
+            $this-&gt;makeRedirectUri(
+                $finalRedirectUri,
+                [
+                    'access_token' =&gt; (string) $accessToken-&gt;convertToJWT($this-&gt;privateKey),
+                    'token_type'   =&gt; 'Bearer',
+                    'expires_in'   =&gt; $accessToken-&gt;getExpiryDateTime()-&gt;getTimestamp() - (new \DateTime())-&gt;getTimestamp(),
+                    'state'        =&gt; $authorizationRequest-&gt;getState(),
+                ],
+                $this-&gt;queryDelimiter
+            )
+        );
+
+        return $response;
+    }
+
+    // The user denied the client, redirect them back with an error
+    throw OAuthServerException::accessDenied(
+        'The user denied the request',
+        $this-&gt;makeRedirectUri(
+            $finalRedirectUri,
+            [
+                'state' =&gt; $authorizationRequest-&gt;getState(),
+            ]
+        )
+    );
+}
+</code></pre>
+<p>这个用于构建 <code>jwt</code> 的私钥就是 <code>oauth-private.key</code>，我们知道，<code>jwt</code> 一般有三个部分组成：<code>header</code>、<code>claim</code>、<code>sign</code>, 用于 <code>oauth2</code> 的 <code>jwt</code> 中 <code>claim</code> 主要构成有：</p>
+<ul>
+<li>aud 客户端 id</li>
+<li>jti access_token 随机码</li>
+<li>iat 生成时间</li>
+<li>nbf 拒绝接受 jwt 时间</li>
+<li>exp access_token 失效时间</li>
+<li>sub 用户 id</li>
+</ul>
+<p>具体可以参考 : <a href="https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-32">JSON Web Token (JWT) draft-ietf-oauth-json-web-token-32</a></p>
+<pre><code class="language-php">public function convertToJWT(CryptKey $privateKey)
+{
+    return (new Builder())
+        -&gt;setAudience($this-&gt;getClient()-&gt;getIdentifier())
+        -&gt;setId($this-&gt;getIdentifier(), true)
+        -&gt;setIssuedAt(time())
+        -&gt;setNotBefore(time())
+        -&gt;setExpiration($this-&gt;getExpiryDateTime()-&gt;getTimestamp())
+        -&gt;setSubject($this-&gt;getUserIdentifier())
+        -&gt;set('scopes', $this-&gt;getScopes())
+        -&gt;sign(new Sha256(), new Key($privateKey-&gt;getKeyPath(), $privateKey-&gt;getPassPhrase()))
+        -&gt;getToken();
+}
+
+public function __construct(
+    Encoder $encoder = null,
+    ClaimFactory $claimFactory = null
+) {
+    $this-&gt;encoder = $encoder ?: new Encoder();
+    $this-&gt;claimFactory = $claimFactory ?: new ClaimFactory();
+    $this-&gt;headers = ['typ'=&gt; 'JWT', 'alg' =&gt; 'none'];
+    $this-&gt;claims = [];
+}
+
+public function setAudience($audience, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('aud', (string) $audience, $replicateAsHeader);
+}
+
+public function setId($id, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('jti', (string) $id, $replicateAsHeader);
+}
+
+public function setIssuedAt($issuedAt, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('iat', (int) $issuedAt, $replicateAsHeader);
+}
+
+public function setNotBefore($notBefore, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('nbf', (int) $notBefore, $replicateAsHeader);
+}
+
+public function setExpiration($expiration, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('exp', (int) $expiration, $replicateAsHeader);
+}
+
+public function setSubject($subject, $replicateAsHeader = false)
+{
+    return $this-&gt;setRegisteredClaim('sub', (string) $subject, $replicateAsHeader);
+}
+
+public function sign(Signer $signer, $key)
+{
+    $signer-&gt;modifyHeader($this-&gt;headers);
+
+    $this-&gt;signature = $signer-&gt;sign(
+        $this-&gt;getToken()-&gt;getPayload(),
+        $key
+    );
+
+    return $this;
+}
+
+public function getToken()
+{
+    $payload = [
+        $this-&gt;encoder-&gt;base64UrlEncode($this-&gt;encoder-&gt;jsonEncode($this-&gt;headers)),
+        $this-&gt;encoder-&gt;base64UrlEncode($this-&gt;encoder-&gt;jsonEncode($this-&gt;claims))
+    ];
+
+    if ($this-&gt;signature !== null) {
+        $payload[] = $this-&gt;encoder-&gt;base64UrlEncode($this-&gt;signature);
+    }
+
+    return new Token($this-&gt;headers, $this-&gt;claims, $this-&gt;signature, $payload);
+}
+</code></pre>
+<p>根据 JWT 的生成方法，签名部分 <code>signature</code> 是 <code>header</code> 与 <code>claim</code> 进行 <code>base64</code> 编码后再加密的结果。</p>
+<h2 id="客户端模式">客户端模式</h2>
+<p>客户端凭据授权适用于机器到机器的认证。例如，你可以在通过 API 执行维护任务中使用此授权。要使用这种授权，你首先需要在 app/Http/Kernel.php 的 routeMiddleware 变量中添加新的中间件：</p>
+<pre><code class="language-php">protected $routeMiddleware = [
+    'client' =&gt; CheckClientCredentials::class,
+];
+
+Route::get('/user', function(Request $request) {
+    ...
+})-&gt;middleware('client');
+</code></pre>
+<p>接下来通过向 oauth/token 接口发出请求来获取令牌:</p>
+<pre><code class="language-php">$response = $guzzle-&gt;post('http://your-app.com/oauth/token', [
+    'form_params' =&gt; [
+        'grant_type' =&gt; 'client_credentials',
+        'client_id' =&gt; 'client-id',
+        'client_secret' =&gt; 'client-secret',
+        'scope' =&gt; 'your-scope',
+    ],
+]);
+
+echo json_decode((string) $response-&gt;getBody(), true);
+</code></pre>
+<p>客户端模式类似于授权码模式的后一部分，利用客户端 id 与客户端密码来获取 <code>access_token</code>：</p>
+<pre><code class="language-php">public function respondToAccessTokenRequest(
+    ServerRequestInterface $request,
+    ResponseTypeInterface $responseType,
+    \DateInterval $accessTokenTTL
+) {
+    // Validate request
+    $client = $this-&gt;validateClient($request);
+    $scopes = $this-&gt;validateScopes($this-&gt;getRequestParameter('scope', $request, $this-&gt;defaultScope));
+
+    // Finalize the requested scopes
+    $finalizedScopes = $this-&gt;scopeRepository-&gt;finalizeScopes($scopes, $this-&gt;getIdentifier(), $client);
+
+    // Issue and persist access token
+    $accessToken = $this-&gt;issueAccessToken($accessTokenTTL, $client, null, $finalizedScopes);
+
+    // Inject access token into response type
+    $responseType-&gt;setAccessToken($accessToken);
+
+    return $responseType;
+}
+</code></pre>
+<p>类似于授权码模式，<code>access_token</code> 的发放也是通过 <code>Bearer Token</code> 中存放 JWT。</p>
+<h2 id="密码模式">密码模式</h2>
+<p>OAuth2 密码授权机制可以让你自己的客户端（如移动应用程序）邮箱地址或者用户名和密码获取访问令牌。如此一来你就可以安全地向自己的客户端发出访问令牌，而不需要遍历整个 OAuth2 授权代码重定向流程。</p>
+<p>创建密码授权的客户端后，就可以通过向用户的电子邮件地址和密码向 /oauth/token 路由发出 POST 请求来获取访问令牌。而该路由已经由 Passport::routes 方法注册，因此不需要手动定义它。如果请求成功，会在服务端返回的 JSON 响应中收到一个 access_token 和 refresh_token：</p>
+<pre><code class="language-php">$response = $http-&gt;post('http://your-app.com/oauth/token', [
+    'form_params' =&gt; [
+        'grant_type' =&gt; 'password',
+        'client_id' =&gt; 'client-id',
+        'client_secret' =&gt; 'client-secret',
+        'username' =&gt; 'taylor@laravel.com',
+        'password' =&gt; 'my-password',
+        'scope' =&gt; '',
+    ],
+]);
+
+return json_decode((string) $response-&gt;getBody(), true);
+</code></pre>
+<p>只要用用户名与密码来验证合法性就可以发放 <code>access_token</code> 与 <code>refresh_token</code>：</p>
+<pre><code class="language-php">public function respondToAccessTokenRequest(
+    ServerRequestInterface $request,
+    ResponseTypeInterface $responseType,
+    \DateInterval $accessTokenTTL
+) {
+    // Validate request
+    $client = $this-&gt;validateClient($request);
+    $scopes = $this-&gt;validateScopes($this-&gt;getRequestParameter('scope', $request, $this-&gt;defaultScope));
+    $user = $this-&gt;validateUser($request, $client);
+
+    // Finalize the requested scopes
+    $finalizedScopes = $this-&gt;scopeRepository-&gt;finalizeScopes($scopes, $this-&gt;getIdentifier(), $client, $user-&gt;getIdentifier());
+
+    // Issue and persist new tokens
+    $accessToken = $this-&gt;issueAccessToken($accessTokenTTL, $client, $user-&gt;getIdentifier(), $finalizedScopes);
+    $refreshToken = $this-&gt;issueRefreshToken($accessToken);
+
+    // Inject tokens into response
+    $responseType-&gt;setAccessToken($accessToken);
+    $responseType-&gt;setRefreshToken($refreshToken);
+
+    return $responseType;
+}
+
+
+protected function validateUser(ServerRequestInterface $request, ClientEntityInterface $client)
+{
+    $username = $this-&gt;getRequestParameter('username', $request);
+    if (is_null($username)) {
+        throw OAuthServerException::invalidRequest('username');
+    }
+
+    $password = $this-&gt;getRequestParameter('password', $request);
+    if (is_null($password)) {
+        throw OAuthServerException::invalidRequest('password');
+    }
+
+    $user = $this-&gt;userRepository-&gt;getUserEntityByUserCredentials(
+        $username,
+        $password,
+        $this-&gt;getIdentifier(),
+        $client
+    );
+    if ($user instanceof UserEntityInterface === false) {
+        $this-&gt;getEmitter()-&gt;emit(new RequestEvent(RequestEvent::USER_AUTHENTICATION_FAILED, $request));
+
+        throw OAuthServerException::invalidCredentials();
+    }
+
+    return $user;
+}
+</code></pre>
+<h2 id="路由保护">路由保护</h2>
+<p>Passport 包含一个 验证保护机制 可以验证请求中传入的访问令牌。配置 api 的看守器使用 passport 驱动程序后，只需要在需要有效访问令牌的任何路由上指定 auth:api 中间件：</p>
+<pre><code class="language-php">Route::get('/user', function () {
+    //
+})-&gt;middleware('auth:api');
+</code></pre>
+<p>当调用 Passport 保护下的路由时，接入的 API 应用需要将访问令牌作为 Bearer 令牌放在请求头 Authorization 中。例如，使用 Guzzle HTTP 库时：</p>
+<pre><code class="language-php">$response = $client-&gt;request('GET', '/api/user', [
+    'headers' =&gt; [
+        'Accept' =&gt; 'application/json',
+        'Authorization' =&gt; 'Bearer '.$accessToken,
+    ],
+]);
+</code></pre>
+<h2 id="authapi-中间件">auth:api 中间件</h2>
+<p>当我们已经配置完成 <code>Passport</code> 的四种模式并拿到 <code>access_token</code> 之后，我们就可以利用令牌去资源服务器获取数据了。资源服务器最常用的校验令牌的中间件就是 <code>auth:api</code>，中间件是 <code>auth</code>，<code>api</code> 是中间件的参数：</p>
+<pre><code class="language-php">'auth' =&gt; \Illuminate\Auth\Middleware\Authenticate::class,
+</code></pre>
+<p>这个中间件是验证登录状态的常用中间件：</p>
+<pre><code class="language-php">class Authenticate
+{
+    public function __construct(Auth $auth)
+    {
+        $this-&gt;auth = $auth;
+    }
+
+    public function handle($request, Closure $next, ...$guards)
+    {
+        $this-&gt;authenticate($guards);
+
+        return $next($request);
+    }
+
+
+    protected function authenticate(array $guards)
+    {
+        if (empty($guards)) {
+            return $this-&gt;auth-&gt;authenticate();
+        }
+
+        foreach ($guards as $guard) {
+            if ($this-&gt;auth-&gt;guard($guard)-&gt;check()) {
+                return $this-&gt;auth-&gt;shouldUse($guard);
+            }
+        }
+
+        throw new AuthenticationException('Unauthenticated.', $guards);
+    }
+}
+</code></pre>
+<p>我们的参数 <code>api</code> 就是上面的 <code>guards</code>，<code>Auth</code> 是 <code>laravel</code> 自带的登录校验服务：</p>
+<pre><code class="language-php">class AuthManager implements FactoryContract
+{
+    public function guard($name = null)
+    {
+        $name = $name ?: $this-&gt;getDefaultDriver();
+
+        return $this-&gt;guards[$name] ?? $this-&gt;guards[$name] = $this-&gt;resolve($name);
+    }
+
+    protected function resolve($name)
+    {
+        $config = $this-&gt;getConfig($name);
+
+        if (is_null($config)) {
+            throw new InvalidArgumentException("Auth guard [{$name}] is not defined.");
+        }
+
+        if (isset($this-&gt;customCreators[$config['driver']])) {
+            return $this-&gt;callCustomCreator($name, $config);
+        }
+
+        $driverMethod = 'create'.ucfirst($config['driver']).'Driver';
+
+        if (method_exists($this, $driverMethod)) {
+            return $this-&gt;{$driverMethod}($name, $config);
+        }
+
+        throw new InvalidArgumentException("Auth guard driver [{$name}] is not defined.");
+    }
+
+}
+</code></pre>
+<p>文档告诉我们，若想要使用 <code>passport</code> 服务，我们的 <code>config/auth</code> 文件需要如此配置：</p>
+<pre><code class="language-php">'guards' =&gt; [
+    'web' =&gt; [
+        'driver' =&gt; 'session',
+        'provider' =&gt; 'users',
+    ],
+
+    'api' =&gt; [
+        'driver' =&gt; 'passport',
+        'provider' =&gt; 'users',
+    ],
+],
+</code></pre>
+<p>可以看出，<code>driver</code> 就是 <code>passport</code>，我们在启动 <code>passport</code> 服务的时候曾经注册过一个 <code>Guard</code>：</p>
+<pre><code class="language-php">protected function registerGuard()
+{
+    Auth::extend('passport', function ($app, $name, array $config) {
+        return tap($this-&gt;makeGuard($config), function ($guard) {
+            $this-&gt;app-&gt;refresh('request', $guard, 'setRequest');
+        });
+    });
+}
+
+protected function makeGuard(array $config)
+{
+    return new RequestGuard(function ($request) use ($config) {
+        return (new TokenGuard(
+            $this-&gt;app-&gt;make(ResourceServer::class),
+            Auth::createUserProvider($config['provider']),
+            $this-&gt;app-&gt;make(TokenRepository::class),
+            $this-&gt;app-&gt;make(ClientRepository::class),
+            $this-&gt;app-&gt;make('encrypter')
+        ))-&gt;user($request);
+    }, $this-&gt;app['request']);
+}
+</code></pre>
+<p>因此，<code>passport</code> 使用的就是这个 <code>TokenGuard</code>：</p>
+<pre><code class="language-php">class TokenGuard
+{
+    public function __construct(ResourceServer $server,
+                                UserProvider $provider,
+                                TokenRepository $tokens,
+                                ClientRepository $clients,
+                                Encrypter $encrypter)
+    {
+        $this-&gt;server = $server;
+        $this-&gt;tokens = $tokens;
+        $this-&gt;clients = $clients;
+        $this-&gt;provider = $provider;
+        $this-&gt;encrypter = $encrypter;
+    }
+
+    public function user(Request $request)
+    {
+        if ($request-&gt;bearerToken()) {
+            return $this-&gt;authenticateViaBearerToken($request);
+        } elseif ($request-&gt;cookie(Passport::cookie())) {
+            return $this-&gt;authenticateViaCookie($request);
+        }
+    }
+}
+</code></pre>
+<p>可以看到，<code>TokenGuard</code> 支持两种 <code>Token</code> 的验证：<code>BearerToken</code> 与 <code>cookie</code>。</p>
+<p>我们首先看 <code>BearerToken</code>:</p>
+<pre><code class="language-php">public function bearerToken()
+{
+    $header = $this-&gt;header('Authorization', '');
+
+    if (Str::startsWith($header, 'Bearer ')) {
+        return Str::substr($header, 7);
+    }
+}
+
+protected function authenticateViaBearerToken($request)
+{
+    $psr = (new DiactorosFactory)-&gt;createRequest($request);
+
+    try {
+        $psr = $this-&gt;server-&gt;validateAuthenticatedRequest($psr);
+
+        $user = $this-&gt;provider-&gt;retrieveById(
+            $psr-&gt;getAttribute('oauth_user_id')
+        );
+
+        if (! $user) {
+            return;
+        }
+
+        $token = $this-&gt;tokens-&gt;find(
+            $psr-&gt;getAttribute('oauth_access_token_id')
+        );
+
+        $clientId = $psr-&gt;getAttribute('oauth_client_id');
+
+        if ($this-&gt;clients-&gt;revoked($clientId)) {
+            return;
+        }
+
+        return $token ? $user-&gt;withAccessToken($token) : null;
+    } catch (OAuthServerException $e) {
+        return Container::getInstance()-&gt;make(
+            ExceptionHandler::class
+        )-&gt;report($e);
+    }
+}
+</code></pre>
+<p>首先，需要验证请求的合法性：</p>
+<pre><code class="language-php">class ResourceServer
+{
+    public function validateAuthenticatedRequest(ServerRequestInterface $request)
+    {
+        return $this-&gt;getAuthorizationValidator()-&gt;validateAuthorization($request);
+    }
+
+    protected function getAuthorizationValidator()
+    {
+        if ($this-&gt;authorizationValidator instanceof AuthorizationValidatorInterface === false) {
+            $this-&gt;authorizationValidator = new BearerTokenValidator($this-&gt;accessTokenRepository);
+        }
+
+        $this-&gt;authorizationValidator-&gt;setPublicKey($this-&gt;publicKey);
+
+        return $this-&gt;authorizationValidator;
+    }
+
+}
+</code></pre>
+<p><code>BearerTokenValidator</code> 专门用于验证 <code>BearerToken</code> 的合法性：</p>
+<pre><code class="language-php">class BearerTokenValidator implements AuthorizationValidatorInterface
+{
+    public function validateAuthorization(ServerRequestInterface $request)
+    {
+        if ($request-&gt;hasHeader('authorization') === false) {
+            throw OAuthServerException::accessDenied('Missing "Authorization" header');
+        }
+
+        $header = $request-&gt;getHeader('authorization');
+        $jwt = trim(preg_replace('/^(?:\s+)?Bearer\s/', '', $header[0]));
+
+        try {
+            // Attempt to parse and validate the JWT
+            $token = (new Parser())-&gt;parse($jwt);
+            if ($token-&gt;verify(new Sha256(), $this-&gt;publicKey-&gt;getKeyPath()) === false) {
+                throw OAuthServerException::accessDenied('Access token could not be verified');
+            }
+
+            // Ensure access token hasn't expired
+            $data = new ValidationData();
+            $data-&gt;setCurrentTime(time());
+
+            if ($token-&gt;validate($data) === false) {
+                throw OAuthServerException::accessDenied('Access token is invalid');
+            }
+
+            // Check if token has been revoked
+            if ($this-&gt;accessTokenRepository-&gt;isAccessTokenRevoked($token-&gt;getClaim('jti'))) {
+                throw OAuthServerException::accessDenied('Access token has been revoked');
+            }
+
+            // Return the request with additional attributes
+            return $request
+                -&gt;withAttribute('oauth_access_token_id', $token-&gt;getClaim('jti'))
+                -&gt;withAttribute('oauth_client_id', $token-&gt;getClaim('aud'))
+                -&gt;withAttribute('oauth_user_id', $token-&gt;getClaim('sub'))
+                -&gt;withAttribute('oauth_scopes', $token-&gt;getClaim('scopes'));
+        } catch (\InvalidArgumentException $exception) {
+            // JWT couldn't be parsed so return the request as is
+            throw OAuthServerException::accessDenied($exception-&gt;getMessage());
+        } catch (\RuntimeException $exception) {
+            //JWR couldn't be parsed so return the request as is
+            throw OAuthServerException::accessDenied('Error while decoding to JSON');
+        }
+    }
+}
+</code></pre>
+<p>通过 <code>passport</code> 拿到的 <code>access_token</code> 都是 <code>JWT</code> 格式的，因此首先第一步需要将 <code>JWT</code> 解析：</p>
+<pre><code class="language-php">class Parser
+{
+    public function parse($jwt)
+    {
+        $data = $this-&gt;splitJwt($jwt);
+        $header = $this-&gt;parseHeader($data[0]);
+        $claims = $this-&gt;parseClaims($data[1]);
+        $signature = $this-&gt;parseSignature($header, $data[2]);
+
+        foreach ($claims as $name =&gt; $value) {
+            if (isset($header[$name])) {
+                $header[$name] = $value;
+            }
+        }
+
+        if ($signature === null) {
+            unset($data[2]);
+        }
+
+        return new Token($header, $claims, $signature, $data);
+    }
+
+    protected function splitJwt($jwt)
+    {
+        if (!is_string($jwt)) {
+            throw new InvalidArgumentException('The JWT string must have two dots');
+        }
+
+        $data = explode('.', $jwt);
+
+        if (count($data) != 3) {
+            throw new InvalidArgumentException('The JWT string must have two dots');
+        }
+
+        return $data;
+    }
+
+    protected function parseHeader($data)
+    {
+        $header = (array) $this-&gt;decoder-&gt;jsonDecode($this-&gt;decoder-&gt;base64UrlDecode($data));
+
+        if (isset($header['enc'])) {
+            throw new InvalidArgumentException('Encryption is not supported yet');
+        }
+
+        return $header;
+    }
+
+    protected function parseClaims($data)
+    {
+        $claims = (array) $this-&gt;decoder-&gt;jsonDecode($this-&gt;decoder-&gt;base64UrlDecode($data));
+
+        foreach ($claims as $name =&gt; &amp;$value) {
+            $value = $this-&gt;claimFactory-&gt;create($name, $value);
+        }
+
+        return $claims;
+    }
+
+    protected function parseSignature(array $header, $data)
+    {
+        if ($data == '' || !isset($header['alg']) || $header['alg'] == 'none') {
+            return null;
+        }
+
+        $hash = $this-&gt;decoder-&gt;base64UrlDecode($data);
+
+        return new Signature($hash);
+    }
+
+}
+</code></pre>
+<p>获得 <code>JWT</code> 的三个部分之后，就要验证签名部分是否合法：</p>
+<pre><code class="language-php">class Token
+{
+    public function verify(Signer $signer, $key)
+    {
+        if ($this-&gt;signature === null) {
+            throw new BadMethodCallException('This token is not signed');
+        }
+
+        if ($this-&gt;headers['alg'] !== $signer-&gt;getAlgorithmId()) {
+            return false;
+        }
+
+        return $this-&gt;signature-&gt;verify($signer, $this-&gt;getPayload(), $key);
+    }
+}
+</code></pre>
+<p>验证通过之后，就要验证 <code>JWT</code> 各个部分是否合法：</p>
+<pre><code class="language-php">$data = new ValidationData();
+$data-&gt;setCurrentTime(time());
+
+public function __construct($currentTime = null)
+{
+    $currentTime = $currentTime ?: time();
+
+    $this-&gt;items = [
+        'jti' =&gt; null,
+        'iss' =&gt; null,
+        'aud' =&gt; null,
+        'sub' =&gt; null,
+        'iat' =&gt; $currentTime,
+        'nbf' =&gt; $currentTime,
+        'exp' =&gt; $currentTime
+    ];
+}
+
+
+public function validate(ValidationData $data)
+{
+    foreach ($this-&gt;getValidatableClaims() as $claim) {
+        if (!$claim-&gt;validate($data)) {
+            return false;
+        }
+    }
+
+    return true;
+}    
+
+public function __construct(array $callbacks = [])
+{
+    $this-&gt;callbacks = array_merge(
+        [
+            'iat' =&gt; [$this, 'createLesserOrEqualsTo'],
+            'nbf' =&gt; [$this, 'createLesserOrEqualsTo'],
+            'exp' =&gt; [$this, 'createGreaterOrEqualsTo'],
+            'iss' =&gt; [$this, 'createEqualsTo'],
+            'aud' =&gt; [$this, 'createEqualsTo'],
+            'sub' =&gt; [$this, 'createEqualsTo'],
+            'jti' =&gt; [$this, 'createEqualsTo']
+        ],
+        $callbacks
+    );
+}
+</code></pre>
+<p>我们前面说过，</p>
+<ul>
+<li>aud 客户端 id</li>
+<li>jti access_token 随机码</li>
+<li>iat 生成时间</li>
+<li>nbf 拒绝接受 jwt 时间</li>
+<li>exp access_token 失效时间</li>
+<li>sub 用户 id</li>
+</ul>
+<p>因此，<code>JWT</code> 的生成时间、拒绝接受时间、失效时间就会被验证完成。</p>
+<p>接下来，还会验证最重要的 <code>access_token</code> ：</p>
+<pre><code class="language-php">if ($this-&gt;accessTokenRepository-&gt;isAccessTokenRevoked($token-&gt;getClaim('jti'))) {
+    throw OAuthServerException::accessDenied('Access token has been revoked');
+}
+
+public function isAccessTokenRevoked($tokenId)
+{
+    return $this-&gt;tokenRepository-&gt;isAccessTokenRevoked($tokenId);
+}
+
+public function isAccessTokenRevoked($id)
+{
+    if ($token = $this-&gt;find($id)) {
+        return $token-&gt;revoked;
+    }
+
+    return true;
+}
+</code></pre>
+<p>接下来，<code>TokenGuard</code> 就会验证 <code>userid</code>、<code>clientid</code> 与 <code>access_token</code> 的合法性：</p>
+<pre><code class="language-php">$user = $this-&gt;provider-&gt;retrieveById(
+    $psr-&gt;getAttribute('oauth_user_id')
+);
+
+if (! $user) {
+    return;
+}
+
+$token = $this-&gt;tokens-&gt;find(
+    $psr-&gt;getAttribute('oauth_access_token_id')
+);
+
+$clientId = $psr-&gt;getAttribute('oauth_client_id');
+
+if ($this-&gt;clients-&gt;revoked($clientId)) {
+    return;
+}
+
+return $token ? $user-&gt;withAccessToken($token) : null;
+</code></pre>
+<p>中间件验证完成。</p>
+<h2 id="客户端模式中间件-checkclientcredentials">客户端模式中间件 CheckClientCredentials</h2>
+<p>我们在上面可以看到 <code>auth:api</code> 中间件不仅验证 <code>access_token</code>，还会验证 <code>user_id</code>，对于客户端模式来说，由于 <code>JWT</code> 中并没有用户信息，因此 <code>passport</code> 专门存在中间件 <code>CheckClientCredentials</code> 来做非登录状态的校验。</p>
+<pre><code class="language-php">class CheckClientCredentials
+{
+    public function handle($request, Closure $next, ...$scopes)
+    {
+        $psr = (new DiactorosFactory)-&gt;createRequest($request);
+
+        try {
+            $psr = $this-&gt;server-&gt;validateAuthenticatedRequest($psr);
+        } catch (OAuthServerException $e) {
+            throw new AuthenticationException;
+        }
+
+        $this-&gt;validateScopes($psr, $scopes);
+
+        return $next($request);
+    }
+}
+</code></pre>
+<h2 id="使用-javascript-接入-api">使用 JavaScript 接入 API</h2>
+<p>在构建 API 时，如果能通过 JavaScript 应用接入自己的 API 将会给开发过程带来极大的便利。这种 API 开发方法允许你使用自己的应用程序的 API 和别人共享的 API。你的 Web 应用程序、移动应用程序、第三方应用程序以及可能在各种软件包管理器上发布的任何 SDK 都可能会使用相同的API。</p>
+<p>通常，如果要从 JavaScript 应用程序中使用 API，则需要手动向应用程序发送访问令牌，并将其传递给应用程序。但是，Passport 有一个可以处理这个问题的中间件。将 CreateFreshApiToken 中间件添加到 web 中间件组就可以了：</p>
+<pre><code class="language-php">'web' =&gt; [
+    // Other middleware...
+    \Laravel\Passport\Http\Middleware\CreateFreshApiToken::class,
+],
+</code></pre>
+<p>Passport 的这个中间件将会在你所有的对外请求中添加一个 laravel_token cookie。该 cookie 将包含一个加密后的 JWT ，Passport 将用来验证来自 JavaScript 应用程序的 API 请求。至此，你可以在不明确传递访问令牌的情况下向应用程序的 API 发出请求</p>
+<pre><code class="language-php">axios.get('/user')
+    .then(response =&gt; {
+        console.log(response.data);
+    });
+</code></pre>
+<p>当使用上面的授权方法时，Axios 会自动带上 X-CSRF-TOKEN 请求头传递。另外，默认的 Laravel JavaScript 脚手架会让 Axios 发送 X-Requested-With 请求头:</p>
+<pre><code class="language-php">window.axios.defaults.headers.common = {
+    'X-Requested-With': 'XMLHttpRequest',
+};
+</code></pre>
+<h2 id="createfreshapitoken-中间件">CreateFreshApiToken 中间件</h2>
+<pre><code class="language-php">class CreateFreshApiToken
+{
+    public function handle($request, Closure $next, $guard = null)
+    {
+        $this-&gt;guard = $guard;
+
+        $response = $next($request);
+
+        if ($this-&gt;shouldReceiveFreshToken($request, $response)) {
+            $response-&gt;withCookie($this-&gt;cookieFactory-&gt;make(
+                $request-&gt;user($this-&gt;guard)-&gt;getKey(), $request-&gt;session()-&gt;token()
+            ));
+        }
+
+        return $response;
+    }
+
+    public function make($userId, $csrfToken)
+    {
+        $config = $this-&gt;config-&gt;get('session');
+
+        $expiration = Carbon::now()-&gt;addMinutes($config['lifetime']);
+
+        return new Cookie(
+            Passport::cookie(),
+            $this-&gt;createToken($userId, $csrfToken, $expiration),
+            $expiration,
+            $config['path'],
+            $config['domain'],
+            $config['secure'],
+            true
+        );
+    }
+
+    protected function createToken($userId, $csrfToken, Carbon $expiration)
+    {
+        return JWT::encode([
+            'sub' =&gt; $userId,
+            'csrf' =&gt; $csrfToken,
+            'expiry' =&gt; $expiration-&gt;getTimestamp(),
+        ], $this-&gt;encrypter-&gt;getKey());
+    }
+
+    protected function shouldReceiveFreshToken($request, $response)
+    {
+        return $this-&gt;requestShouldReceiveFreshToken($request) &amp;&amp;
+               $this-&gt;responseShouldReceiveFreshToken($response);
+    }
+
+    protected function requestShouldReceiveFreshToken($request)
+    {
+        return $request-&gt;isMethod('GET') &amp;&amp; $request-&gt;user($this-&gt;guard);
+    }
+
+    protected function responseShouldReceiveFreshToken($response)
+    {
+        return $response instanceof Response &amp;&amp; ! $this-&gt;alreadyContainsToken($response);
+    }
+}
+</code></pre>
+<p>这个中间件发出的 <code>JWT</code> 令牌仍然由 <code>auth:api</code> 来负责验证，我们前面说过，<code>TokenGuard</code> 负责两种令牌的验证，一种是 <code>BearerToken</code>, 另一种就是这个 <code>Cookie</code> :</p>
+<pre><code class="language-php">public function user(Request $request)
+{
+    if ($request-&gt;bearerToken()) {
+        return $this-&gt;authenticateViaBearerToken($request);
+    } elseif ($request-&gt;cookie(Passport::cookie())) {
+        return $this-&gt;authenticateViaCookie($request);
+    }
+}
+
+protected function authenticateViaCookie($request)
+{
+    try {
+        $token = $this-&gt;decodeJwtTokenCookie($request);
+    } catch (Exception $e) {
+        return;
+    }
+
+    if (! $this-&gt;validCsrf($token, $request) ||
+        time() &gt;= $token['expiry']) {
+        return;
+    }
+
+    if ($user = $this-&gt;provider-&gt;retrieveById($token['sub'])) {
+        return $user-&gt;withAccessToken(new TransientToken);
+    }
+}
+
+protected function decodeJwtTokenCookie($request)
+{
+    return (array) JWT::decode(
+        $this-&gt;encrypter-&gt;decrypt($request-&gt;cookie(Passport::cookie())),
+        $this-&gt;encrypter-&gt;getKey(), ['HS256']
+    );
+}
+
+protected function validCsrf($token, $request)
+{
+    return isset($token['csrf']) &amp;&amp; hash_equals(
+        $token['csrf'], (string) $request-&gt;header('X-CSRF-TOKEN')
+    );
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/11/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/gradle_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/11/index.html">Gradle实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/7.html">EZLippi</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gradle">gradle</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 299个">299</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/69/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/69/index.html">Android 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1046个">1046</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/181/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/170/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/170/index.html">scikit-learn (sklearn) 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2022个">2022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/155/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/155/index.html">CHNote，Apple设备、Git、Shell等使用教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/87.html">wanggw911</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/171/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/171/index.html">[译] 写给不耐烦程序员的 JavaScript</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 145个">145</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7784;var bookPageRelUrl ='Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

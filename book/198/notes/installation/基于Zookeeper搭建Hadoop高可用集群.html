@@ -1,0 +1,965 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>基于 Zookeeper 搭建 Hadoop 高可用集群-大数据入门指南</title>
+<meta content='基于 Zookeeper 搭建 Hadoop 高可用集群,大数据入门指南' name='keywords'>
+<meta content='基于 Zookeeper 搭建 Hadoop 高可用集群,大数据入门指南' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/198/notes/HDFS-Java-API.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">HDFS Java A..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/198/notes/Hive简介及核心概念.html">
+<span class="">Hive 简介及核心概念</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/198/index.html">大数据入门指南</a>
+<a target="_blank" rel="nofollow" href="https://github.com/heibaiying/BigData-Notes" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="基于zookeeper搭建hadoop高可用集群">基于ZooKeeper搭建Hadoop高可用集群</h1>
+<nav>
+<a href="#一高可用简介">一、高可用简介</a>
+<br>
+<a href="#二集群规划">二、集群规划</a>
+<br>
+<a href="#三前置条件">三、前置条件</a>
+<br>
+<a href="#四集群配置">四、集群配置</a>
+<br>
+<a href="#五启动集群">五、启动集群</a>
+<br>
+<a href="#六查看集群">六、查看集群</a>
+<br>
+<a href="#七集群的二次启动">七、集群的二次启动</a>
+<br>
+</nav>
+<h2 id="一高可用简介">一、高可用简介</h2>
+<p>Hadoop 高可用 (High Availability) 分为 HDFS 高可用和 YARN 高可用，两者的实现基本类似，但 HDFS NameNode 对数据存储及其一致性的要求比 YARN ResourceManger 高得多，所以它的实现也更加复杂，故下面先进行讲解：</p>
+<h3 id="11-高可用整体架构">1.1 高可用整体架构</h3>
+<p>HDFS 高可用架构如下：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/HDFS-HA-Architecture-Edureka.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/HDFS-HA-Architecture-Edureka.png"></a>
+</div>
+<blockquote>
+<p><em>图片引用自：https://www.edureka.co/blog/how-to-set-up-hadoop-cluster-with-hdfs-high-availability/</em></p>
+</blockquote>
+<p>HDFS 高可用架构主要由以下组件所构成：</p>
+<ul>
+<li> <p><strong>Active NameNode 和 Standby NameNode</strong>：两台 NameNode 形成互备，一台处于 Active 状态，为主 NameNode，另外一台处于 Standby 状态，为备 NameNode，只有主 NameNode 才能对外提供读写服务。</p> </li>
+<li> <p><strong>主备切换控制器 ZKFailoverController</strong>：ZKFailoverController 作为独立的进程运行，对 NameNode 的主备切换进行总体控制。ZKFailoverController 能及时检测到 NameNode 的健康状况，在主 NameNode 故障时借助 Zookeeper 实现自动的主备选举和切换，当然 NameNode 目前也支持不依赖于 Zookeeper 的手动主备切换。</p> </li>
+<li> <p><strong>Zookeeper 集群</strong>：为主备切换控制器提供主备选举支持。</p> </li>
+<li> <p><strong>共享存储系统</strong>：共享存储系统是实现 NameNode 的高可用最为关键的部分，共享存储系统保存了 NameNode 在运行过程中所产生的 HDFS 的元数据。主 NameNode 和 NameNode 通过共享存储系统实现元数据同步。在进行主备切换的时候，新的主 NameNode 在确认元数据完全同步之后才能继续对外提供服务。</p> </li>
+<li> <p><strong>DataNode 节点</strong>：除了通过共享存储系统共享 HDFS 的元数据信息之外，主 NameNode 和备 NameNode 还需要共享 HDFS 的数据块和 DataNode 之间的映射关系。DataNode 会同时向主 NameNode 和备 NameNode 上报数据块的位置信息。</p> </li>
+</ul>
+<h3 id="12-基于-qjm-的共享存储系统的数据同步机制分析">1.2 基于 QJM 的共享存储系统的数据同步机制分析</h3>
+<p>目前 Hadoop 支持使用 Quorum Journal Manager (QJM) 或 Network File System (NFS) 作为共享的存储系统，这里以 QJM 集群为例进行说明：Active NameNode 首先把 EditLog 提交到 JournalNode 集群，然后 Standby NameNode 再从 JournalNode 集群定时同步 EditLog，当 Active NameNode 宕机后， Standby NameNode 在确认元数据完全同步之后就可以对外提供服务。</p>
+<p>需要说明的是向 JournalNode 集群写入 EditLog 是遵循 “过半写入则成功” 的策略，所以你至少要有 3 个 JournalNode 节点，当然你也可以继续增加节点数量，但是应该保证节点总数是奇数。同时如果有 2N+1 台 JournalNode，那么根据过半写的原则，最多可以容忍有 N 台 JournalNode 节点挂掉。</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-QJM-同步机制.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-QJM-同步机制.png"></a>
+</div>
+<h3 id="13-namenode-主备切换">1.3 NameNode 主备切换</h3>
+<p>NameNode 实现主备切换的流程下图所示：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-namenode主备切换.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-namenode主备切换.png"></a>
+</div> 1. HealthMonitor 初始化完成之后会启动内部的线程来定时调用对应 NameNode 的 HAServiceProtocol RPC 接口的方法，对 NameNode 的健康状态进行检测。 2. HealthMonitor 如果检测到 NameNode 的健康状态发生变化，会回调 ZKFailoverController 注册的相应方法进行处理。 3. 如果 ZKFailoverController 判断需要进行主备切换，会首先使用 ActiveStandbyElector 来进行自动的主备选举。 4. ActiveStandbyElector 与 Zookeeper 进行交互完成自动的主备选举。 5. ActiveStandbyElector 在主备选举完成后，会回调 ZKFailoverController 的相应方法来通知当前的 NameNode 成为主 NameNode 或备 NameNode。 6. ZKFailoverController 调用对应 NameNode 的 HAServiceProtocol RPC 接口的方法将 NameNode 转换为 Active 状态或 Standby 状态。
+<h3 id="14-yarn高可用">1.4 YARN高可用</h3>
+<p>YARN ResourceManager 的高可用与 HDFS NameNode 的高可用类似，但是 ResourceManager 不像 NameNode ，没有那么多的元数据信息需要维护，所以它的状态信息可以直接写到 Zookeeper 上，并依赖 Zookeeper 来进行主备选举。</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-rm-ha-overview.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop-rm-ha-overview.png"></a>
+</div>
+<h2 id="二集群规划">二、集群规划</h2>
+<p>按照高可用的设计目标：需要保证至少有两个 NameNode (一主一备) 和 两个 ResourceManager (一主一备) ，同时为满足“过半写入则成功”的原则，需要至少要有 3 个 JournalNode 节点。这里使用三台主机进行搭建，集群规划如下：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群规划.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群规划.png"></a>
+</div>
+<h2 id="三前置条件">三、前置条件</h2>
+<ul>
+<li>所有服务器都安装有 JDK，安装步骤可以参见：<a href="https://github.com/heibaiying/BigData-Notes/blob/master/notes/installation/Linux下JDK安装.html">Linux 下 JDK 的安装</a>；</li>
+<li>搭建好 ZooKeeper 集群，搭建步骤可以参见：<a href="https://github.com/heibaiying/BigData-Notes/blob/master/notes/installation/Zookeeper单机环境和集群环境搭建.html">Zookeeper 单机环境和集群环境搭建</a></li>
+<li>所有服务器之间都配置好 SSH 免密登录。</li>
+</ul>
+<h2 id="四集群配置">四、集群配置</h2>
+<h3 id="41-下载并解压">4.1 下载并解压</h3>
+<p>下载 Hadoop。这里我下载的是 CDH 版本 Hadoop，下载地址为：http://archive.cloudera.com/cdh5/cdh/5/</p>
+<pre><code class="language-shell"># tar -zvxf hadoop-2.6.0-cdh5.15.2.tar.gz 
+</code></pre>
+<h3 id="42-配置环境变量">4.2 配置环境变量</h3>
+<p>编辑 <code>profile</code> 文件：</p>
+<pre><code class="language-shell"># vim /etc/profile
+</code></pre>
+<p>增加如下配置：</p>
+<pre><code>export HADOOP_HOME=/usr/app/hadoop-2.6.0-cdh5.15.2
+export  PATH=${HADOOP_HOME}/bin:$PATH
+</code></pre>
+<p>执行 <code>source</code> 命令，使得配置立即生效：</p>
+<pre><code class="language-shell"># source /etc/profile
+</code></pre>
+<h3 id="43-修改配置">4.3 修改配置</h3>
+<p>进入 <code>${HADOOP_HOME}/etc/hadoop</code> 目录下，修改配置文件。各个配置文件内容如下：</p>
+<h4 id="1-hadoop-envsh">1. hadoop-env.sh</h4>
+<pre><code class="language-shell"># 指定JDK的安装位置
+export JAVA_HOME=/usr/java/jdk1.8.0_201/
+</code></pre>
+<h4 id="2--core-sitexml">2. core-site.xml</h4>
+<pre><code class="language-xml">&lt;configuration&gt;
+    &lt;property&gt;
+        &lt;!-- 指定 namenode 的 hdfs 协议文件系统的通信地址 --&gt;
+        &lt;name&gt;fs.defaultFS&lt;/name&gt;
+        &lt;value&gt;hdfs://hadoop001:8020&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 指定 hadoop 集群存储临时文件的目录 --&gt;
+        &lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
+        &lt;value&gt;/home/hadoop/tmp&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- ZooKeeper 集群的地址 --&gt;
+        &lt;name&gt;ha.zookeeper.quorum&lt;/name&gt;
+        &lt;value&gt;hadoop001:2181,hadoop002:2181,hadoop003:2181&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- ZKFC 连接到 ZooKeeper 超时时长 --&gt;
+        &lt;name&gt;ha.zookeeper.session-timeout.ms&lt;/name&gt;
+        &lt;value&gt;10000&lt;/value&gt;
+    &lt;/property&gt;
+&lt;/configuration&gt;
+</code></pre>
+<h4 id="3-hdfs-sitexml">3. hdfs-site.xml</h4>
+<pre><code class="language-xml">&lt;configuration&gt;
+    &lt;property&gt;
+        &lt;!-- 指定 HDFS 副本的数量 --&gt;
+        &lt;name&gt;dfs.replication&lt;/name&gt;
+        &lt;value&gt;3&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- namenode 节点数据（即元数据）的存放位置，可以指定多个目录实现容错，多个目录用逗号分隔 --&gt;
+        &lt;name&gt;dfs.namenode.name.dir&lt;/name&gt;
+        &lt;value&gt;/home/hadoop/namenode/data&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- datanode 节点数据（即数据块）的存放位置 --&gt;
+        &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
+        &lt;value&gt;/home/hadoop/datanode/data&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 集群服务的逻辑名称 --&gt;
+        &lt;name&gt;dfs.nameservices&lt;/name&gt;
+        &lt;value&gt;mycluster&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- NameNode ID 列表--&gt;
+        &lt;name&gt;dfs.ha.namenodes.mycluster&lt;/name&gt;
+        &lt;value&gt;nn1,nn2&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- nn1 的 RPC 通信地址 --&gt;
+        &lt;name&gt;dfs.namenode.rpc-address.mycluster.nn1&lt;/name&gt;
+        &lt;value&gt;hadoop001:8020&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- nn2 的 RPC 通信地址 --&gt;
+        &lt;name&gt;dfs.namenode.rpc-address.mycluster.nn2&lt;/name&gt;
+        &lt;value&gt;hadoop002:8020&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- nn1 的 http 通信地址 --&gt;
+        &lt;name&gt;dfs.namenode.http-address.mycluster.nn1&lt;/name&gt;
+        &lt;value&gt;hadoop001:50070&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- nn2 的 http 通信地址 --&gt;
+        &lt;name&gt;dfs.namenode.http-address.mycluster.nn2&lt;/name&gt;
+        &lt;value&gt;hadoop002:50070&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- NameNode 元数据在 JournalNode 上的共享存储目录 --&gt;
+        &lt;name&gt;dfs.namenode.shared.edits.dir&lt;/name&gt;
+        &lt;value&gt;qjournal://hadoop001:8485;hadoop002:8485;hadoop003:8485/mycluster&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- Journal Edit Files 的存储目录 --&gt;
+        &lt;name&gt;dfs.journalnode.edits.dir&lt;/name&gt;
+        &lt;value&gt;/home/hadoop/journalnode/data&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 配置隔离机制，确保在任何给定时间只有一个 NameNode 处于活动状态 --&gt;
+        &lt;name&gt;dfs.ha.fencing.methods&lt;/name&gt;
+        &lt;value&gt;sshfence&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 使用 sshfence 机制时需要 ssh 免密登录 --&gt;
+        &lt;name&gt;dfs.ha.fencing.ssh.private-key-files&lt;/name&gt;
+        &lt;value&gt;/root/.ssh/id_rsa&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- SSH 超时时间 --&gt;
+        &lt;name&gt;dfs.ha.fencing.ssh.connect-timeout&lt;/name&gt;
+        &lt;value&gt;30000&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 访问代理类，用于确定当前处于 Active 状态的 NameNode --&gt;
+        &lt;name&gt;dfs.client.failover.proxy.provider.mycluster&lt;/name&gt;
+        &lt;value&gt;org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 开启故障自动转移 --&gt;
+        &lt;name&gt;dfs.ha.automatic-failover.enabled&lt;/name&gt;
+        &lt;value&gt;true&lt;/value&gt;
+    &lt;/property&gt;
+&lt;/configuration&gt;
+</code></pre>
+<h4 id="4-yarn-sitexml">4. yarn-site.xml</h4>
+<pre><code class="language-xml">&lt;configuration&gt;
+    &lt;property&gt;
+        &lt;!--配置 NodeManager 上运行的附属服务。需要配置成 mapreduce_shuffle 后才可以在 Yarn 上运行 MapReduce 程序。--&gt;
+        &lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+        &lt;value&gt;mapreduce_shuffle&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 是否启用日志聚合 (可选) --&gt;
+        &lt;name&gt;yarn.log-aggregation-enable&lt;/name&gt;
+        &lt;value&gt;true&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 聚合日志的保存时间 (可选) --&gt;
+        &lt;name&gt;yarn.log-aggregation.retain-seconds&lt;/name&gt;
+        &lt;value&gt;86400&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 启用 RM HA --&gt;
+        &lt;name&gt;yarn.resourcemanager.ha.enabled&lt;/name&gt;
+        &lt;value&gt;true&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM 集群标识 --&gt;
+        &lt;name&gt;yarn.resourcemanager.cluster-id&lt;/name&gt;
+        &lt;value&gt;my-yarn-cluster&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM 的逻辑 ID 列表 --&gt;
+        &lt;name&gt;yarn.resourcemanager.ha.rm-ids&lt;/name&gt;
+        &lt;value&gt;rm1,rm2&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM1 的服务地址 --&gt;
+        &lt;name&gt;yarn.resourcemanager.hostname.rm1&lt;/name&gt;
+        &lt;value&gt;hadoop002&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM2 的服务地址 --&gt;
+        &lt;name&gt;yarn.resourcemanager.hostname.rm2&lt;/name&gt;
+        &lt;value&gt;hadoop003&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM1 Web 应用程序的地址 --&gt;
+        &lt;name&gt;yarn.resourcemanager.webapp.address.rm1&lt;/name&gt;
+        &lt;value&gt;hadoop002:8088&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- RM2 Web 应用程序的地址 --&gt;
+        &lt;name&gt;yarn.resourcemanager.webapp.address.rm2&lt;/name&gt;
+        &lt;value&gt;hadoop003:8088&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- ZooKeeper 集群的地址 --&gt;
+        &lt;name&gt;yarn.resourcemanager.zk-address&lt;/name&gt;
+        &lt;value&gt;hadoop001:2181,hadoop002:2181,hadoop003:2181&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 启用自动恢复 --&gt;
+        &lt;name&gt;yarn.resourcemanager.recovery.enabled&lt;/name&gt;
+        &lt;value&gt;true&lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property&gt;
+        &lt;!-- 用于进行持久化存储的类 --&gt;
+        &lt;name&gt;yarn.resourcemanager.store.class&lt;/name&gt;
+        &lt;value&gt;org.apache.hadoop.yarn.server.resourcemanager.recovery.ZKRMStateStore&lt;/value&gt;
+    &lt;/property&gt;
+&lt;/configuration&gt;
+</code></pre>
+<h4 id="5--mapred-sitexml">5. mapred-site.xml</h4>
+<pre><code class="language-xml">&lt;configuration&gt;
+    &lt;property&gt;
+        &lt;!--指定 mapreduce 作业运行在 yarn 上--&gt;
+        &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
+        &lt;value&gt;yarn&lt;/value&gt;
+    &lt;/property&gt;
+&lt;/configuration&gt;
+</code></pre>
+<h4 id="5-slaves">5. slaves</h4>
+<p>配置所有从属节点的主机名或 IP 地址，每行一个。所有从属节点上的 <code>DataNode</code> 服务和 <code>NodeManager</code> 服务都会被启动。</p>
+<pre><code class="language-properties">hadoop001
+hadoop002
+hadoop003
+</code></pre>
+<h3 id="44-分发程序">4.4 分发程序</h3>
+<p>将 Hadoop 安装包分发到其他两台服务器，分发后建议在这两台服务器上也配置一下 Hadoop 的环境变量。</p>
+<pre><code class="language-shell"># 将安装包分发到hadoop002
+scp -r /usr/app/hadoop-2.6.0-cdh5.15.2/  hadoop002:/usr/app/
+# 将安装包分发到hadoop003
+scp -r /usr/app/hadoop-2.6.0-cdh5.15.2/  hadoop003:/usr/app/
+</code></pre>
+<h2 id="五启动集群">五、启动集群</h2>
+<h3 id="51-启动zookeeper">5.1 启动ZooKeeper</h3>
+<p>分别到三台服务器上启动 ZooKeeper 服务：</p>
+<pre><code class="language-ssh"> zkServer.sh start
+</code></pre>
+<h3 id="52-启动journalnode">5.2 启动Journalnode</h3>
+<p>分别到三台服务器的的 <code>${HADOOP_HOME}/sbin</code> 目录下，启动 <code>journalnode</code> 进程：</p>
+<pre><code class="language-shell">hadoop-daemon.sh start journalnode
+</code></pre>
+<h3 id="53-初始化namenode">5.3 初始化NameNode</h3>
+<p>在 <code>hadop001</code> 上执行 <code>NameNode</code> 初始化命令：</p>
+<pre><code>hdfs namenode -format
+</code></pre>
+<p>执行初始化命令后，需要将 <code>NameNode</code> 元数据目录的内容，复制到其他未格式化的 <code>NameNode</code> 上。元数据存储目录就是我们在 <code>hdfs-site.xml</code> 中使用 <code>dfs.namenode.name.dir</code> 属性指定的目录。这里我们需要将其复制到 <code>hadoop002</code> 上：</p>
+<pre><code class="language-shell"> scp -r /home/hadoop/namenode/data hadoop002:/home/hadoop/namenode/
+</code></pre>
+<h3 id="54-初始化ha状态">5.4 初始化HA状态</h3>
+<p>在任意一台 <code>NameNode</code> 上使用以下命令来初始化 ZooKeeper 中的 HA 状态：</p>
+<pre><code class="language-shell">hdfs zkfc -formatZK
+</code></pre>
+<h3 id="55-启动hdfs">5.5 启动HDFS</h3>
+<p>进入到 <code>hadoop001</code> 的 <code>${HADOOP_HOME}/sbin</code> 目录下，启动 HDFS。此时 <code>hadoop001</code> 和 <code>hadoop002</code> 上的 <code>NameNode</code> 服务，和三台服务器上的 <code>DataNode</code> 服务都会被启动：</p>
+<pre><code class="language-shell">start-dfs.sh
+</code></pre>
+<h3 id="56-启动yarn">5.6 启动YARN</h3>
+<p>进入到 <code>hadoop002</code> 的 <code>${HADOOP_HOME}/sbin</code> 目录下，启动 YARN。此时 <code>hadoop002</code> 上的 <code>ResourceManager</code> 服务，和三台服务器上的 <code>NodeManager</code> 服务都会被启动：</p>
+<pre><code class="language-SHEll">start-yarn.sh
+</code></pre>
+<p>需要注意的是，这个时候 <code>hadoop003</code> 上的 <code>ResourceManager</code> 服务通常是没有启动的，需要手动启动：</p>
+<pre><code class="language-shell">yarn-daemon.sh start resourcemanager
+</code></pre>
+<h2 id="六查看集群">六、查看集群</h2>
+<h3 id="61-查看进程">6.1 查看进程</h3>
+<p>成功启动后，每台服务器上的进程应该如下：</p>
+<pre><code class="language-shell">[root@hadoop001 sbin]# jps
+4512 DFSZKFailoverController
+3714 JournalNode
+4114 NameNode
+3668 QuorumPeerMain
+5012 DataNode
+4639 NodeManager
+
+
+[root@hadoop002 sbin]# jps
+4499 ResourceManager
+4595 NodeManager
+3465 QuorumPeerMain
+3705 NameNode
+3915 DFSZKFailoverController
+5211 DataNode
+3533 JournalNode
+
+
+[root@hadoop003 sbin]# jps
+3491 JournalNode
+3942 NodeManager
+4102 ResourceManager
+4201 DataNode
+3435 QuorumPeerMain
+</code></pre>
+<h3 id="62-查看web-ui">6.2 查看Web UI</h3>
+<p>HDFS 和 YARN 的端口号分别为 <code>50070</code> 和 <code>8080</code>，界面应该如下：</p>
+<p>此时 hadoop001 上的 <code>NameNode</code> 处于可用状态：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群1.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群1.png"></a>
+</div> 而 hadoop002 上的 `NameNode` 则处于备用状态：
+<br>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群3.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群3.png"></a>
+</div>
+<br>
+<p>hadoop002 上的 <code>ResourceManager</code> 处于可用状态：</p>
+<br>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群4.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群4.png"></a>
+</div>
+<br>
+<p>hadoop003 上的 <code>ResourceManager</code> 则处于备用状态：</p>
+<br>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群5.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群5.png"></a>
+</div>
+<br>
+<p>同时界面上也有 <code>Journal Manager</code> 的相关信息：</p>
+<br>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群2.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hadoop高可用集群2.png"></a>
+</div> ## 七、集群的二次启动
+<p>上面的集群初次启动涉及到一些必要初始化操作，所以过程略显繁琐。但是集群一旦搭建好后，想要再次启用它是比较方便的，步骤如下（首选需要确保 ZooKeeper 集群已经启动）：</p>
+<p>在 <code>hadoop001</code> 启动 HDFS，此时会启动所有与 HDFS 高可用相关的服务，包括 NameNode，DataNode 和 JournalNode：</p>
+<pre><code class="language-shell">start-dfs.sh
+</code></pre>
+<p>在 <code>hadoop002</code> 启动 YARN：</p>
+<pre><code class="language-SHEll">start-yarn.sh
+</code></pre>
+<p>这个时候 <code>hadoop003</code> 上的 <code>ResourceManager</code> 服务通常还是没有启动的，需要手动启动：</p>
+<pre><code class="language-shell">yarn-daemon.sh start resourcemanager
+</code></pre>
+<h2 id="参考资料">参考资料</h2>
+<p>以上搭建步骤主要参考自官方文档：</p>
+<ul>
+<li><a href="https://hadoop.apache.org/docs/r3.1.2/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html">HDFS High Availability Using the Quorum Journal Manager</a></li>
+<li><a href="https://hadoop.apache.org/docs/r3.1.2/hadoop-yarn/hadoop-yarn-site/ResourceManagerHA.html">ResourceManager High Availability</a></li>
+</ul>
+<p>关于 Hadoop 高可用原理的详细分析，推荐阅读：</p>
+<p><a href="https://www.ibm.com/developerworks/cn/opensource/os-cn-hadoop-name-node/index.html">Hadoop NameNode 高可用 (High Availability) 实现解析</a></p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/weixin-desc.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/weixin-desc.png"></a>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/108/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/108/index.html">Apache Storm 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/38/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/38/index.html">Java资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">61页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月23日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7938个">7938</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/182/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/amazonwebservices_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/182/index.html">亚马逊(aws)web服务实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/102.html">open-guides</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="amazonwebservices">amazonwebservices</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">314页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 24000个">24000</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/115/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/115/index.html">ANTLR 4简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/66/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/66/index.html">Java 8:新特性教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/42.html">shekhargulati</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1241个">1241</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/206/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/198/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/大数据学习路线.html" title="大数据学习路线" data-book-page-rel-url="notes/大数据学习路线.html" data-book-page-id="13354">大数据学习路线</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/大数据技术栈思维导图.html" title="大数据技术栈思维导图" data-book-page-rel-url="notes/大数据技术栈思维导图.html" data-book-page-id="13355">大数据技术栈思维导图</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/大数据常用软件安装指南.html" title="大数据常用软件安装指南" data-book-page-rel-url="notes/大数据常用软件安装指南.html" data-book-page-id="13356">大数据常用软件安装指南</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hadoop-HDFS.html" title="分布式文件存储系统 —— HDFS" data-book-page-rel-url="notes/Hadoop-HDFS.html" data-book-page-id="13357">分布式文件存储系统 —— HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hadoop-MapReduce.html" title="分布式计算框架 —— MapReduce" data-book-page-rel-url="notes/Hadoop-MapReduce.html" data-book-page-id="13358">分布式计算框架 —— MapReduce</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hadoop-YARN.html" title="集群资源管理器 —— YARN" data-book-page-rel-url="notes/Hadoop-YARN.html" data-book-page-id="13359">集群资源管理器 —— YARN</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Hadoop单机环境搭建.html" title="Hadoop 单机伪集群环境搭建" data-book-page-rel-url="notes/installation/Hadoop单机环境搭建.html" data-book-page-id="13360">Hadoop 单机伪集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Hadoop集群环境搭建.html" title="Hadoop 集群环境搭建" data-book-page-rel-url="notes/installation/Hadoop集群环境搭建.html" data-book-page-id="13361">Hadoop 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/HDFS常用Shell命令.html" title="HDFS 常用 Shell 命令" data-book-page-rel-url="notes/HDFS常用Shell命令.html" data-book-page-id="13362">HDFS 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/HDFS-Java-API.html" title="HDFS Java API 的使用" data-book-page-rel-url="notes/HDFS-Java-API.html" data-book-page-id="13363">HDFS Java API 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/基于Zookeeper搭建Hadoop高可用集群.html" title="基于 Zookeeper 搭建 Hadoop 高可用集群" data-book-page-rel-url="notes/installation/基于Zookeeper搭建Hadoop高可用集群.html" data-book-page-id="13364">基于 Zookeeper 搭建 Hadoop 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive简介及核心概念.html" title="Hive 简介及核心概念" data-book-page-rel-url="notes/Hive简介及核心概念.html" data-book-page-id="13365">Hive 简介及核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Linux环境下Hive的安装部署.html" title="Linux 环境下 Hive 的安装部署" data-book-page-rel-url="notes/installation/Linux环境下Hive的安装部署.html" data-book-page-id="13366">Linux 环境下 Hive 的安装部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/HiveCLI和Beeline命令行的基本使用.html" title="Hive CLI 和 Beeline 命令行的基本使用" data-book-page-rel-url="notes/HiveCLI和Beeline命令行的基本使用.html" data-book-page-id="13367">Hive CLI 和 Beeline 命令行的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive常用DDL操作.html" title="Hive 常用 DDL 操作" data-book-page-rel-url="notes/Hive常用DDL操作.html" data-book-page-id="13368">Hive 常用 DDL 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive分区表和分桶表.html" title="Hive 分区表和分桶表" data-book-page-rel-url="notes/Hive分区表和分桶表.html" data-book-page-id="13369">Hive 分区表和分桶表</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive视图和索引.html" title="Hive 视图和索引" data-book-page-rel-url="notes/Hive视图和索引.html" data-book-page-id="13370">Hive 视图和索引</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive常用DML操作.html" title="Hive 常用 DML 操作" data-book-page-rel-url="notes/Hive常用DML操作.html" data-book-page-id="13371">Hive 常用 DML 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hive数据查询详解.html" title="Hive 数据查询详解" data-book-page-rel-url="notes/Hive数据查询详解.html" data-book-page-id="13372">Hive 数据查询详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark简介.html" title="Spark 简介" data-book-page-rel-url="notes/Spark简介.html" data-book-page-id="13373">Spark 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Spark开发环境搭建.html" title="Spark 开发环境搭建" data-book-page-rel-url="notes/installation/Spark开发环境搭建.html" data-book-page-id="13374">Spark 开发环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_RDD.html" title="弹性式数据集 RDD" data-book-page-rel-url="notes/Spark_RDD.html" data-book-page-id="13375">弹性式数据集 RDD</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Transformation和Action算子.html" title="RDD 常用算子详解" data-book-page-rel-url="notes/Spark_Transformation和Action算子.html" data-book-page-id="13376">RDD 常用算子详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark部署模式与作业提交.html" title="Spark 运行模式与作业提交" data-book-page-rel-url="notes/Spark部署模式与作业提交.html" data-book-page-id="13377">Spark 运行模式与作业提交</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark累加器与广播变量.html" title="Spark 累加器与广播变量" data-book-page-rel-url="notes/Spark累加器与广播变量.html" data-book-page-id="13378">Spark 累加器与广播变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Spark集群环境搭建.html" title="基于 Zookeeper 搭建 Spark 高可用集群" data-book-page-rel-url="notes/installation/Spark集群环境搭建.html" data-book-page-id="13379">基于 Zookeeper 搭建 Spark 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/SparkSQL_Dataset和DataFrame简介.html" title="DateFrame 和 DataSet" data-book-page-rel-url="notes/SparkSQL_Dataset和DataFrame简介.html" data-book-page-id="13380">DateFrame 和 DataSet</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Structured_API的基本使用.html" title="Structured API 的基本使用" data-book-page-rel-url="notes/Spark_Structured_API的基本使用.html" data-book-page-id="13381">Structured API 的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/SparkSQL外部数据源.html" title="Spark SQL 外部数据源" data-book-page-rel-url="notes/SparkSQL外部数据源.html" data-book-page-id="13382">Spark SQL 外部数据源</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/SparkSQL常用聚合函数.html" title="Spark SQL 常用聚合函数" data-book-page-rel-url="notes/SparkSQL常用聚合函数.html" data-book-page-id="13383">Spark SQL 常用聚合函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/SparkSQL联结操作.html" title="Spark SQL JOIN 操作" data-book-page-rel-url="notes/SparkSQL联结操作.html" data-book-page-id="13384">Spark SQL JOIN 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Streaming与流处理.html" title="Spark Streaming 简介" data-book-page-rel-url="notes/Spark_Streaming与流处理.html" data-book-page-id="13385">Spark Streaming 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Streaming基本操作.html" title="Spark Streaming 基本操作" data-book-page-rel-url="notes/Spark_Streaming基本操作.html" data-book-page-id="13386">Spark Streaming 基本操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Streaming整合Flume.html" title="Spark Streaming 整合 Flume" data-book-page-rel-url="notes/Spark_Streaming整合Flume.html" data-book-page-id="13387">Spark Streaming 整合 Flume</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spark_Streaming整合Kafka.html" title="Spark Streaming 整合 Kafka" data-book-page-rel-url="notes/Spark_Streaming整合Kafka.html" data-book-page-id="13388">Spark Streaming 整合 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm和流处理简介.html" title="Storm 和流处理简介" data-book-page-rel-url="notes/Storm和流处理简介.html" data-book-page-id="13389">Storm 和流处理简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm核心概念详解.html" title="Storm 核心概念详解" data-book-page-rel-url="notes/Storm核心概念详解.html" data-book-page-id="13390">Storm 核心概念详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Storm单机环境搭建.html" title="Storm 单机环境搭建" data-book-page-rel-url="notes/installation/Storm单机环境搭建.html" data-book-page-id="13391">Storm 单机环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Storm集群环境搭建.html" title="Storm 集群环境搭建" data-book-page-rel-url="notes/installation/Storm集群环境搭建.html" data-book-page-id="13392">Storm 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm编程模型详解.html" title="Storm 编程模型详解" data-book-page-rel-url="notes/Storm编程模型详解.html" data-book-page-id="13393">Storm 编程模型详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm三种打包方式对比分析.html" title="Storm 项目三种打包方式对比分析" data-book-page-rel-url="notes/Storm三种打包方式对比分析.html" data-book-page-id="13394">Storm 项目三种打包方式对比分析</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm集成Redis详解.html" title="Storm 集成 Redis 详解" data-book-page-rel-url="notes/Storm集成Redis详解.html" data-book-page-id="13395">Storm 集成 Redis 详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm集成HBase和HDFS.html" title="Storm 集成 HDFS/HBase" data-book-page-rel-url="notes/Storm集成HBase和HDFS.html" data-book-page-id="13396">Storm 集成 HDFS/HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Storm集成Kakfa.html" title="Storm 集成 Kafka" data-book-page-rel-url="notes/Storm集成Kakfa.html" data-book-page-id="13397">Storm 集成 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink核心概念综述.html" title="Flink 核心概念综述" data-book-page-rel-url="notes/Flink核心概念综述.html" data-book-page-id="13398">Flink 核心概念综述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink开发环境搭建.html" title="Flink 开发环境搭建" data-book-page-rel-url="notes/Flink开发环境搭建.html" data-book-page-id="13399">Flink 开发环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink_Data_Source.html" title="Flink Data Source" data-book-page-rel-url="notes/Flink_Data_Source.html" data-book-page-id="13400">Flink Data Source</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink_Data_Transformation.html" title="Flink Data Transformation" data-book-page-rel-url="notes/Flink_Data_Transformation.html" data-book-page-id="13401">Flink Data Transformation</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink_Data_Sink.html" title="Flink Data Sink" data-book-page-rel-url="notes/Flink_Data_Sink.html" data-book-page-id="13402">Flink Data Sink</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink_Windows.html" title="Flink 窗口模型" data-book-page-rel-url="notes/Flink_Windows.html" data-book-page-id="13403">Flink 窗口模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flink状态管理与检查点机制.html" title="Flink 状态管理与检查点机制" data-book-page-rel-url="notes/Flink状态管理与检查点机制.html" data-book-page-id="13404">Flink 状态管理与检查点机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Flink_Standalone_Cluster.html" title="Flink Standalone 集群部署" data-book-page-rel-url="notes/installation/Flink_Standalone_Cluster.html" data-book-page-id="13405">Flink Standalone 集群部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase简介.html" title="Hbase 简介" data-book-page-rel-url="notes/Hbase简介.html" data-book-page-id="13406">Hbase 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase系统架构及数据结构.html" title="HBase 系统架构及数据结构" data-book-page-rel-url="notes/Hbase系统架构及数据结构.html" data-book-page-id="13407">HBase 系统架构及数据结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/HBase单机环境搭建.html" title="HBase 基本环境搭建 (Standalone /pseudo-distributed mode)" data-book-page-rel-url="notes/installation/HBase单机环境搭建.html" data-book-page-id="13408">HBase 基本环境搭建 (Standalone /pseudo-distributed mode)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/HBase集群环境搭建.html" title="HBase 集群环境搭建" data-book-page-rel-url="notes/installation/HBase集群环境搭建.html" data-book-page-id="13409">HBase 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase_Shell.html" title="HBase 常用 Shell 命令" data-book-page-rel-url="notes/Hbase_Shell.html" data-book-page-id="13410">HBase 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase_Java_API.html" title="HBase Java API" data-book-page-rel-url="notes/Hbase_Java_API.html" data-book-page-id="13411">HBase Java API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase过滤器详解.html" title="HBase 过滤器详解" data-book-page-rel-url="notes/Hbase过滤器详解.html" data-book-page-id="13412">HBase 过滤器详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase协处理器详解.html" title="HBase 协处理器详解" data-book-page-rel-url="notes/Hbase协处理器详解.html" data-book-page-id="13413">HBase 协处理器详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase容灾与备份.html" title="HBase 容灾与备份" data-book-page-rel-url="notes/Hbase容灾与备份.html" data-book-page-id="13414">HBase 容灾与备份</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Hbase的SQL中间层_Phoenix.html" title="HBase的 SQL 中间层 —— Phoenix" data-book-page-rel-url="notes/Hbase的SQL中间层_Phoenix.html" data-book-page-id="13415">HBase的 SQL 中间层 —— Phoenix</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Spring+Mybtais+Phoenix整合.html" title="Spring/Spring Boot 整合 Mybatis + Phoenix" data-book-page-rel-url="notes/Spring+Mybtais+Phoenix整合.html" data-book-page-id="13416">Spring/Spring Boot 整合 Mybatis + Phoenix</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Kafka简介.html" title="Kafka 简介" data-book-page-rel-url="notes/Kafka简介.html" data-book-page-id="13417">Kafka 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/基于Zookeeper搭建Kafka高可用集群.html" title="基于 Zookeeper 搭建 Kafka 高可用集群" data-book-page-rel-url="notes/installation/基于Zookeeper搭建Kafka高可用集群.html" data-book-page-id="13418">基于 Zookeeper 搭建 Kafka 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Kafka生产者详解.html" title="Kafka 生产者详解" data-book-page-rel-url="notes/Kafka生产者详解.html" data-book-page-id="13419">Kafka 生产者详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Kafka消费者详解.html" title="Kafka 消费者详解" data-book-page-rel-url="notes/Kafka消费者详解.html" data-book-page-id="13420">Kafka 消费者详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Kafka深入理解分区副本机制.html" title="深入理解 Kafka 副本机制" data-book-page-rel-url="notes/Kafka深入理解分区副本机制.html" data-book-page-id="13421">深入理解 Kafka 副本机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Zookeeper简介及核心概念.html" title="Zookeeper 简介及核心概念" data-book-page-rel-url="notes/Zookeeper简介及核心概念.html" data-book-page-id="13422">Zookeeper 简介及核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Zookeeper单机环境和集群环境搭建.html" title="Zookeeper 单机环境和集群环境搭建" data-book-page-rel-url="notes/installation/Zookeeper单机环境和集群环境搭建.html" data-book-page-id="13423">Zookeeper 单机环境和集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Zookeeper常用Shell命令.html" title="Zookeeper 常用 Shell 命令" data-book-page-rel-url="notes/Zookeeper常用Shell命令.html" data-book-page-id="13424">Zookeeper 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Zookeeper_Java客户端Curator.html" title="Zookeeper Java 客户端 —— Apache Curator" data-book-page-rel-url="notes/Zookeeper_Java客户端Curator.html" data-book-page-id="13425">Zookeeper Java 客户端 —— Apache Curator</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Zookeeper_ACL权限控制.html" title="Zookeeper  ACL 权限控制" data-book-page-rel-url="notes/Zookeeper_ACL权限控制.html" data-book-page-id="13426">Zookeeper ACL 权限控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flume简介及基本使用.html" title="Flume 简介及基本使用" data-book-page-rel-url="notes/Flume简介及基本使用.html" data-book-page-id="13427">Flume 简介及基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Linux下Flume的安装.html" title="Linux 环境下 Flume 的安装部署" data-book-page-rel-url="notes/installation/Linux下Flume的安装.html" data-book-page-id="13428">Linux 环境下 Flume 的安装部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Flume整合Kafka.html" title="Flume 整合 Kafka" data-book-page-rel-url="notes/Flume整合Kafka.html" data-book-page-id="13429">Flume 整合 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Sqoop简介与安装.html" title="Sqoop 简介与安装" data-book-page-rel-url="notes/Sqoop简介与安装.html" data-book-page-id="13430">Sqoop 简介与安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Sqoop基本使用.html" title="Sqoop 的基本使用" data-book-page-rel-url="notes/Sqoop基本使用.html" data-book-page-id="13431">Sqoop 的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Azkaban简介.html" title="Azkaban 简介" data-book-page-rel-url="notes/Azkaban简介.html" data-book-page-id="13432">Azkaban 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/installation/Azkaban_3.x_编译及部署.html" title="Azkaban3.x 编译及部署" data-book-page-rel-url="notes/installation/Azkaban_3.x_编译及部署.html" data-book-page-id="13433">Azkaban3.x 编译及部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Azkaban_Flow_1.0_的使用.html" title="Azkaban Flow 1.0 的使用" data-book-page-rel-url="notes/Azkaban_Flow_1.0_的使用.html" data-book-page-id="13434">Azkaban Flow 1.0 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Azkaban_Flow_2.0_的使用.html" title="Azkaban Flow 2.0 的使用" data-book-page-rel-url="notes/Azkaban_Flow_2.0_的使用.html" data-book-page-id="13435">Azkaban Flow 2.0 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala简介及开发环境配置.html" title="Scala 简介及开发环境配置" data-book-page-rel-url="notes/Scala简介及开发环境配置.html" data-book-page-id="13436">Scala 简介及开发环境配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala基本数据类型和运算符.html" title="基本数据类型和运算符" data-book-page-rel-url="notes/Scala基本数据类型和运算符.html" data-book-page-id="13437">基本数据类型和运算符</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala流程控制语句.html" title="流程控制语句" data-book-page-rel-url="notes/Scala流程控制语句.html" data-book-page-id="13438">流程控制语句</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala数组.html" title="数组 —— Array" data-book-page-rel-url="notes/Scala数组.html" data-book-page-id="13439">数组 —— Array</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala集合类型.html" title="集合类型综述" data-book-page-rel-url="notes/Scala集合类型.html" data-book-page-id="13440">集合类型综述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala列表和集.html" title="常用集合类型之 —— List & Set" data-book-page-rel-url="notes/Scala列表和集.html" data-book-page-id="13441">常用集合类型之 —— List & Set</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala映射和元组.html" title="常用集合类型之 —— Map & Tuple" data-book-page-rel-url="notes/Scala映射和元组.html" data-book-page-id="13442">常用集合类型之 —— Map & Tuple</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala类和对象.html" title="类和对象" data-book-page-rel-url="notes/Scala类和对象.html" data-book-page-id="13443">类和对象</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala继承和特质.html" title="继承和特质" data-book-page-rel-url="notes/Scala继承和特质.html" data-book-page-id="13444">继承和特质</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala函数和闭包.html" title="函数 & 闭包 & 柯里化" data-book-page-rel-url="notes/Scala函数和闭包.html" data-book-page-id="13445">函数 & 闭包 & 柯里化</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala模式匹配.html" title="模式匹配" data-book-page-rel-url="notes/Scala模式匹配.html" data-book-page-id="13446">模式匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala类型参数.html" title="类型参数" data-book-page-rel-url="notes/Scala类型参数.html" data-book-page-id="13447">类型参数</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/Scala隐式转换和隐式参数.html" title="隐式转换和隐式参数" data-book-page-rel-url="notes/Scala隐式转换和隐式参数.html" data-book-page-id="13448">隐式转换和隐式参数</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/大数据应用常用打包方式.html" title="大数据应用常用打包方式" data-book-page-rel-url="notes/大数据应用常用打包方式.html" data-book-page-id="13449">大数据应用常用打包方式</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/198/notes/资料分享与工具推荐.html" title="资料分享与开发工具推荐" data-book-page-rel-url="notes/资料分享与工具推荐.html" data-book-page-id="13450">资料分享与开发工具推荐</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =198;var bookPageId =13364;var bookPageRelUrl ='notes/installation/基于Zookeeper搭建Hadoop高可用集群.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

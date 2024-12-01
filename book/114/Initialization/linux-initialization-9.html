@@ -1,0 +1,859 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>RCU 初始化-Linux 内核揭密</title>
+<meta content='RCU 初始化,Linux 内核揭密' name='keywords'>
+<meta content='RCU 初始化,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Initialization/linux-initialization-8.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">调度器初始化</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Initialization/linux-initialization-10.html">
+<span class="">初始化结束</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="kernel-initialization-part-9">Kernel initialization. Part 9.</h1>
+<h1 id="rcu-initialization">RCU initialization</h1>
+<p>This is ninth part of the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/index.html">Linux Kernel initialization process</a> and in the previous part we stopped at the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-8.html">scheduler initialization</a>. In this part we will continue to dive to the linux kernel initialization process and the main purpose of this part will be to learn about initialization of the <a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a>. We can see that the next step in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> after the <code>sched_init</code> is the call of the <code>preempt_disable</code>. There are two macros:</p>
+<ul>
+<li><code>preempt_disable</code></li>
+<li><code>preempt_enable</code></li>
+</ul>
+<p>for preemption disabling and enabling. First of all let's try to understand what is <code>preempt</code> in the context of an operating system kernel. In simple words, preemption is ability of the operating system kernel to preempt current task to run task with higher priority. Here we need to disable preemption because we will have only one <code>init</code> process for the early boot time and we don't need to stop it before we call <code>cpu_idle</code> function. The <code>preempt_disable</code> macro is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/preempt.h">include/linux/preempt.h</a> and depends on the <code>CONFIG_PREEMPT_COUNT</code> kernel configuration option. This macro is implemented as:</p>
+<pre><code class="language-C">#define preempt_disable() \
+do { \
+        preempt_count_inc(); \
+        barrier(); \
+} while (0)
+</code></pre>
+<p>and if <code>CONFIG_PREEMPT_COUNT</code> is not set just:</p>
+<pre><code class="language-C">#define preempt_disable()                       barrier()
+</code></pre>
+<p>Let's look on it. First of all we can see one difference between these macro implementations. The <code>preempt_disable</code> with <code>CONFIG_PREEMPT_COUNT</code> set contains the call of the <code>preempt_count_inc</code>. There is special <code>percpu</code> variable which stores the number of held locks and <code>preempt_disable</code> calls:</p>
+<pre><code class="language-C">DECLARE_PER_CPU(int, __preempt_count);
+</code></pre>
+<p>In the first implementation of the <code>preempt_disable</code> we increment this <code>__preempt_count</code>. There is API for returning value of the <code>__preempt_count</code>, it is the <code>preempt_count</code> function. As we called <code>preempt_disable</code>, first of all we increment preemption counter with the <code>preempt_count_inc</code> macro which expands to the:</p>
+<pre><code>#define preempt_count_inc() preempt_count_add(1)
+#define preempt_count_add(val)  __preempt_count_add(val)
+</code></pre>
+<p>where <code>preempt_count_add</code> calls the <code>raw_cpu_add_4</code> macro which adds <code>1</code> to the given <code>percpu</code> variable (<code>__preempt_count</code>) in our case (more about <code>precpu</code> variables you can read in the part about <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">Per-CPU variables</a>). Ok, we increased <code>__preempt_count</code> and the next step we can see the call of the <code>barrier</code> macro in the both macros. The <code>barrier</code> macro inserts an optimization barrier. In the processors with <code>x86_64</code> architecture independent memory access operations can be performed in any order. That's why we need the opportunity to point compiler and processor on compliance of order. This mechanism is memory barrier. Let's consider a simple example:</p>
+<pre><code class="language-C">preempt_disable();
+foo();
+preempt_enable();
+</code></pre>
+<p>Compiler can rearrange it as:</p>
+<pre><code class="language-C">preempt_disable();
+preempt_enable();
+foo();
+</code></pre>
+<p>In this case non-preemptible function <code>foo</code> can be preempted. As we put <code>barrier</code> macro in the <code>preempt_disable</code> and <code>preempt_enable</code> macros, it prevents the compiler from swapping <code>preempt_count_inc</code> with other statements. More about barriers you can read <a href="http://en.wikipedia.org/wiki/Memory_barrier">here</a> and <a href="https://www.kernel.org/doc/Documentation/memory-barriers.txt">here</a>.</p>
+<p>In the next step we can see following statement:</p>
+<pre><code class="language-C">if (WARN(!irqs_disabled(),
+	 "Interrupts were enabled *very* early, fixing it\n"))
+	local_irq_disable();
+</code></pre>
+<p>which check <a href="http://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQs</a> state, and disabling (with <code>cli</code> instruction for <code>x86_64</code>) if they are enabled.</p>
+<p>That's all. Preemption is disabled and we can go ahead.</p>
+<h2 id="initialization-of-the-integer-id-management">Initialization of the integer ID management</h2>
+<p>In the next step we can see the call of the <code>idr_init_cache</code> function which defined in the <a href="https://github.com/torvalds/linux/blob/master/lib/idr.c">lib/idr.c</a>. The <code>idr</code> library is used in a various <a href="http://lxr.free-electrons.com/ident?i=idr_find">places</a> in the linux kernel to manage assigning integer <code>IDs</code> to objects and looking up objects by id.</p>
+<p>Let's look on the implementation of the <code>idr_init_cache</code> function:</p>
+<pre><code class="language-C">void __init idr_init_cache(void)
+{
+        idr_layer_cache = kmem_cache_create("idr_layer_cache",
+                                sizeof(struct idr_layer), 0, SLAB_PANIC, NULL);
+}
+</code></pre>
+<p>Here we can see the call of the <code>kmem_cache_create</code>. We already called the <code>kmem_cache_init</code> in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c#L485">init/main.c</a>. This function create generalized caches again using the <code>kmem_cache_alloc</code> (more about caches we will see in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">Linux kernel memory management</a> chapter). In our case, as we are using <code>kmem_cache_t</code> which will be used by the <a href="http://en.wikipedia.org/wiki/Slab_allocation">slab</a> allocator and <code>kmem_cache_create</code> creates it. As you can see we pass five parameters to the <code>kmem_cache_create</code>:</p>
+<ul>
+<li>name of the cache;</li>
+<li>size of the object to store in cache;</li>
+<li>offset of the first object in the page;</li>
+<li>flags;</li>
+<li>constructor for the objects.</li>
+</ul>
+<p>and it will create <code>kmem_cache</code> for the integer IDs. Integer <code>IDs</code> is commonly used pattern to map set of integer IDs to the set of pointers. We can see usage of the integer IDs in the <a href="http://en.wikipedia.org/wiki/I%C2%B2C">i2c</a> drivers subsystem. For example <a href="https://github.com/torvalds/linux/blob/master/drivers/i2c/i2c-core.c">drivers/i2c/i2c-core.c</a> which represents the core of the <code>i2c</code> subsystem defines <code>ID</code> for the <code>i2c</code> adapter with the <code>DEFINE_IDR</code> macro:</p>
+<pre><code class="language-C">static DEFINE_IDR(i2c_adapter_idr);
+</code></pre>
+<p>and then uses it for the declaration of the <code>i2c</code> adapter:</p>
+<pre><code class="language-C">static int __i2c_add_numbered_adapter(struct i2c_adapter *adap)
+{
+  int     id;
+  ...
+  ...
+  ...
+  id = idr_alloc(&amp;i2c_adapter_idr, adap, adap-&gt;nr, adap-&gt;nr + 1, GFP_KERNEL);
+  ...
+  ...
+  ...
+}
+</code></pre>
+<p>and <code>id2_adapter_idr</code> presents dynamically calculated bus number.</p>
+<p>More about integer ID management you can read <a href="https://lwn.net/Articles/103209/">here</a>.</p>
+<h2 id="rcu-initialization-1">RCU initialization</h2>
+<p>The next step is <a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a> initialization with the <code>rcu_init</code> function and it's implementation depends on two kernel configuration options:</p>
+<ul>
+<li><code>CONFIG_TINY_RCU</code></li>
+<li><code>CONFIG_TREE_RCU</code></li>
+</ul>
+<p>In the first case <code>rcu_init</code> will be in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tiny.c">kernel/rcu/tiny.c</a> and in the second case it will be defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.c">kernel/rcu/tree.c</a>. We will see the implementation of the <code>tree rcu</code>, but first of all about the <code>RCU</code> in general.</p>
+<p><code>RCU</code> or read-copy update is a scalable high-performance synchronization mechanism implemented in the Linux kernel. On the early stage the linux kernel provided support and environment for the concurrently running applications, but all execution was serialized in the kernel using a single global lock. In our days linux kernel has no single global lock, but provides different mechanisms including <a href="http://en.wikipedia.org/wiki/Concurrent_data_structure">lock-free data structures</a>, <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">percpu</a> data structures and other. One of these mechanisms is - the <code>read-copy update</code>. The <code>RCU</code> technique is designed for rarely-modified data structures. The idea of the <code>RCU</code> is simple. For example we have a rarely-modified data structure. If somebody wants to change this data structure, we make a copy of this data structure and make all changes in the copy. In the same time all other users of the data structure use old version of it. Next, we need to choose safe moment when original version of the data structure will have no users and update it with the modified copy.</p>
+<p>Of course this description of the <code>RCU</code> is very simplified. To understand some details about <code>RCU</code>, first of all we need to learn some terminology. Data readers in the <code>RCU</code> executed in the <a href="http://en.wikipedia.org/wiki/Critical_section">critical section</a>. Every time when data reader get to the critical section, it calls the <code>rcu_read_lock</code>, and <code>rcu_read_unlock</code> on exit from the critical section. If the thread is not in the critical section, it will be in state which called - <code>quiescent state</code>. The moment when every thread is in the <code>quiescent state</code> called - <code>grace period</code>. If a thread wants to remove an element from the data structure, this occurs in two steps. First step is <code>removal</code> - atomically removes element from the data structure, but does not release the physical memory. After this thread-writer announces and waits until it is finished. From this moment, the removed element is available to the thread-readers. After the <code>grace period</code> finished, the second step of the element removal will be started, it just removes the element from the physical memory.</p>
+<p>There a couple of implementations of the <code>RCU</code>. Old <code>RCU</code> called classic, the new implementation called <code>tree</code> RCU. As you may already understand, the <code>CONFIG_TREE_RCU</code> kernel configuration option enables tree <code>RCU</code>. Another is the <code>tiny</code> RCU which depends on <code>CONFIG_TINY_RCU</code> and <code>CONFIG_SMP=n</code>. We will see more details about the <code>RCU</code> in general in the separate chapter about synchronization primitives, but now let's look on the <code>rcu_init</code> implementation from the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.c">kernel/rcu/tree.c</a>:</p>
+<pre><code class="language-C">void __init rcu_init(void)
+{
+         int cpu;
+
+         rcu_bootup_announce();
+         rcu_init_geometry();
+         rcu_init_one(&amp;rcu_bh_state, &amp;rcu_bh_data);
+         rcu_init_one(&amp;rcu_sched_state, &amp;rcu_sched_data);
+         __rcu_init_preempt();
+         open_softirq(RCU_SOFTIRQ, rcu_process_callbacks);
+
+         /*
+          * We don't need protection against CPU-hotplug here because
+          * this is called early in boot, before either interrupts
+          * or the scheduler are operational.
+          */
+         cpu_notifier(rcu_cpu_notify, 0);
+         pm_notifier(rcu_pm_notify, 0);
+         for_each_online_cpu(cpu)
+                 rcu_cpu_notify(NULL, CPU_UP_PREPARE, (void *)(long)cpu);
+
+         rcu_early_boot_tests();
+}
+</code></pre>
+<p>In the beginning of the <code>rcu_init</code> function we define <code>cpu</code> variable and call <code>rcu_bootup_announce</code>. The <code>rcu_bootup_announce</code> function is pretty simple:</p>
+<pre><code class="language-C">static void __init rcu_bootup_announce(void)
+{
+        pr_info("Hierarchical RCU implementation.\n");
+        rcu_bootup_announce_oddness();
+}
+</code></pre>
+<p>It just prints information about the <code>RCU</code> with the <code>pr_info</code> function and <code>rcu_bootup_announce_oddness</code> which uses <code>pr_info</code> too, for printing different information about the current <code>RCU</code> configuration which depends on different kernel configuration options like <code>CONFIG_RCU_TRACE</code>, <code>CONFIG_PROVE_RCU</code>, <code>CONFIG_RCU_FANOUT_EXACT</code>, etc. In the next step, we can see the call of the <code>rcu_init_geometry</code> function. This function is defined in the same source code file and computes the node tree geometry depends on the amount of CPUs. Actually <code>RCU</code> provides scalability with extremely low internal RCU lock contention. What if a data structure will be read from the different CPUs? <code>RCU</code> API provides the <code>rcu_state</code> structure which presents RCU global state including node hierarchy. Hierarchy is presented by the:</p>
+<pre><code>struct rcu_node node[NUM_RCU_NODES];
+</code></pre>
+<p>array of structures. As we can read in the comment of above definition:</p>
+<pre><code>The root (first level) of the hierarchy is in -&gt;node[0] (referenced by -&gt;level[0]), the second
+level in -&gt;node[1] through -&gt;node[m] (-&gt;node[1] referenced by -&gt;level[1]), and the third level
+in -&gt;node[m+1] and following (-&gt;node[m+1] referenced by -&gt;level[2]).  The number of levels is
+determined by the number of CPUs and by CONFIG_RCU_FANOUT.
+
+Small systems will have a "hierarchy" consisting of a single rcu_node.
+</code></pre>
+<p>The <code>rcu_node</code> structure is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.h">kernel/rcu/tree.h</a> and contains information about current grace period, is grace period completed or not, CPUs or groups that need to switch in order for current grace period to proceed, etc. Every <code>rcu_node</code> contains a lock for a couple of CPUs. These <code>rcu_node</code> structures are embedded into a linear array in the <code>rcu_state</code> structure and represented as a tree with the root as the first element and covers all CPUs. As you can see the number of the rcu nodes determined by the <code>NUM_RCU_NODES</code> which depends on number of available CPUs:</p>
+<pre><code class="language-C">#define NUM_RCU_NODES (RCU_SUM - NR_CPUS)
+#define RCU_SUM (NUM_RCU_LVL_0 + NUM_RCU_LVL_1 + NUM_RCU_LVL_2 + NUM_RCU_LVL_3 + NUM_RCU_LVL_4)
+</code></pre>
+<p>where levels values depend on the <code>CONFIG_RCU_FANOUT_LEAF</code> configuration option. For example for the simplest case, one <code>rcu_node</code> will cover two CPU on machine with the eight CPUs:</p>
+<pre><code>+-----------------------------------------------------------------+
+|  rcu_state                                                      |
+|                 +----------------------+                        |
+|                 |         root         |                        |
+|                 |       rcu_node       |                        |
+|                 +----------------------+                        |
+|                    |                |                           |
+|               +----v-----+       +--v-------+                   |
+|               |          |       |          |                   |
+|               | rcu_node |       | rcu_node |                   |
+|               |          |       |          |                   |
+|         +------------------+     +----------------+             |
+|         |                  |        |             |             |
+|         |                  |        |             |             |
+|    +----v-----+    +-------v--+   +-v--------+  +-v--------+    |
+|    |          |    |          |   |          |  |          |    |
+|    | rcu_node |    | rcu_node |   | rcu_node |  | rcu_node |    |
+|    |          |    |          |   |          |  |          |    |
+|    +----------+    +----------+   +----------+  +----------+    |
+|         |                 |             |               |       |
+|         |                 |             |               |       |
+|         |                 |             |               |       |
+|         |                 |             |               |       |
++---------|-----------------|-------------|---------------|-------+
+          |                 |             |               |
++---------v-----------------v-------------v---------------v--------+
+|                 |                |               |               |
+|     CPU1        |      CPU3      |      CPU5     |     CPU7      |
+|                 |                |               |               |
+|     CPU2        |      CPU4      |      CPU6     |     CPU8      |
+|                 |                |               |               |
++------------------------------------------------------------------+
+</code></pre>
+<p>So, in the <code>rcu_init_geometry</code> function we just need to calculate the total number of <code>rcu_node</code> structures. We start to do it with the calculation of the <code>jiffies</code> till to the first and next <code>fqs</code> which is <code>force-quiescent-state</code> (read above about it):</p>
+<pre><code class="language-C">d = RCU_JIFFIES_TILL_FORCE_QS + nr_cpu_ids / RCU_JIFFIES_FQS_DIV;
+if (jiffies_till_first_fqs == ULONG_MAX)
+        jiffies_till_first_fqs = d;
+if (jiffies_till_next_fqs == ULONG_MAX)
+        jiffies_till_next_fqs = d;
+</code></pre>
+<p>where:</p>
+<pre><code class="language-C">#define RCU_JIFFIES_TILL_FORCE_QS (1 + (HZ &gt; 250) + (HZ &gt; 500))
+#define RCU_JIFFIES_FQS_DIV     256
+</code></pre>
+<p>As we calculated these <a href="http://en.wikipedia.org/wiki/Jiffy_%28time%29">jiffies</a>, we check that previous defined <code>jiffies_till_first_fqs</code> and <code>jiffies_till_next_fqs</code> variables are equal to the <a href="http://www.rowleydownload.co.uk/avr/documentation/index.htm?http://www.rowleydownload.co.uk/avr/documentation/ULONG_MAX.htm">ULONG_MAX</a> (their default values) and set they equal to the calculated value. As we did not touch these variables before, they are equal to the <code>ULONG_MAX</code>:</p>
+<pre><code class="language-C">static ulong jiffies_till_first_fqs = ULONG_MAX;
+static ulong jiffies_till_next_fqs = ULONG_MAX;
+</code></pre>
+<p>In the next step of the <code>rcu_init_geometry</code>, we check that <code>rcu_fanout_leaf</code> didn't change (it has the same value as <code>CONFIG_RCU_FANOUT_LEAF</code> in compile-time) and equal to the value of the <code>CONFIG_RCU_FANOUT_LEAF</code> configuration option, we just return:</p>
+<pre><code class="language-C">if (rcu_fanout_leaf == CONFIG_RCU_FANOUT_LEAF &amp;&amp;
+    nr_cpu_ids == NR_CPUS)
+    return;
+</code></pre>
+<p>After this we need to compute the number of nodes that an <code>rcu_node</code> tree can handle with the given number of levels:</p>
+<pre><code class="language-C">rcu_capacity[0] = 1;
+rcu_capacity[1] = rcu_fanout_leaf;
+for (i = 2; i &lt;= MAX_RCU_LVLS; i++)
+    rcu_capacity[i] = rcu_capacity[i - 1] * CONFIG_RCU_FANOUT;
+</code></pre>
+<p>And in the last step we calculate the number of rcu_nodes at each level of the tree in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.c#L4094">loop</a>.</p>
+<p>As we calculated geometry of the <code>rcu_node</code> tree, we need to go back to the <code>rcu_init</code> function and next step we need to initialize two <code>rcu_state</code> structures with the <code>rcu_init_one</code> function:</p>
+<pre><code class="language-C">rcu_init_one(&amp;rcu_bh_state, &amp;rcu_bh_data);
+rcu_init_one(&amp;rcu_sched_state, &amp;rcu_sched_data);
+</code></pre>
+<p>The <code>rcu_init_one</code> function takes two arguments:</p>
+<ul>
+<li>Global <code>RCU</code> state;</li>
+<li>Per-CPU data for <code>RCU</code>.</li>
+</ul>
+<p>Both variables defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.h">kernel/rcu/tree.h</a> with its <code>percpu</code> data:</p>
+<pre><code>extern struct rcu_state rcu_bh_state;
+DECLARE_PER_CPU(struct rcu_data, rcu_bh_data);
+</code></pre>
+<p>About this states you can read <a href="http://lwn.net/Articles/264090/">here</a>. As I wrote above we need to initialize <code>rcu_state</code> structures and <code>rcu_init_one</code> function will help us with it. After the <code>rcu_state</code> initialization, we can see the call of the <code>__rcu_init_preempt</code> which depends on the <code>CONFIG_PREEMPT_RCU</code> kernel configuration option. It does the same as previous functions - initialization of the <code>rcu_preempt_state</code> structure with the <code>rcu_init_one</code> function which has <code>rcu_state</code> type. After this, in the <code>rcu_init</code>, we can see the call of the:</p>
+<pre><code class="language-C">open_softirq(RCU_SOFTIRQ, rcu_process_callbacks);
+</code></pre>
+<p>function. This function registers a handler of the <code>pending interrupt</code>. Pending interrupt or <code>softirq</code> supposes that part of actions can be delayed for later execution when the system is less loaded. Pending interrupts is represented by the following structure:</p>
+<pre><code class="language-C">struct softirq_action
+{
+        void    (*action)(struct softirq_action *);
+};
+</code></pre>
+<p>which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/interrupt.h">include/linux/interrupt.h</a> and contains only one field - handler of an interrupt. You can check about <code>softirqs</code> in the your system with the:</p>
+<pre><code>$ cat /proc/softirqs
+                    CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7
+          HI:          2          0          0          1          0          2          0          0
+       TIMER:     137779     108110     139573     107647     107408     114972      99653      98665
+      NET_TX:       1127          0          4          0          1          1          0          0
+      NET_RX:        334        221     132939       3076        451        361        292        303
+       BLOCK:       5253       5596          8        779       2016      37442         28       2855
+BLOCK_IOPOLL:          0          0          0          0          0          0          0          0
+     TASKLET:         66          0       2916        113          0         24      26708          0
+       SCHED:     102350      75950      91705      75356      75323      82627      69279      69914
+     HRTIMER:        510        302        368        260        219        255        248        246
+         RCU:      81290      68062      82979      69015      68390      69385      63304      63473
+</code></pre>
+<p>The <code>open_softirq</code> function takes two parameters:</p>
+<ul>
+<li>index of the interrupt;</li>
+<li>interrupt handler.</li>
+</ul>
+<p>and adds interrupt handler to the array of the pending interrupts:</p>
+<pre><code class="language-C">void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+        softirq_vec[nr].action = action;
+}
+</code></pre>
+<p>In our case the interrupt handler is - <code>rcu_process_callbacks</code> which is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/rcu/tree.c">kernel/rcu/tree.c</a> and does the <code>RCU</code> core processing for the current CPU. After we registered <code>softirq</code> interrupt for the <code>RCU</code>, we can see the following code:</p>
+<pre><code class="language-C">cpu_notifier(rcu_cpu_notify, 0);
+pm_notifier(rcu_pm_notify, 0);
+for_each_online_cpu(cpu)
+    rcu_cpu_notify(NULL, CPU_UP_PREPARE, (void *)(long)cpu);
+</code></pre>
+<p>Here we can see registration of the <code>cpu</code> notifier which needs in systems which supports <a href="https://www.kernel.org/doc/Documentation/cpu-hotplug.txt">CPU hotplug</a> and we will not dive into details about this theme. The last function in the <code>rcu_init</code> is the <code>rcu_early_boot_tests</code>:</p>
+<pre><code class="language-C">void rcu_early_boot_tests(void)
+{
+        pr_info("Running RCU self tests\n");
+
+        if (rcu_self_test)
+                 early_boot_test_call_rcu();
+         if (rcu_self_test_bh)
+                 early_boot_test_call_rcu_bh();
+         if (rcu_self_test_sched)
+                early_boot_test_call_rcu_sched();
+}
+</code></pre>
+<p>which runs self tests for the <code>RCU</code>.</p>
+<p>That's all. We saw initialization process of the <code>RCU</code> subsystem. As I wrote above, more about the <code>RCU</code> will be in the separate chapter about synchronization primitives.</p>
+<h2 id="rest-of-the-initialization-process">Rest of the initialization process</h2>
+<p>Ok, we already passed the main theme of this part which is <code>RCU</code> initialization, but it is not the end of the linux kernel initialization process. In the last paragraph of this theme we will see a couple of functions which work in the initialization time, but we will not dive into deep details around this function for different reasons. Some reasons not to dive into details are following:</p>
+<ul>
+<li>They are not very important for the generic kernel initialization process and depend on the different kernel configuration;</li>
+<li>They have the character of debugging and not important for now;</li>
+<li>We will see many of this stuff in the separate parts/chapters.</li>
+</ul>
+<p>After we initialized <code>RCU</code>, the next step which you can see in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> is the - <code>trace_init</code> function. As you can understand from its name, this function initialize <a href="http://en.wikipedia.org/wiki/Tracing_%28software%29">tracing</a> subsystem. You can read more about linux kernel trace system - <a href="http://elinux.org/Kernel_Trace_Systems">here</a>.</p>
+<p>After the <code>trace_init</code>, we can see the call of the <code>radix_tree_init</code>. If you are familiar with the different data structures, you can understand from the name of this function that it initializes kernel implementation of the <a href="http://en.wikipedia.org/wiki/Radix_tree">Radix tree</a>. This function is defined in the <a href="https://github.com/torvalds/linux/blob/master/lib/radix-tree.c">lib/radix-tree.c</a> and you can read more about it in the part about <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/DataStructures/radix-tree.html">Radix tree</a>.</p>
+<p>In the next step we can see the functions which are related to the <code>interrupts handling</code> subsystem, they are:</p>
+<ul>
+<li><code>early_irq_init</code></li>
+<li><code>init_IRQ</code></li>
+<li><code>softirq_init</code></li>
+</ul>
+<p>We will see explanation about this functions and their implementation in the special part about interrupts and exceptions handling. After this many different functions (like <code>init_timers</code>, <code>hrtimers_init</code>, <code>time_init</code>, etc.) which are related to different timing and timers stuff. We will see more about these function in the chapter about timers.</p>
+<p>The next couple of functions are related with the <a href="https://perf.wiki.kernel.org/index.php/Main_Page">perf</a> events - <code>perf_event-init</code> (there will be separate chapter about perf), initialization of the <code>profiling</code> with the <code>profile_init</code>. After this we enable <code>irq</code> with the call of the:</p>
+<pre><code class="language-C">local_irq_enable();
+</code></pre>
+<p>which expands to the <code>sti</code> instruction and making post initialization of the <a href="http://en.wikipedia.org/wiki/Slab_allocation">SLAB</a> with the call of the <code>kmem_cache_init_late</code> function (As I wrote above we will know about the <code>SLAB</code> in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">Linux memory management</a> chapter).</p>
+<p>After the post initialization of the <code>SLAB</code>, next point is initialization of the console with the <code>console_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/drivers/tty/tty_io.c">drivers/tty/tty_io.c</a>.</p>
+<p>After the console initialization, we can see the <code>lockdep_info</code> function which prints information about the <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">Lock dependency validator</a>. After this, we can see the initialization of the dynamic allocation of the <code>debug objects</code> with the <code>debug_objects_mem_init</code>, kernel memory leak <a href="https://www.kernel.org/doc/Documentation/kmemleak.txt">detector</a> initialization with the <code>kmemleak_init</code>, <code>percpu</code> pageset setup with the <code>setup_per_cpu_pageset</code>, setup of the <a href="http://en.wikipedia.org/wiki/Non-uniform_memory_access">NUMA</a> policy with the <code>numa_policy_init</code>, setting time for the scheduler with the <code>sched_clock_init</code>, <code>pidmap</code> initialization with the call of the <code>pidmap_init</code> function for the initial <code>PID</code> namespace, cache creation with the <code>anon_vma_init</code> for the private virtual memory areas and early initialization of the <a href="http://en.wikipedia.org/wiki/Advanced_Configuration_and_Power_Interface">ACPI</a> with the <code>acpi_early_init</code>.</p>
+<p>This is the end of the ninth part of the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/index.html">linux kernel initialization process</a> and here we saw initialization of the <a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a>. In the last paragraph of this part (<code>Rest of the initialization process</code>) we will go through many functions but did not dive into details about their implementations. Do not worry if you do not know anything about these stuff or you know and do not understand anything about this. As I already wrote many times, we will see details of implementations in other parts or other chapters.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>It is the end of the ninth part about the linux kernel <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/index.html">initialization process</a>. In this part, we looked on the initialization process of the <code>RCU</code> subsystem. In the next part we will continue to dive into linux kernel initialization process and I hope that we will finish with the <code>start_kernel</code> function and will go to the <code>rest_init</code> function from the same <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> source code file and will see the start of the first process.</p>
+<p>If you have any questions or suggestions write me a comment or ping me at <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/Concurrent_data_structure">lock-free data structures</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/kmemleak.txt">kmemleak</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Advanced_Configuration_and_Power_Interface">ACPI</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQs</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a></li>
+<li><a href="https://github.com/torvalds/linux/tree/master/Documentation/RCU">RCU documentation</a></li>
+<li><a href="https://lwn.net/Articles/103209/">integer ID management</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/memory-barriers.txt">Documentation/memory-barriers.txt</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">Runtime locking correctness validator</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">Per-CPU variables</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/mm/index.html">Linux kernel memory management</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Slab_allocation">slab</a></li>
+<li><a href="http://en.wikipedia.org/wiki/I%C2%B2C">i2c</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-8.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/148/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/148/index.html">移动前端开发收藏夹</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/80.html">hoosin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1405个">1405</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/106/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/106/index.html">Spark 编程指南简体中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/65.html">aiyanbo</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 150个">150</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8081;var bookPageRelUrl ='Initialization/linux-initialization-9.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

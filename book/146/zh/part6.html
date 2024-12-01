@@ -1,0 +1,385 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>http2协议-http2讲解(http2 explained)</title>
+<meta content='http2协议,http2讲解,http2 explained' name='keywords'>
+<meta content='http2协议,http2讲解,http2 explained' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/146/zh/part5.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">http2的观念</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/146/zh/part7.html">
+<span class="">扩展</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/146/index.html">http2讲解 (http2 explained)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/bagder/http2-explained" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="6-http2协议">6. http2协议</h1>
+<p>背景介绍就到此为止了，历史的脚步已经将我们推到了今天。现在让我们深入看看该协议的规范，看看那些细节和概念。</p>
+<h2 id="61-二进制">6.1. 二进制</h2>
+<p>http2是一个二进制协议。</p>
+<p>仔细想想，如果你是一个曾经跟互联网协议打过交道，那你很可能会本能反对二进制协议，你甚至准备好了一大堆理由来证明基于文本/ascii的协议是多么的有用，正如你曾无数次地通过telnet等应用手工地输入HTTP来发起请求。</p>
+<p>基于二进制的http2可以使成帧的使用变得更为便捷。在HTTP1.1和其他基于文本的协议中，对帧的起始和结束识别起来相当复杂。而通过移除掉可选的空白符以及其他冗余后，再来实现这些会变得更容易。</p>
+<p>而另一方面，这项决议同样使得我们可以更加便捷的从帧结构中分离出那部分协议本身的内容。而在HTTP1中，各个部分相互交织，犹如一团乱麻。</p>
+<p>事实上，由于协议提供了压缩这一特性，而其经常运行在TLS之上的事实又再次降低了基于纯文本实现的价值，反正也没办法直接从数据流上看到文本。因此通常情况下，我们必须习惯使用类似Wireshark这样的工具对http2的协议层一探究竟。</p>
+<p>我们可以使用curl这样的工具来调试协议，而如果要进一步地分析网络数据流则需要诸如Wireshark这样的http2解析器。</p>
+<h2 id="62-二进制格式">6.2. 二进制格式</h2>
+<a href="https://raw.githubusercontent.com/bagder/http2-explained/master/images/frame-layout.png" data-uk-lightbox><img style="float: right;" src="https://raw.githubusercontent.com/bagder/http2-explained/master/images/frame-layout.png"></a>
+<p>http2会发送有着不同类型的二进制帧，但他们都有如下的公共字段：Type, Length, Flags, Stream Identifier和frame payload
+</p>
+<p>规范中一共定义了10种不同的帧，其中最基础的两种分别对应于HTTP 1.1的DATA和HEADERS。之后我会更详细的介绍它们其中的一部分。</p>
+<h2 id="63-多路复用的流">6.3. 多路复用的流</h2>
+<p>上一节提到的Stream Identifier将http2连接上传输的每个帧都关联到一个“流”。流是一个独立的，双向的帧序列可以通过一个http2的连接在服务端与客户端之间不断的交换数据。
+</p>
+<p>每个单独的http2连接都可以包含多个并发的流，这些流中交错的包含着来自两端的帧。流既可以被客户端/服务器端单方面的建立和使用，也可以被双方共享，或者被任意一边关闭。在流里面，每一帧发送的顺序非常关键。接收方会按照收到帧的顺序来进行处理。</p>
+<p>流的多路复用意味着在同一连接中来自各个流的数据包会被混合在一起。就好像两个（或者更多）独立的“数据列车”被拼凑到了一辆列车上，但它们最终会在终点站被分开。下图就是两列“数据火车”的示例</p>
+<p><a href="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-justin.jpg" data-uk-lightbox><img src="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-justin.jpg" alt="one train"></a> <a href="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-ikea.jpg" data-uk-lightbox><img src="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-ikea.jpg" alt="another train"></a></p>
+<p>它们就是这样通过多路复用的方式被组装到了同一列火车上。</p>
+<p><a href="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-multiplexed.jpg" data-uk-lightbox><img src="https://raw.githubusercontent.com/bagder/http2-explained/master/images/train-multiplexed.jpg" alt="multiplexed train"></a></p>
+<h2 id="64-优先级和依赖性">6.4. 优先级和依赖性</h2>
+<p>每个流都包含一个优先级（也就是“权重”），它被用来告诉对端哪个流更重要。当资源有限的时候，服务器会根据优先级来选择应该先发送哪些流。</p>
+<p>借助于PRIORITY帧，客户端同样可以告知服务器当前的流依赖于其他哪个流。该功能让客户端能建立一个优先级“树”，所有“子流”会依赖于“父流”的传输完成情况。</p>
+<p>优先级和依赖关系可以在传输过程中被动态的改变。这样当用户滚动一个全是图片的页面的时候，浏览器就能够指定哪个图片拥有更高的优先级。或者是在你切换标签页的时候，浏览器可以提升新切换到页面所包含流的优先级。
+</p>
+<h2 id="65-头压缩">6.5. 头压缩</h2>
+<p>HTTP是一种无状态的协议。简而言之，这意味着每个请求必须要携带服务器需要的所有细节，而不是让服务器保存住之前请求的元数据。因为http2并没有改变这个范式，所以它也以同样原理工作。</p>
+<p>这也保证了HTTP可重复性。当一个客户端从同一服务器请求了大量资源（例如页面的图片）的时候，所有这些请求看起来几乎都是一致的，而这些大量一致的东西则正好值得被压缩。</p>
+<p>每个页面请求的资源数量在增多（如前所述），同时 cookies 的使用和请求的大小也在日渐增长。cookies需要被包含在所有请求中，且他们在多个请求中经常是一模一样的。</p>
+<p>HTTP 1.1请求的大小正变得越来越大，有时甚至会大于TCP窗口的初始大小，这会严重拖累发送请求的速度。因为它们需要等待带着ACK的响应回来以后，才能继续被发送。这也是另一个需要压缩的理由。</p>
+<h3 id="651-压缩是非常棘手的课题">6.5.1. 压缩是非常棘手的课题</h3>
+<p>HTTPS和SPDY的压缩机制被发现有受<a href="https://en.wikipedia.org/wiki/BREACH_%28security_exploit%29">BREACH</a>和<a href="https://en.wikipedia.org/wiki/CRIME">CRIME</a>攻击的隐患。通过向流中注入一些已知的文本来观察输出的变化，攻击者可以从加密的载荷中推导出原始发送的数据。</p>
+<p>为协议的动态内容进行压缩并使其免于被攻击，需要仔细且全面的考虑，而这也正是HTTPbis小组尝试去做的。</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc7541.txt">HPACK</a>，HTTP/2头部压缩，顾名思义它是一个专为http2头部设计的压缩格式。确切的讲，它甚至被制定写入在另外一个单独的草案里。新的格式同时引入了一些其他对策让破解压缩变得困难，例如采用帧的可选填充和用一个bit作为标记，来让中间人不压缩指定的头部。
+</p>
+<p>用Roberto Peon（HPACK的设计者之一）的话说</p>
+<blockquote>
+<p>“HPACK旨在提供一个一致性的实现使信息量的损失尽可能少，使编解码快速而方便，使接收方能控制压缩文本的大小，允许代理重新建立索引（如，通过代理在前后端共享状态），以及对哈夫曼编码串的更快速比较”
+</p>
+</blockquote>
+<h2 id="66-重置---后悔药">6.6. 重置 - 后悔药
+</h2>
+<p>HTTP 1.1的有一个缺点是：当一个含有确切值的Content-Length的HTTP消息被送出之后，你就很难中断它了。当然，通常你可以断开整个TCP链接（但也不总是可以这样），但这样导致的代价就是需要通过三次握手来重新建立一个新的TCP连接。</p>
+<p>一个更好的方案是只终止当前传输的消息并重新发送一个新的。在http2里面，我们可以通过发送RST_STREAM帧来实现这种需求，从而避免浪费带宽和中断已有的连接。</p>
+<h2 id="67-服务器推送">6.7. 服务器推送</h2>
+<p>这个功能通常被称作“缓存推送”。主要的思想是：当一个客户端请求资源X，而服务器知道它很可能也需要资源Z的情况下，服务器可以在客户端发送请求前，主动将资源Z推送给客户端。这个功能帮助客户端将Z放进缓存以备将来之需。</p>
+<p>服务器推送需要客户端显式的允许服务器提供该功能。但即使如此，客户端依然能自主选择是否需要中断该推送的流。如果不需要的话，客户端可以通过发送一个RST_STREAM帧来中止。</p>
+<h2 id="68-流量控制">6.8. 流量控制</h2>
+<p>每个http2流都拥有自己的公示的流量窗口，它可以限制另一端发送数据。如果你正好知道SSH的工作原理的话，这两者非常相似。</p>
+<p>对于每个流来说，两端都必须告诉对方自己还有足够的空间来处理新的数据，而在该窗口被扩大前，另一端只被允许发送这么多数据。</p>
+<p>而只有数据帧会受到流量控制。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/159/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/159/index.html">im-service 简介</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/91.html">yu000hong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/205/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/205/index.html">从0到1实战微服务架构</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/115.html">skyline75489</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="mysql">mysql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">62页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/119/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/119/index.html">给小白看的设计模式书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/94/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/94/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/57.html">RedstoneWill</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/6/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/6/index.html">Spring Framework 4.x 参考文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1192个">1192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/146/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part1.html" title="背景" data-book-page-rel-url="zh/part1.html" data-book-page-id="10431">背景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part2.html" title="HTTP的现状" data-book-page-rel-url="zh/part2.html" data-book-page-id="10432">HTTP的现状</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part3.html" title="那些年，克服延迟之道" data-book-page-rel-url="zh/part3.html" data-book-page-id="10433">那些年，克服延迟之道</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part4.html" title="升级HTTP" data-book-page-rel-url="zh/part4.html" data-book-page-id="10434">升级HTTP</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part5.html" title="http2的观念" data-book-page-rel-url="zh/part5.html" data-book-page-id="10435">http2的观念</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part6.html" title="http2协议" data-book-page-rel-url="zh/part6.html" data-book-page-id="10436">http2协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part7.html" title="扩展" data-book-page-rel-url="zh/part7.html" data-book-page-id="10437">扩展</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part8.html" title="http2的世界" data-book-page-rel-url="zh/part8.html" data-book-page-id="10438">http2的世界</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part9.html" title="Firefox里的http2" data-book-page-rel-url="zh/part9.html" data-book-page-id="10439">Firefox里的http2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part10.html" title="Chromium里的http2" data-book-page-rel-url="zh/part10.html" data-book-page-id="10440">Chromium里的http2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part11.html" title="Curl里的http2" data-book-page-rel-url="zh/part11.html" data-book-page-id="10441">Curl里的http2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part12.html" title="后http2时代" data-book-page-rel-url="zh/part12.html" data-book-page-id="10442">后http2时代</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part13.html" title="扩展阅读" data-book-page-rel-url="zh/part13.html" data-book-page-id="10443">扩展阅读</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/146/zh/part14.html" title="致谢" data-book-page-rel-url="zh/part14.html" data-book-page-id="10444">致谢</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =146;var bookPageId =10436;var bookPageRelUrl ='zh/part6.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

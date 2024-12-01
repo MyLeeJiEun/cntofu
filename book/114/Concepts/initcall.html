@@ -1,0 +1,834 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>initcall 机制-Linux 内核揭密</title>
+<meta content='initcall 机制,Linux 内核揭密' name='keywords'>
+<meta content='initcall 机制,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Concepts/cpumask.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">CPU 掩码</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Concepts/notification_chains.html">
+<span class="">Linux 内核的通知链</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="initcall-机制">initcall 机制</h1>
+<h2 id="介绍">介绍</h2>
+<p>就像你从标题所理解的，这部分将涉及 Linux 内核中有趣且重要的概念，称之为 <code>initcall</code>。在 Linux 内核中，我们可以看到类似这样的定义：</p>
+<pre><code class="language-C">early_param("debug", debug_kernel);
+</code></pre>
+<p>或者</p>
+<pre><code class="language-C">arch_initcall(init_pit_clocksource);
+</code></pre>
+<p>在我们分析这个机制在内核中是如何实现的之前，我们必须了解这个机制是什么，以及在 Linux 内核中是如何使用它的。像这样的定义表示一个 <a href="https://en.wikipedia.org/wiki/Callback_%28computer_programming%29">回调函数</a> ，它们会在 Linux 内核启动中或启动后调用。实际上 <code>initcall</code> 机制的要点是确定内置模块和子系统初始化的正确顺序。举个例子，我们来看看下面的函数：</p>
+<pre><code class="language-C">static int __init nmi_warning_debugfs(void)
+{
+    debugfs_create_u64("nmi_longest_ns", 0644,
+                       arch_debugfs_dir, &amp;nmi_longest_ns);
+    return 0;
+}
+</code></pre>
+<p>这个函数出自源码文件 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/nmi.c">arch/x86/kernel/nmi.c</a>。我们可以看到，这个函数只是在 <code>arch_debugfs_dir</code> 目录中创建 <code>nmi_longest_ns</code> <a href="https://en.wikipedia.org/wiki/Debugfs">debugfs</a> 文件。实际上，只有在 <code>arch_debugfs_dir</code> 创建后，才会创建这个 <code>debugfs</code> 文件。这个目录是在 Linux 内核特定架构的初始化期间创建的。实际上，该目录将在源码文件 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/kdebugfs.c">arch/x86/kernel/kdebugfs.c</a> 的 <code>arch_kdebugfs_init</code> 函数中创建。注意 <code>arch_kdebugfs_init</code> 函数也被标记为 <code>initcall</code>。</p>
+<pre><code class="language-C">arch_initcall(arch_kdebugfs_init);
+</code></pre>
+<p>Linux 内核在调用 <code>fs</code> 相关的 <code>initcalls</code> 之前调用所有特定架构的 <code>initcalls</code>。因此，只有在 <code>arch_kdebugfs_dir</code> 目录创建以后才会创建我们的 <code>nmi_longest_ns</code>。实际上，Linux 内核提供了八个级别的主 <code>initcalls</code>：</p>
+<ul>
+<li><code>early</code>;</li>
+<li><code>core</code>;</li>
+<li><code>postcore</code>;</li>
+<li><code>arch</code>;</li>
+<li><code>susys</code>;</li>
+<li><code>fs</code>;</li>
+<li><code>device</code>;</li>
+<li><code>late</code>.</li>
+</ul>
+<p>它们的所有名称是由数组 <code>initcall_level_names</code> 来描述的，该数组定义在源码文件 <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> 中：</p>
+<pre><code class="language-C">static char *initcall_level_names[] __initdata = {
+	"early",
+	"core",
+	"postcore",
+	"arch",
+	"subsys",
+	"fs",
+	"device",
+	"late",
+};
+</code></pre>
+<p>所有用这些标识符标记为 <code>initcall</code> 的函数将会以相同的顺序被调用，或者说，<code>early initcalls</code> 会首先被调用，其次是 <code>core initcalls</code>，以此类推。现在，我们对 <code>initcall</code> 机制了解点了，所以我们可以开始潜入 Linux 内核源码，来看看这个机制是如何实现的。</p>
+<h2 id="initcall-机制在-linux-内核中的实现">initcall 机制在 Linux 内核中的实现</h2>
+<p>Linux 内核提供了一组来自头文件 <a href="https://github.com/torvalds/linux/blob/master/include/linux/init.h">include/linux/init.h</a> 的宏，来标记给定的函数为 <code>initcall</code>。所有这些宏都相当简单：</p>
+<pre><code class="language-C">#define early_initcall(fn)		__define_initcall(fn, early)
+#define core_initcall(fn)		__define_initcall(fn, 1)
+#define postcore_initcall(fn)		__define_initcall(fn, 2)
+#define arch_initcall(fn)		__define_initcall(fn, 3)
+#define subsys_initcall(fn)		__define_initcall(fn, 4)
+#define fs_initcall(fn)			__define_initcall(fn, 5)
+#define device_initcall(fn)		__define_initcall(fn, 6)
+#define late_initcall(fn)		__define_initcall(fn, 7)
+</code></pre>
+<p>我们可以看到，这些宏只是从同一个头文件的 <code>__define_initcall</code> 宏的调用扩展而来。此外，<code>__define_initcall</code> 宏有两个参数：</p>
+<ul>
+<li><code>fn</code> - 在调用某个级别 <code>initcalls</code> 时调用的回调函数；</li>
+<li><code>id</code> - 识别 <code>initcall</code> 的标识符，用来防止两个相同的 <code>initcalls</code> 指向同一个处理函数时出现错误。</li>
+</ul>
+<p><code>__define_initcall</code> 宏的实现如下所示：</p>
+<pre><code class="language-C">#define __define_initcall(fn, id) \
+	static initcall_t __initcall_##fn##id __used \
+	__attribute__((__section__(".initcall" #id ".init"))) = fn; \
+	LTO_REFERENCE_INITCALL(__initcall_##fn##id)
+</code></pre>
+<p>要了解 <code>__define_initcall</code> 宏，首先让我们来看下 <code>initcall_t</code> 类型。这个类型定义在同一个 <a href="">头文件</a> 中，它表示一个返回 <a href="https://en.wikipedia.org/wiki/Integer">整形</a>指针的函数指针，这将是 <code>initcall</code> 的结果：</p>
+<pre><code class="language-C">typedef int (*initcall_t)(void);
+</code></pre>
+<p>现在让我们回到 <code>_-define_initcall</code> 宏。<a href="https://gcc.gnu.org/onlinedocs/cpp/Concatenation.html">##</a> 提供了连接两个符号的能力。在我们的例子中，<code>__define_initcall</code> 宏的第一行产生了 <code>.initcall id .init</code> <a href="http://www.skyfree.org/linux/references/ELF_Format.pdf">ELF 部分</a> 给定函数的定义，并标记以下 <a href="https://en.wikipedia.org/wiki/GNU_Compiler_Collection">gcc</a> 属性： <code>__initcall_function_name_id</code> 和 <code>__used</code>。如果我们查看表示内核链接脚本数据的 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/vmlinux.lds.h">include/asm-generic/vmlinux.lds.h</a> 头文件，我们会看到所有的 <code>initcalls</code> 部分都将放在 <code>.data</code> 段：</p>
+<pre><code class="language-C">#define INIT_CALLS					\
+		VMLINUX_SYMBOL(__initcall_start) = .;	\
+		*(.initcallearly.init)					\
+		INIT_CALLS_LEVEL(0)					    \
+		INIT_CALLS_LEVEL(1)					    \
+		INIT_CALLS_LEVEL(2)					    \
+		INIT_CALLS_LEVEL(3)					    \
+		INIT_CALLS_LEVEL(4)					    \
+		INIT_CALLS_LEVEL(5)					    \
+		INIT_CALLS_LEVEL(rootfs)				\
+		INIT_CALLS_LEVEL(6)					    \
+		INIT_CALLS_LEVEL(7)					    \
+		VMLINUX_SYMBOL(__initcall_end) = .;
+
+#define INIT_DATA_SECTION(initsetup_align)	\
+	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {	   \
+        ...                                                \
+        INIT_CALLS						                   \
+        ...                                                \
+	}
+
+</code></pre>
+<p>第二个属性 - <code>__used</code>，定义在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/compiler-gcc.h">include/linux/compiler-gcc.h</a> 头文件中，它扩展了以下 <code>gcc</code> 定义：</p>
+<pre><code class="language-C">#define __used   __attribute__((__used__))
+</code></pre>
+<p>它防止 <code>定义了变量但未使用</code> 的告警。宏 <code>__define_initcall</code> 最后一行是：</p>
+<pre><code class="language-C">LTO_REFERENCE_INITCALL(__initcall_##fn##id)
+</code></pre>
+<p>这取决于 <code>CONFIG_LTO</code> 内核配置选项，只为编译器提供<a href="https://gcc.gnu.org/wiki/LinkTimeOptimization">链接时间优化</a>存根：</p>
+<pre><code>#ifdef CONFIG_LTO
+#define LTO_REFERENCE_INITCALL(x) \
+        static __used __exit void *reference_##x(void)  \
+        {                                               \
+                return &amp;x;                              \
+        }
+#else
+#define LTO_REFERENCE_INITCALL(x)
+#endif
+</code></pre>
+<p>为了防止当模块中的变量没有引用时而产生的任何问题，它被移到了程序末尾。这就是关于 <code>__define_initcall</code> 宏的全部了。所以，所有的 <code>*_initcall</code> 宏将会在Linux内核编译时扩展，所有的 <code>initcalls</code> 会放置在它们的段内，并可以通过 <code>.data</code> 段来获取，Linux 内核在初始化过程中就知道在哪儿去找到 <code>initcall</code> 并调用它。</p>
+<p>既然 Linux 内核可以调用 <code>initcalls</code>，我们就来看下 Linux 内核是如何做的。这个过程从 <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> 头文件的 <code>do_basic_setup</code> 函数开始：</p>
+<pre><code class="language-C">static void __init do_basic_setup(void)
+{
+    ...
+    ...
+    ...
+   	do_initcalls();
+    ...
+    ...
+    ...
+}
+</code></pre>
+<p>该函数在 Linux 内核初始化过程中调用，调用时机是主要的初始化步骤，比如内存管理器相关的初始化、<code>CPU</code> 子系统等完成之后。<code>do_initcalls</code> 函数只是遍历 <code>initcall</code> 级别数组，并调用每个级别的 <code>do_initcall_level</code> 函数：</p>
+<pre><code class="language-C">static void __init do_initcalls(void)
+{
+	int level;
+
+	for (level = 0; level &lt; ARRAY_SIZE(initcall_levels) - 1; level++)
+		do_initcall_level(level);
+}
+</code></pre>
+<p><code>initcall_levels</code> 数组在同一个源码<a href="https://github.com/torvalds/linux/blob/master/init/main.c">文件</a>中定义，包含了定义在 <code>__define_initcall</code> 宏中的那些段的指针：</p>
+<pre><code class="language-C">static initcall_t *initcall_levels[] __initdata = {
+	__initcall0_start,
+	__initcall1_start,
+	__initcall2_start,
+	__initcall3_start,
+	__initcall4_start,
+	__initcall5_start,
+	__initcall6_start,
+	__initcall7_start,
+	__initcall_end,
+};
+</code></pre>
+<p>如果你有兴趣，你可以在 Linux 内核编译后生成的链接器脚本 <code>arch/x86/kernel/vmlinux.lds</code> 中找到这些段：</p>
+<pre><code>.init.data : AT(ADDR(.init.data) - 0xffffffff80000000) {
+    ...
+    ...
+    ...
+    ...
+    __initcall_start = .;
+    *(.initcallearly.init)
+    __initcall0_start = .;
+    *(.initcall0.init)
+    *(.initcall0s.init)
+    __initcall1_start = .;
+    ...
+    ...
+}
+</code></pre>
+<p>如果你对这些不熟，可以在本书的某些<a href="https://0xax.gitbooks.io/linux-insides/content/Misc/linkers.html">部分</a>了解更多关于<a href="https://en.wikipedia.org/wiki/Linker_%28computing%29">链接器</a>的信息。</p>
+<p>正如我们刚看到的，<code>do_initcall_level</code> 函数有一个参数 - <code>initcall</code> 的级别，做了以下两件事：首先这个函数拷贝了 <code>initcall_command_line</code>，这是通常内核包含了各个模块参数的<a href="https://www.kernel.org/doc/Documentation/kernel-parameters.txt">命令行</a>的副本，并用 <a href="https://github.com/torvalds/linux/blob/master/kernel/params.c">kernel/params.c</a>源码文件的 <code>parse_args</code> 函数解析它，然后调用各个级别的 <code>do_on_initcall</code> 函数：</p>
+<pre><code class="language-C">for (fn = initcall_levels[level]; fn &lt; initcall_levels[level+1]; fn++)
+		do_one_initcall(*fn);
+</code></pre>
+<p><code>do_on_initcall</code> 为我们做了主要的工作。我们可以看到，这个函数有一个参数表示 <code>initcall</code> 回调函数，并调用给定的回调函数：</p>
+<pre><code class="language-C">int __init_or_module do_one_initcall(initcall_t fn)
+{
+	int count = preempt_count();
+	int ret;
+	char msgbuf[64];
+
+	if (initcall_blacklisted(fn))
+		return -EPERM;
+
+	if (initcall_debug)
+		ret = do_one_initcall_debug(fn);
+	else
+		ret = fn();
+
+	msgbuf[0] = 0;
+
+	if (preempt_count() != count) {
+		sprintf(msgbuf, "preemption imbalance ");
+		preempt_count_set(count);
+	}
+	if (irqs_disabled()) {
+		strlcat(msgbuf, "disabled interrupts ", sizeof(msgbuf));
+		local_irq_enable();
+	}
+	WARN(msgbuf[0], "initcall %pF returned with %s\n", fn, msgbuf);
+
+	return ret;
+}
+</code></pre>
+<p>让我们来试着理解 <code>do_on_initcall</code> 函数做了什么。首先我们增加 <a href="https://en.wikipedia.org/wiki/Preemption_%28computing%29">preemption</a> 计数，以便我们稍后进行检查，确保它不是不平衡的。这步以后，我们可以看到 <code>initcall_backlist</code> 函数的调用，这个函数遍历包含了 <code>initcalls</code> 黑名单的 <code>blacklisted_initcalls</code> 链表，如果 <code>initcall</code> 在黑名单里就释放它：</p>
+<pre><code class="language-C">list_for_each_entry(entry, &amp;blacklisted_initcalls, next) {
+	if (!strcmp(fn_name, entry-&gt;buf)) {
+		pr_debug("initcall %s blacklisted\n", fn_name);
+		kfree(fn_name);
+		return true;
+	}
+}
+</code></pre>
+<p>黑名单的 <code>initcalls</code> 保存在 <code>blacklisted_initcalls</code> 链表中，这个链表是在早期 Linux 内核初始化时由 Linux 内核命令行来填充的。</p>
+<p>处理完进入黑名单的 <code>initcalls</code>，接下来的代码直接调用 <code>initcall</code>：</p>
+<pre><code class="language-C">if (initcall_debug)
+	ret = do_one_initcall_debug(fn);
+else
+	ret = fn();
+</code></pre>
+<p>取决于 <code>initcall_debug</code> 变量的值，<code>do_one_initcall_debug</code> 函数将调用 <code>initcall</code>，或直接调用 <code>fn()</code>。<code>initcall_debug</code> 变量定义在<a href="https://github.com/torvalds/linux/blob/master/init/main.c">同一个源码文件</a>：</p>
+<pre><code class="language-C">bool initcall_debug;
+</code></pre>
+<p>该变量提供了向内核<a href="https://en.wikipedia.org/wiki/Dmesg">日志缓冲区</a>打印一些信息的能力。可以通过 <code>initcall_debug</code> 参数从内核命令行中设置这个变量的值。从Linux内核命令行<a href="https://www.kernel.org/doc/Documentation/kernel-parameters.txt">文档</a>可以看到：</p>
+<pre><code>initcall_debug	[KNL] Trace initcalls as they are executed.  Useful
+                      for working out where the kernel is dying during
+                      startup.
+</code></pre>
+<p>确实如此。如果我们看下 <code>do_one_initcall_debug</code> 函数的实现，我们会看到它与 <code>do_one_initcall</code> 函数做了一样的事，也就是说，<code>do_one_initcall_debug</code> 函数调用了给定的 <code>initcall</code>，并打印了一些和 <code>initcall</code> 相关的信息（比如当前任务的 <a href="https://en.wikipedia.org/wiki/Process_identifier">pid</a>、<code>initcall</code> 的持续时间等）：</p>
+<pre><code class="language-C">static int __init_or_module do_one_initcall_debug(initcall_t fn)
+{
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+	int ret;
+
+	printk(KERN_DEBUG "calling  %pF @ %i\n", fn, task_pid_nr(current));
+	calltime = ktime_get();
+	ret = fn();
+	rettime = ktime_get();
+	delta = ktime_sub(rettime, calltime);
+	duration = (unsigned long long) ktime_to_ns(delta) &gt;&gt; 10;
+	printk(KERN_DEBUG "initcall %pF returned %d after %lld usecs\n",
+		 fn, ret, duration);
+
+	return ret;
+}
+</code></pre>
+<p>由于 <code>initcall</code> 被 <code>do_one_initcall</code> 或 <code>do_one_initcall_debug</code> 调用，我们可以看到在 <code>do_one_initcall</code> 函数末尾做了两次检查。第一个检查在initcall执行内部 <code>__preempt_count_add</code> 和 <code>__preempt_count_sub</code> 可能的执行次数，如果这个值和之前的可抢占计数不相等，我们就把 <code>preemption imbalance</code> 字符串添加到消息缓冲区，并设置正确的可抢占计数：</p>
+<pre><code class="language-C">if (preempt_count() != count) {
+	sprintf(msgbuf, "preemption imbalance ");
+	preempt_count_set(count);
+}
+</code></pre>
+<p>稍后这个错误字符串就会被打印出来。最后检查本地 <a href="https://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQs</a> 的状态，如果它们被禁用了，我们就将 <code>disabled interrupts</code> 字符串添加到我们的消息缓冲区，并为当前处理器使能 <code>IRQs</code>，以防出现 <code>IRQs</code> 被 <code>initcall</code> 禁用了但不再使能的情况出现：</p>
+<pre><code class="language-C">if (irqs_disabled()) {
+	strlcat(msgbuf, "disabled interrupts ", sizeof(msgbuf));
+	local_irq_enable();
+}
+</code></pre>
+<p>这就是全部了。通过这种方式，Linux 内核以正确的顺序完成了很多子系统的初始化。现在我们知道 Linux 内核的 <code>initcall</code> 机制是怎么回事了。在这部分中，我们介绍了 <code>initcall</code> 机制的主要部分，但遗留了一些重要的概念。让我们来简单看下这些概念。</p>
+<p>首先，我们错过了一个级别的 <code>initcalls</code>，就是 <code>rootfs initcalls</code>。和我们在本部分看到的很多宏类似，你可以在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/init.h">include/linux/init.h</a> 头文件中找到 <code>rootfs_initcall</code> 的定义：</p>
+<pre><code class="language-C">#define rootfs_initcall(fn)		__define_initcall(fn, rootfs)
+</code></pre>
+<p>从这个宏的名字我们可以理解到，它的主要目的是保存和 <a href="https://en.wikipedia.org/wiki/Initramfs">rootfs</a> 相关的回调。除此之外，只有在与设备相关的东西没被初始化时，在文件系统级别初始化以后再初始化一些其它东西时才有用。例如，发生在源码文件 <a href="https://github.com/torvalds/linux/blob/master/init/initramfs.c">init/initramfs.c</a> 中 <code>populate_rootfs</code> 函数里的解压 <a href="https://en.wikipedia.org/wiki/Initramfs">initramfs</a>：</p>
+<pre><code class="language-C">rootfs_initcall(populate_rootfs);
+</code></pre>
+<p>在这里，我们可以看到熟悉的输出：</p>
+<pre><code>[    0.199960] Unpacking initramfs...
+</code></pre>
+<p>除了 <code>rootfs_initcall</code> 级别，还有其它的 <code>console_initcall</code>、 <code>security_initcall</code> 和其他辅助的 <code>initcall</code> 级别。我们遗漏的最后一件事，是 <code>*_initcall_sync</code> 级别的集合。在这部分我们看到的几乎每个 <code>*_initcall</code> 宏，都有 <code>_sync</code> 前缀的宏伴随：</p>
+<pre><code class="language-C">#define core_initcall_sync(fn)		__define_initcall(fn, 1s)
+#define postcore_initcall_sync(fn)	__define_initcall(fn, 2s)
+#define arch_initcall_sync(fn)		__define_initcall(fn, 3s)
+#define subsys_initcall_sync(fn)	__define_initcall(fn, 4s)
+#define fs_initcall_sync(fn)		__define_initcall(fn, 5s)
+#define device_initcall_sync(fn)	__define_initcall(fn, 6s)
+#define late_initcall_sync(fn)		__define_initcall(fn, 7s)
+</code></pre>
+<p>这些附加级别的主要目的是，等待所有某个级别的与模块相关的初始化例程完成。</p>
+<p>这就是全部了。</p>
+<h2 id="结论">结论</h2>
+<p>在这部分中，我们看到了 Linux 内核的一项重要机制，即在初始化期间允许调用依赖于 Linux 内核当前状态的函数。</p>
+<p>如果你有问题或建议，可随时在 twitter <a href="https://twitter.com/0xAX">0xAX</a> 上联系我，给我发 <a href="anotherworldofworld@gmail.com">email</a>，或者创建 <a href="https://github.com/0xAX/linux-insides/issues/new">issue</a>。</p>
+<p><strong>请注意英语不是我的母语，对此带来的不便，我很抱歉。如果你发现了任何错误，都可以给我发 PR 到<a href="https://github.com/0xAX/linux-insides">linux-insides</a>。</strong>.</p>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Callback_%28computer_programming%29">callback</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Debugfs">debugfs</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Integer">integer type</a></li>
+<li><a href="https://gcc.gnu.org/onlinedocs/cpp/Concatenation.html">symbols concatenation</a></li>
+<li><a href="https://en.wikipedia.org/wiki/GNU_Compiler_Collection">GCC</a></li>
+<li><a href="https://gcc.gnu.org/wiki/LinkTimeOptimization">Link time optimization</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Misc/linkers.html">Introduction to linkers</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/kernel-parameters.txt">Linux kernel command line</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Process_identifier">Process identifier</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQs</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Initramfs">rootfs</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Concepts/cpumask.html">previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/104/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/156/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/87/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/87/index.html">Spring Boot 开源电子书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/56.html">ityouknow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 35个">35</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/121/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/121/index.html">CGDB中文手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">25页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8126;var bookPageRelUrl ='Concepts/initcall.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

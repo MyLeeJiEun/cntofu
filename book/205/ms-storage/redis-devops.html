@@ -1,0 +1,810 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Redis 内存数据库的运维-从0到1实战微服务架构</title>
+<meta content='Redis 内存数据库的运维,从0到1实战微服务架构' name='keywords'>
+<meta content='Redis 内存数据库的运维,从0到1实战微服务架构' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/205/ms-storage/sb-memcached.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Spring Boot..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/205/ms-storage/sb-redis.html">
+<span class="">Spring Boot..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/205/index.html">从0到1实战微服务架构</a>
+<a target="_blank" rel="nofollow" href="https://github.com/skyline75489/hands-on-microservices" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="redis-数据库的运维">Redis 数据库的运维</h1>
+<p>作为纯内存缓存，Memcached拥有非常出色的读写性能，但也存在一个较为严重的缺点：无法持久化。</p>
+<p>这意味着，一旦Memcached服务重启(更常见的是掉电)，之前所有的缓存就会丢失。若线上的流量很大，这种重启很容易诱发"缓存雪崩"，从而导致系统故障。</p>
+<p>Redis的出现很好的解决了这个问题，它是一款高性能的内存的数据库，既不仅数据的支持持久化、也内置了许多数据结构，方便实现各种需求。在一些场景下<sup id="fnref-1"><a class="footnote-ref" href="#fn-1">1</a>，可以直接用Redis取代Memcached + MySQL的组合。</p>
+<p>本节将讨论Redis运维相关的问题。</p>
+<h2 id="redis单服务器的运维">Redis单服务器的运维</h2>
+<p>Redis同时支持单服务器、高可用、集群等三种方案。</p>
+<p>我们先来看一下单服务器方案。</p>
+<p>顾名思义，单服务器模式下，只启动一个Redis服务进程，若服务挂掉则Redis不可用。可见，这种方案并不保证高可用。</p>
+<p>与之前的部署类似，我们同样将Redis部署在Kubernetes集群上，首先是创建Volume挂载点</p>
+<pre><code class="language-shell">sudo mkdir /data/redis
+
+sudo chmod -R 777 /data/redis
+
+</code></pre>
+<p>接着，我们看一下部署文件:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: redis
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      restartPolicy: Always
+      hostname: redis
+      containers:
+      - name: redis-ct
+        image: redis:3.2-alpine
+        ports:
+        - containerPort: 6379
+          hostPort: 6379
+        volumeMounts:
+        - mountPath: "../../../data"
+          name: volume
+      volumes:
+      - name: volume
+        hostPath:
+          path: /data/redis/
+
+</code></pre>
+<p>简要说明下：</p>
+<ul>
+<li>这里使用Redis官方的Docker镜像</li>
+<li>与MySQL类似，考虑到持久化后的数据量可能较大，我们将Pod绑定到minikube机器上，以固定存储。</li>
+</ul>
+<p>应用servie，稍等一会，成功:</p>
+<pre><code class="language-yaml">kubectl apply -f kubectl describe pod redis-798659bc79-vdht7
+
+service "redis" created
+deployment.apps "redis" created
+
+</code></pre>
+<p>我们尝试连接一下，首先获取Pod的ContainerId:</p>
+<pre><code class="language-shell">
+kubectl get pods
+NAME                                                READY     STATUS    RESTARTS   AGE
+redis-798659bc79-vdht7                              1/1       Running   0          4m
+
+kubectl describe pod redis-798659bc79-vdht7
+
+...
+    Container ID:   docker://090c2a7a004200aa6f0c4f3779e3823c401f03ad4f23985fdc08c38f86d6c598
+...
+
+
+</code></pre>
+<p>尝试登录，并登录redis服务器:</p>
+<pre><code class="language-shell">minikube ssh
+$ docker exec -i -t 090c2a7a004200aa6f0c4f3779e3823c401f03ad4f23985fdc08c38f86d6c598 /bin/sh
+
+/data # echo "info" | redis-cli 
+# Server
+redis_version:3.2.12
+redis_git_sha1:00000000
+....
+
+</code></pre>
+<p>通过上面的操作，可以成功登录Redis服务器，并获取了版本信息。</p>
+<p>至此，Redis的单服务器模式配置完成。</p>
+<h2 id="redis高可用sentinel集群的运维">Redis高可用(Sentinel)集群的运维</h2>
+<p>在上面的Redis单服务器模式下，存在单点故障，假如这个Redis进程挂掉了，则Redis就无法提供服务了。</p>
+<p>为了解决可用性，Redis内置了两种高可用方案，较为经典的是Sentinel集群。 Sentinel集群采用主备模式：</p>
+<ul>
+<li>支持多个Redis服务组，不同服务组通过唯一的master_name标识。</li>
+<li>组内一个主redis节点提供服务，若干从redis节点定期从主redis节点同步数据。但从节点只作为热备，不提供服务。</li>
+<li>当某个组的主节点挂掉后，Sentinel服务会检测到主节点故障，并进行主备切换。</li>
+<li>客户端先连接Sentinel，根据master_name获取组内主Redis节点的IP和端口信息，再连接。</li>
+</ul>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/ms-storage/redis-sentinel.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/ms-storage/redis-sentinel.png" alt="Sentinel集群架构" title="Sentinel架构"></a></p>
+<p>如果你对Sentinel的架构细节感兴趣，可以阅读<a href="https://redis.io/topics/sentinel">官方文档</a>。</p>
+<p>首先，我们来部署一组Redis服务的主节点:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: redis-lmsia-test1-master
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: redis-lmsia-test1-master
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-lmaia-test1-deployment
+spec:
+  selector:
+    matchLabels:
+      app: redis-lmsia-test1-master
+  template:
+    metadata:
+      labels:
+        app: redis-lmsia-test1-master
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      restartPolicy: Always
+      hostname: redis
+      containers:
+      - name: redis-sentinel-ct
+        image: coder4/redis-sentinel-k8s:4.0.10
+        ports:
+        - containerPort: 6379
+        env:
+        - name: "MASTER"
+          value: "true"
+        - name: "MASTER_NAME"
+          value: "lmsia_test1"
+</code></pre>
+<p>如上所示:</p>
+<ul>
+<li>我们使用了自定制的镜像redis-sentinel-k8s，其原理可以查看项目主页<a href="https://github.com/liheyuan/docker-redis-sentinel-k8s">docker-redis-sentinel-k8s</a></li>
+<li>MASTER=true，开启主节点模式</li>
+<li>MASTER_NAME=lmsia_test1，Redis服务的组名叫lmsia_test1</li>
+<li>服务组名是redis-lmsia-test1-master，这个很重要，slave节点和sentinel会根据这个来定位master节点。</li>
+</ul>
+<p>接着，我们启动lmsia_test1这个服务组一个从节点：</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: redis-lmsia-test1-slave
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: redis-lmsia-test1-slave
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-lmaia-test1-deployment
+spec:
+  selector:
+    matchLabels:
+      app: redis-lmsia-test1-slave
+  template:
+    metadata:
+      labels:
+        app: redis-lmsia-test1-slave
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      restartPolicy: Always
+      hostname: redis
+      containers:
+      - name: redis-sentinel-ct
+        image: coder4/redis-sentinel-k8s:4.0.10
+        ports:
+        - containerPort: 6379
+        env:
+        - name: "SLAVE"
+          value: "true"
+        - name: "MASTER_NAME"
+          value: "lmsia_test1"
+</code></pre>
+<p>如上，组内从节点的启动方式和主节点基本一致，有几个需要特别注意的：</p>
+<ul>
+<li>MASTER_NAME需要和主节点保持一致，即lmsia_test1</li>
+<li>SLAVE=true，开启从节点模式。</li>
+</ul>
+<p>我们先来启动这一组主从服务：</p>
+<pre><code class="language-shell">kubectl apply -f ./redis-lmsia-test1-master-service.yaml
+kubectl apply -f ./redis-lmsia-test1-slave-service.yaml
+</code></pre>
+<p>我们分别登录redis，看看他们的组状态，首先是master，身份是主节点，并可以看到从节点的IP:</p>
+<pre><code class="language-shell">redis-cli&gt;info replication
+info replication
+# Replication
+role:master
+connected_slaves:1
+slave0:ip=172.17.0.8,port=6379,state=online,offset=168,lag=1
+master_replid:9b7dfe0b5f8d538d0f7b81d4095c239f1da72553
+master_replid2:0000000000000000000000000000000000000000
+master_repl_offset:168
+second_repl_offset:-1
+repl_backlog_active:1
+repl_backlog_size:1048576
+repl_backlog_first_byte_offset:1
+repl_backlog_histlen:168
+
+</code></pre>
+<p>然后slave，状态是从节点，可以看到主节点的IP:</p>
+<pre><code class="language-shell"># Replication
+role:slave
+master_host:10.105.12.178
+master_port:6379
+master_link_status:up
+master_last_io_seconds_ago:2
+master_sync_in_progress:0
+slave_repl_offset:266
+slave_priority:100
+slave_read_only:1
+connected_slaves:0
+master_replid:9b7dfe0b5f8d538d0f7b81d4095c239f1da72553
+master_replid2:0000000000000000000000000000000000000000
+master_repl_offset:266
+second_repl_offset:-1
+repl_backlog_active:1
+repl_backlog_size:1048576
+repl_backlog_first_byte_offset:1
+repl_backlog_histlen:266
+
+</code></pre>
+<p>接着，我们来启动Sentinel服务：</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+spec:
+  ports:
+  - port: 26379
+  selector:
+    app: redis-sentinel
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-sentinel-deployment
+spec:
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      restartPolicy: Always
+      hostname: redis
+      containers:
+      - name: redis-sentinel-ct
+        image: coder4/redis-sentinel-k8s:4.0.10
+        ports:
+        - containerPort: 26379
+        env:
+        - name: "SENTINEL"
+          value: "true"
+        - name: "MASTER_NAME_LIST"
+          value: "lmsia_test1"
+
+</code></pre>
+<p>如上，我们部署了3个节点的Sentinel服务:</p>
+<ul>
+<li>使用我们定制的镜像redis-sentinel-k8s，其原理可以查看项目主页<a href="https://github.com/liheyuan/docker-redis-sentinel-k8s">docker-redis-sentinel-k8s</a></li>
+<li>打开26379端口，这是默认Sentinel的默认端口</li>
+<li>环境变量SENTINEL表明以Sentinel模式启动</li>
+<li>环境变量MASTER_NAME_LIST，列出了所有要监听的组名即master_name，用空格分割开。</li>
+</ul>
+<p>我们尝试连接任意一台sentinel来获取主结点的信息:</p>
+<pre><code>redis-cli -h localhost -p 26379
+&gt; SENTINEL get-master-addr-by-name lmsia_test1
+1) "10.105.12.178"
+2) "6379"
+</code></pre>
+<p>组内主redis服务获取成功。</p>
+<p>至此，我们已经完成了Redis的Sentinel部署方式。</p>
+<h2 id="小结">小结</h2>
+<p>在本节中，我们从讨论了Redis的优点，以及单服务的运维方式。</p>
+<p>接着，我们讨论了一种高可用Redis运维方案：Sentinel集群。这种方案可以保证Redis服务的高可用。但该方案也有明显的缺点：主备模式决定了资源的利用率只有50%，造成了一定的浪费。</p>
+<h2 id="拓展阅读">拓展阅读</h2>
+<ol>
+<li>在小结中，我们提到了Sentinel模式会造成一定的资源浪费。可以采用<a href="https://redis.io/topics/cluster-tutorial">Redis Cluster</a>的部署模式，在保证高可用的同时，资源利用率。</li>
+<li>为了保证高性能，Redis采用异步持久话的方式，分为rdb和aof两种，需要根据实际情况，选择适合的一种甚至混合方案。具体可参见文档（https://redis.io/topics/persistence）</li>
+<li>若采用aof方式，积累较多修改后，重启redis会非常慢，可以定期进行<a href="https://redis.io/commands/bgrewriteaof">aof rewrite</a>压缩aof日志。</li>
+</ol>
+<div class="footnotes">
+<hr>
+<ol>
+<li id="fn-1"> <p>若要维持较高性能，建议保留足够的内存以存储全部数据。</p> <a href="#fnref-1" class="footnote-backref">↩</a> </li>
+</ol>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/136/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/136/index.html">Serverless 架构应用开发指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 396个">396</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/206/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/179/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/179/index.html">30秒学会常用Python代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/99.html">kriadmin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2716个">2716</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/205/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/README.html" title="从0到1实战微服务架构" data-book-page-rel-url="README.html" data-book-page-id="13723">从0到1实战微服务架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/README.html" title="架构概览" data-book-page-rel-url="architecture/README.html" data-book-page-id="13724">架构概览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/architecture/overview.html" title="微服务架构概览" data-book-page-rel-url="architecture/overview.html" data-book-page-id="13725">微服务架构概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/devops.html" title="运维技术链概览" data-book-page-rel-url="architecture/devops.html" data-book-page-id="13726">运维技术链概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/microservics.html" title="微服务技术栈概览" data-book-page-rel-url="architecture/microservics.html" data-book-page-id="13727">微服务技术栈概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/toolchain.html" title="研发工具链概览" data-book-page-rel-url="architecture/toolchain.html" data-book-page-id="13728">研发工具链概览</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/README.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/README.html" data-book-page-id="13729">微服务的自动发现与负载均衡</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/k8s-intro.html" title="Kubernetes 快速入门" data-book-page-rel-url="ms-discovery/k8s-intro.html" data-book-page-id="13730">Kubernetes 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/msd.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/msd.html" data-book-page-id="13731">微服务的自动发现与负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/README.html" title="微服务的开发框架" data-book-page-rel-url="spring-boot/README.html" data-book-page-id="13732">微服务的开发框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-gradle-structure.html" title="Gradle子项目划分与微服务的代码结构" data-book-page-rel-url="spring-boot/sb-gradle-structure.html" data-book-page-id="13733">Gradle子项目划分与微服务的代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-thrift.html" title="Spring Boot整合Thrift RPC" data-book-page-rel-url="spring-boot/sb-thrift.html" data-book-page-id="13734">Spring Boot整合Thrift RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-rest.html" title="Spring Boot整合REST服务" data-book-page-rel-url="spring-boot/sb-rest.html" data-book-page-id="13735">Spring Boot整合REST服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-mockito.html" title="Mockito 单元测试打桩神器" data-book-page-rel-url="spring-boot/sb-mockito.html" data-book-page-id="13736">Mockito 单元测试打桩神器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/README.html" title="微服务的存储与缓存" data-book-page-rel-url="ms-storage/README.html" data-book-page-id="13737">微服务的存储与缓存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/mysql-devops.html" title="MySQL 数据库的运维" data-book-page-rel-url="ms-storage/mysql-devops.html" data-book-page-id="13738">MySQL 数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-mysql.html" title="Spring Boot整合MySQL" data-book-page-rel-url="ms-storage/sb-mysql.html" data-book-page-id="13739">Spring Boot整合MySQL</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/memcached-devops.html" title="Memcached 缓存服务的运维" data-book-page-rel-url="ms-storage/memcached-devops.html" data-book-page-id="13740">Memcached 缓存服务的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-memcached.html" title="Spring Boot整合Memcached" data-book-page-rel-url="ms-storage/sb-memcached.html" data-book-page-id="13741">Spring Boot整合Memcached</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/redis-devops.html" title="Redis 内存数据库的运维" data-book-page-rel-url="ms-storage/redis-devops.html" data-book-page-id="13742">Redis 内存数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-redis.html" title="Spring Boot整合Redis" data-book-page-rel-url="ms-storage/sb-redis.html" data-book-page-id="13743">Spring Boot整合Redis</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/README.html" title="微服务的消息队列" data-book-page-rel-url="ms-msgq/README.html" data-book-page-id="13744">微服务的消息队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rabbitmq-devops.html" title="RabbitMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rabbitmq-devops.html" data-book-page-id="13745">RabbitMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rabitmq.html" title="Spring Boot整合RabbitMQ" data-book-page-rel-url="ms-msgq/sb-rabitmq.html" data-book-page-id="13746">Spring Boot整合RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rocketmq-devops.html" title="RocketMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rocketmq-devops.html" data-book-page-id="13747">RocketMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rocketmq.html" title="Spring Boot整合RocketMQ" data-book-page-rel-url="ms-msgq/sb-rocketmq.html" data-book-page-id="13748">Spring Boot整合RocketMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/kafka-devops.html" title="Kafka 流处理平台的运维" data-book-page-rel-url="ms-msgq/kafka-devops.html" data-book-page-id="13749">Kafka 流处理平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/dev-kafka.html" title="Kafka 流处理开发简介" data-book-page-rel-url="ms-msgq/dev-kafka.html" data-book-page-id="13750">Kafka 流处理开发简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/README.html" title="微服务日志监控" data-book-page-rel-url="ms-log/README.html" data-book-page-id="13751">微服务日志监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-logback.html" title="Spring Boot配置Logback日志" data-book-page-rel-url="ms-log/sb-logback.html" data-book-page-id="13752">Spring Boot配置Logback日志</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-trace.html" title="Spring Boot整合分布式追踪" data-book-page-rel-url="ms-log/sb-trace.html" data-book-page-id="13753">Spring Boot整合分布式追踪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/elk-devops.html" title="ELK日志分析平台的运维" data-book-page-rel-url="ms-log/elk-devops.html" data-book-page-id="13754">ELK日志分析平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-eblk.html" title="Spring Boot整合EBLK日志分析平台" data-book-page-rel-url="ms-log/sb-eblk.html" data-book-page-id="13755">Spring Boot整合EBLK日志分析平台</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/README.html" title="微服务平台监控" data-book-page-rel-url="ms-monitor/README.html" data-book-page-id="13756">微服务平台监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sentry-devops.html" title="Sentry 错误预警系统的运维" data-book-page-rel-url="ms-monitor/sentry-devops.html" data-book-page-id="13757">Sentry 错误预警系统的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sb-sentry.html" title="Spring Boot整合Sentry" data-book-page-rel-url="ms-monitor/sb-sentry.html" data-book-page-id="13758">Spring Boot整合Sentry</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/k8s-prometheus-grafana.html" title="Kubernetes + Prometheus + Grafana平台监控" data-book-page-rel-url="ms-monitor/k8s-prometheus-grafana.html" data-book-page-id="13759">Kubernetes + Prometheus + Grafana平台监控</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/README.html" title="微服务配置中心" data-book-page-rel-url="ms-config/README.html" data-book-page-id="13760">微服务配置中心</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/cfg4j.html" title="cfg4j及方案简介" data-book-page-rel-url="ms-config/cfg4j.html" data-book-page-id="13761">cfg4j及方案简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/sb-config.html" title="Spring Boot整合配置中心" data-book-page-rel-url="ms-config/sb-config.html" data-book-page-id="13762">Spring Boot整合配置中心</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/README.html" title="微服务熔断与限流" data-book-page-rel-url="ms-circuit-breaker-and-limit/README.html" data-book-page-id="13763">微服务熔断与限流</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-hystrix.html" title="熔断与Hystrix" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-hystrix.html" data-book-page-id="13764">熔断与Hystrix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-limit.html" title="限流的实现" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-limit.html" data-book-page-id="13765">限流的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/README.html" title="微服务持续交付" data-book-page-rel-url="ms-delivery/README.html" data-book-page-id="13766">微服务持续交付</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/jenkins-devops.html" title="Jenkins平台的运维" data-book-page-rel-url="ms-delivery/jenkins-devops.html" data-book-page-id="13767">Jenkins平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-ci.html" title="Jenkins持续集成" data-book-page-rel-url="ms-delivery/ms-ci.html" data-book-page-id="13768">Jenkins持续集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-cd.html" title="Jenkins持续部署" data-book-page-rel-url="ms-delivery/ms-cd.html" data-book-page-id="13769">Jenkins持续部署</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/README.html" title="研发工具链" data-book-page-rel-url="toolchain/README.html" data-book-page-id="13770">研发工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/ldap.html" title="LDAP 内部账号管理系统" data-book-page-rel-url="toolchain/ldap.html" data-book-page-id="13771">LDAP 内部账号管理系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/gerrit.html" title="gerrit 代码的版本管理与评审" data-book-page-rel-url="toolchain/gerrit.html" data-book-page-id="13772">gerrit 代码的版本管理与评审</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/nexus.html" title="Nexus 私有maven仓库" data-book-page-rel-url="toolchain/nexus.html" data-book-page-id="13773">Nexus 私有maven仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/bom.html" title="BOM 减少版本冲突" data-book-page-rel-url="toolchain/bom.html" data-book-page-id="13774">BOM 减少版本冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-template.html" title="Spring Boot 项目模板" data-book-page-rel-url="toolchain/spring-boot-template.html" data-book-page-id="13775">Spring Boot 项目模板</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-scripts.html" title="开发效率脚本" data-book-page-rel-url="toolchain/spring-boot-scripts.html" data-book-page-id="13776">开发效率脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/stress-test.html" title="打压工具" data-book-page-rel-url="toolchain/stress-test.html" data-book-page-id="13777">打压工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/README.html" title="运维工具链" data-book-page-rel-url="devops/README.html" data-book-page-id="13778">运维工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/devops/docker-repo.html" title="Docker 私有仓库" data-book-page-rel-url="devops/docker-repo.html" data-book-page-id="13779">Docker 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/discovery.html" title="Nginx REST 网关自动配置" data-book-page-rel-url="devops/discovery.html" data-book-page-id="13780">Nginx REST 网关自动配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/k8s-cluster.html" title="搭建Kubernetes集群" data-book-page-rel-url="devops/k8s-cluster.html" data-book-page-id="13781">搭建Kubernetes集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/openvpn-k8s.html" title="OpenVPN访问Kubernetes集群内网" data-book-page-rel-url="devops/openvpn-k8s.html" data-book-page-id="13782">OpenVPN访问Kubernetes集群内网</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/jump-server.html" title="线上跳板机" data-book-page-rel-url="devops/jump-server.html" data-book-page-id="13783">线上跳板机</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =205;var bookPageId =13742;var bookPageRelUrl ='ms-storage/redis-devops.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Procedure Framework (Pv2): HBASE-12439-HBase中文参考指南 3.0</title>
+<meta content='Procedure Framework (Pv2): HBASE-12439,HBase中文参考指南 3.0' name='keywords'>
+<meta content='Procedure Framework (Pv2): HBASE-12439,HBase中文参考指南 3.0' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/173/docs/25.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Protobuf in..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/173/docs/27.html">
+<span class="">AMv2 Descri..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/173/index.html">HBase中文参考指南 3.0</a>
+<a target="_blank" rel="nofollow" href="https://github.com/apachecn/hbase-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="程序框架pv2-hbase-12439">程序框架（Pv2）： <a href="https://issues.apache.org/jira/browse/HBASE-12439">HBASE-12439</a></h1>
+<p>_ 程序 v2 ...旨在提供一种统一的方法来构建具有回滚/前滚能力的多步骤程序（例如创建/删除表） - Pv2 的作者 Matteo Bertozzi。_</p>
+<p>使用 Pv2，您可以构建和运行状态机。它是由 Matteo 构建的，用于在过程失败时使 HBase 中的分布式状态转换具有弹性。在 Pv2 之前，状态转换处理在代码库中传播，实现因转换类型和上下文而异。 Pv2 的灵感来自 Apache Accumulo 的 <a href="https://accumulo.apache.org/1.8/accumulo_user_manual.html#_fault_tolerant_executor_fate">FATE</a> 。</p>
+<p>早期的 Pv2 方面已经在 HBase 发布了很长一段时间，但随着它涉及更多涉及的场景，它继续发展。我们现在拥有的是强大但功能复杂，不完整，需要清理和加固。在本文档中，我们对系统进行了概述，以便您可以使用它（并帮助其进行抛光）。</p>
+<p>这个系统有一个尴尬的名字 Pv2，因为 HBase 已经有了快照中使用的过程的概念（参见 hbase-server <em>org.apache.hadoop.hbase.procedure</em> 而不是 hbase-procedure <em>org .apache.hadoop.hbase.procedure2</em> ）。 Pv2 取代并取代程序。</p>
+<h2 id="180程序">180.程序</h2>
+<p>过程是对 HBase 实体进行的转换。 HBase 实体的示例是区域和表格。过程由 ProcedureExecutor 实例运行。过程当前状态保存在 ProcedureStore 中。 ProcedureExecutor 只有一个原始视图，可以查看过程中发生的事情。从其 PoV，提交过程，然后 ProcedureExecutor 继续调用 <em>#execute（Object）</em>，直到过程完成。在失败或重启的情况下，可以多次调用 Execute，因此每次运行时，过程代码必须是幂等的，产生相同的结果。程序代码也可以实现 _ 回滚 _，因此如果失败则可以撤消步骤。调用 <em>execute（）</em> 可能会导致以下可能性之一：</p>
+<ul>
+<li> <p><em>execute（）</em> 返回</p>
+<ul>
+<li> <p><em>null</em> ：表示我们已经完成了。</p> </li>
+<li> <p>：表示还有更多这样做，坚持当前程序状态并重新 _ 执行（）_。</p> </li>
+<li> <p>_ 子程序的数组 _：表示在我们继续之前需要运行完成的一组程序（之后我们希望框架再次调用我们的执行）。</p> </li>
+</ul> </li>
+<li> <p><em>execute（）</em> 抛出异常</p>
+<ul>
+<li> <p><em>suspend</em> ：表示程序的执行被暂停，并且由于某些外部事件可以恢复。过程状态是持久的。</p> </li>
+<li> <p><em>yield</em> ：将程序添加回调度程序。过程状态不会持久化。</p> </li>
+<li> <p>_ 中断 _：目前与 _ 产量 _ 相同。</p> </li>
+<li> <p>上面没有列出任何 _ 异常 _：程序 _ 状态 _ 变为 <em>FAILED</em> （之后我们期望框架将尝试回滚）。</p> </li>
+</ul> </li>
+</ul>
+<p>ProcedureExecutor 将过程状态的框架概念标记到过程本身;例如它将程序标记为提交时的初始化。它在执行时将状态移动到 RUNNABLE。完成后，程序将标记为 FAILED 或 SUCCESS。以下是撰写本文时所有州的清单：</p>
+<ul>
+<li> <p>**<em>INITIALIZING</em> **施工程序，尚未加入执行人</p> </li>
+<li> <p>**<em>RUNNABLE</em> **程序添加到执行程序中，准备执行。</p> </li>
+<li> <p>**<em>WAITING</em> **该程序正在等待儿童（子程序）完成</p> </li>
+<li> <p>**_WAITING <em>TIMEOUT</em> **程序正在等待超时或外部事件</p> </li>
+<li> <p>**<em>ROLLEDBACK</em> **程序失败并被回滚。</p> </li>
+<li> <p>**<em>SUCCESS</em> **程序执行成功完成。</p> </li>
+<li> <p>**<em>FAILED</em> **程序执行失败，可能需要回滚。</p> </li>
+</ul>
+<p>每次执行后，Procedure 状态将持久保存到 ProcedureStore。在过程上调用挂钩，以便它们可以保留自定义状态。故障发生后，ProcedureExecutor 通过重放 ProcedureStore 的内容来重新补充其崩溃前状态。这使得过程框架可以抵御过程失败。</p>
+<h3 id="1801履行">180.1。履行</h3>
+<p>在实施过程中，程序倾向于将变换划分为更细粒度的任务，并且当这些工作项中的一些被移交给子程序时，批量作为处理 _ 步骤 _ in-Procedure;每次执行 execute 都用于执行一个步骤，然后 Procedure 放弃返回到框架。程序会自行跟踪处理过程中的位置。</p>
+<p>在执行过程中包含子任务或 _ 步骤 _ 的内容由程序作者决定，但通常它是一小部分工作，无法进一步分解并将处理向前移动到其最终状态。由许多小步骤而不是几个大步骤组成的程序允许程序框架提供关于我们在处理中的位置的洞察。它还允许框架在执行时更公平。如上所述，每个步骤可以被多次调用（失败/重启），因此步骤必须是幂等的。很容易混淆过程本身与框架本身保持一致的状态。尽量保持它们的区别。</p>
+<h3 id="1802回滚">180.2。回滚</h3>
+<p>当过程或其中一个子过程失败时，将调用回滚。回滚步骤应该清除 execute（）步骤中创建的资源。如果失败并重新启动，可能会多次调用 rollback（），因此代码必须是幂等的。</p>
+<h3 id="1803度量">180.3。度量</h3>
+<p>有关于提交程序和完成时收集指标的钩子。</p>
+<ul>
+<li> <p>updateMetricsOnSubmit（）</p> </li>
+<li> <p>updateMetricsOnFinish（）</p> </li>
+</ul>
+<p>各个过程可以覆盖这些方法以收集过程特定的度量标准这些方法的默认实现尝试获取一个实现接口 ProcedureMetrics 的对象，该接口封装了以下一组通用度量：</p>
+<ul>
+<li> <p>SubmittedCount（Counter）：提交类型的过程实例总数。</p> </li>
+<li> <p>时间（直方图）：过程实例的运行时直方图。</p> </li>
+<li> <p>FailedCount（Counter）：失败的过程实例总数。</p> </li>
+</ul>
+<p>各个过程可以实现此对象并定义这些通用的度量标准集。</p>
+<h3 id="1804行李">180.4。行李</h3>
+<p>程序可以携带行李。一个例子是 _ 步骤 _ 最后获得的程序（参见上一节）;程序持续存在标记它们当前的位置。其他示例可能是 Procedure 当前正在运行的 Region 或 Server 名称。每次执行调用后，都会调用 Procedure＃serializeStateData。程序可以坚持下去。</p>
+<h3 id="1805结果状态和查询">180.5。结果/状态和查询</h3>
+<p>（来自 Matteo 的 <a href="https://issues.apache.org/jira/secure/attachment/12693273/Procedurev2Notification-Bus.pdf">ProcedureV2 和 Notification Bus</a> doc）在异步操作的情况下，必须保持结果，直到客户端请求它为止。一旦我们收到结果的“获取”，我们就可以安排删除记录。对于某些操作，结果可能是“不必要的”，尤其是在失败的情况下（例如，如果创建表失败，我们可以查询操作结果，或者我们可以只执行列表来查看它是否已创建）所以在某些情况下我们可以超时后安排删除。在客户端，操作将返回“过程 ID”，此 ID 可用于等待过程完成并获得结果/异常。</p>
+<pre><code>Admin.doOperation() { longprocId=master.doOperation(); master.waitCompletion(procId); }  + 
+</code></pre>
+<p>如果主机在执行操作时发生故障，备用主机将拾取半进行操作并完成它。客户端不会注意到失败。</p>
+<h2 id="181子程序">181.子程序</h2>
+<p>子过程是 _ 过程 _ 实例，由过程实例（父过程）的 <em>#execute（Object）</em> 方法创建和返回。由于子程序属于 _ 程序 _，它们可以实例化自己的子程序。作为递归，过程堆栈由框架维护。该框架确保父过程不会继续，直到过程堆栈中的所有子过程及其子过程成功完成。</p>
+<h2 id="182程序执行人">182.程序执行人</h2>
+<p><em>ProcedureExecutor</em> 使用 <em>ProcedureStore</em> 和 <em>ProcedureScheduler</em> 并执行提交给它的程序。支持的一些基本操作是：</p>
+<ul>
+<li> <p><em>abort（procId）</em>：如果未完成，则中止指定的过程</p> </li>
+<li> <p>_ 提交（程序）_：提交执行程序</p> </li>
+<li> <p>_ 检索：_ get 方法列表获取 _ 程序 _ 实例和结果</p> </li>
+<li> <p>_ 注册/取消注册 _ 监听器：用于监听与程序相关的通知</p> </li>
+</ul>
+<p>当 <em>ProcedureExecutor</em> 启动时，它会在前一次运行的 <em>ProcedureStore</em> 中加载过程实例。从最后存储的状态恢复所有未完成的过程。</p>
+<h2 id="183-nonces">183. Nonces</h2>
+<p>您可以将 RPC 中的随机数传递给执行程序提交的过程。然后将这个随机数与 w 持续的过程序列化。如果崩溃，在重新加载时，如果客户端尝试第二次运行相同的程序（将被拒绝），则会将 nonce 放回到 pid 的 nonce 映射中。请参阅基本过程以及 nonce 是基本数据成员的方式。</p>
+<h2 id="184等待唤醒暂停收益">184.等待/唤醒/暂停/收益</h2>
+<p>'suspend'意味着停止处理程序，因为在条件改变之前我们不能再进步;即我们发送 RPC 并需要等待响应。这种方法的工作方式是，一个过程在其内部引发一个暂停异常作为 GOTO 结束当前处理步骤。挂起还会将过程放回调度程序。有问题的是，即使在暂停时，我们也会对出路进行一些计算，因此可能需要时间退出（我们必须在 WAL 中更新状态）。</p>
+<p>RegionTransitionProcedure＃reportTransition 在收到 RS 的报告时被调用。对于分配和取消分配，来自我们发送 RPC 的服务器的此事件响应唤醒暂停的分配/取消分配。</p>
+<h2 id="185锁定">185.锁定</h2>
+<p>过程锁不是关于并发性的！它们是为了对 HBase 实体（例如表或区域）提供过程读/写访问权限，这样就可以阻止其他过程在当前过程运行时修改 HBase 实体状态。</p>
+<p>锁定是可选的，直到过程实现者，但如果过程正在操作实体，则所有转换都需要通过使用相同锁定方案的过程完成，否则会造成严重破坏。</p>
+<p>两个 ProcedureExecutor Worker 线程实际上最终都会处理同一个 Procedure 实例。如果它发生了，那么线程就意味着运行一个过程的不同部分 - 那些没有相互标记的变化（这在程序框架概念'暂停'方面变得很尴尬。更多内容见下文）。</p>
+<p>可选地，可以在程序的有效期内保持锁。例如，如果移动 Region，您可能希望拥有对 HBase Region 的独占访问权，直到 Region 完成（或失败）。这与{<a href="https://github.com/link"><strong>@link</strong></a> #holdLock（Object）}一起使用。如果{<a href="https://github.com/link"><strong>@link</strong></a> #holdLock（Object）}返回 true，则过程执行程序将调用 acquireLock（）一次，之后不调用{<a href="https://github.com/link"><strong>@link</strong></a> #releaseLock（Object）}，直到过程完成（通常，它调用每个周围的释放/获取）调用{<a href="https://github.com/link"><strong>@link</strong></a> #execute（Object）}。</p>
+<p>锁也可以过程的生命;即一旦一个分配程序开始，我们就不希望另一个程序干涉该分配的区域。持有程序生命周期锁定的程序过程#holdLock 为 true。 AssignProcedure 执行此操作与拆分和移动一样（如果在区域移动的中间，您不希望它拆分）。</p>
+<p>锁定可以终止程序。</p>
+<p>一些锁具有层次结构。例如，获取区域锁定还会对其包含的表和命名空间进行（读取）锁定，以防止另一个过程获得对宿主表（或命名空间）的独占锁定。</p>
+<h2 id="186程序类型">186.程序类型</h2>
+<h3 id="1861-statemachineprocedure">186.1。 StateMachineProcedure</h3>
+<p>可以将对 <em>#execute（Object）</em> 方法的每次调用视为在状态机中从一种状态转换到另一种状态。抽象类 <em>StateMachineProcedure</em> 是基础 _ 过程 _ 类的包装器，它提供了用于实现状态机的构造作为 _ 过程 _。在每个状态转换之后，当前状态被持久化，使得在崩溃/重启的情况下，可以从崩溃/重启之前的过程的先前状态恢复状态转换。各个过程需要定义初始状态和终止状态和钩子 <em>executeFromState（）</em> 和 <em>setNextState（）</em> 是为状态转换提供的。</p>
+<h3 id="1862-remoteproceduredispatcher">186.2。 RemoteProcedureDispatcher</h3>
+<p>新的 RemoteProcedureDispatcher（+子类 RSProcedureDispatcher）原语负责运行基于过程的 Assignments 的“远程”组件。该调度员了解“服务器”。它按时间/计数基于时间聚合分配，因此可以批量发送过程而不是每个 RPC 发送一个过程。过程状态返回到 RegionServer 心跳报告在线/离线区域的背面（不再通过 ZK 通知）。响应将传递给 AMv2 以进行“处理”。它将检查内存中的状态。如果存在不匹配，则假设 RS 端出现问题，它会禁用 RegionServer。超时会触发重试（尚未实施！）。过程机器使用实体 _ 锁定 _ 确保任何一个区域/表上一次只能执行一个操作，并且智能关于什么是串行以及可以同时运行什么（锁定是基于 zk 的 - 你放了一个 znode 在 zk 中表 - 但现在已经转换为基于程序的项目的一部分）。</p>
+<h2 id="187参考文献">187.参考文献</h2>
+<ul>
+<li> <p>Matteo 有一个关于程序框架看起来像什么的幻灯片，以及它最初解决的问题<a href="https://issues.apache.org/jira/secure/attachment/12845124/ProcedureV2b.pdf">附加到 Pv2 问题上。</a></p> </li>
+<li> <p><a href="https://issues.apache.org/jira/secure/attachment/12693273/Procedurev2Notification-Bus.pdf">Matteo</a> 关于问题以及 Pv2 如何使用路线图（来自 Pv2 JIRA）的优秀文档。我们应该回到路线图来做通知总线，将日志分割转换为 Pv2 等。</p> </li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/205/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/205/index.html">从0到1实战微服务架构</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/115.html">skyline75489</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="mysql">mysql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">62页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/116/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/116/index.html">Protocol Buffer 3学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/137/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/137/index.html">Growth: 全栈增长工程师指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 6161个">6161</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/114/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/11/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gradle_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/11/index.html">Gradle实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/7.html">EZLippi</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gradle">gradle</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 299个">299</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/18/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/18/index.html">Go社区的知识图谱</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/13.html">golang foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1356个">1356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/173/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/README.html" title="HBase™ 中文参考指南 3.0" data-book-page-rel-url="README.html" data-book-page-id="11767">HBase™ 中文参考指南 3.0</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/0.html" title="Preface" data-book-page-rel-url="docs/0.html" data-book-page-id="11768">Preface</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/1.html" title="Getting Started" data-book-page-rel-url="docs/1.html" data-book-page-id="11769">Getting Started</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/2.html" title="Apache HBase Configuration" data-book-page-rel-url="docs/2.html" data-book-page-id="11770">Apache HBase Configuration</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/3.html" title="Upgrading" data-book-page-rel-url="docs/3.html" data-book-page-id="11771">Upgrading</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/4.html" title="The Apache HBase Shell" data-book-page-rel-url="docs/4.html" data-book-page-id="11772">The Apache HBase Shell</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/5.html" title="Data Model" data-book-page-rel-url="docs/5.html" data-book-page-id="11773">Data Model</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/6.html" title="HBase and Schema Design" data-book-page-rel-url="docs/6.html" data-book-page-id="11774">HBase and Schema Design</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/7.html" title="RegionServer Sizing Rules of Thumb" data-book-page-rel-url="docs/7.html" data-book-page-id="11775">RegionServer Sizing Rules of Thumb</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/8.html" title="HBase and MapReduce" data-book-page-rel-url="docs/8.html" data-book-page-id="11776">HBase and MapReduce</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/9.html" title="Securing Apache HBase" data-book-page-rel-url="docs/9.html" data-book-page-id="11777">Securing Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/10.html" title="Architecture" data-book-page-rel-url="docs/10.html" data-book-page-id="11778">Architecture</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/11.html" title="In-memory Compaction" data-book-page-rel-url="docs/11.html" data-book-page-id="11779">In-memory Compaction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/12.html" title="Backup and Restore" data-book-page-rel-url="docs/12.html" data-book-page-id="11780">Backup and Restore</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/13.html" title="Synchronous Replication" data-book-page-rel-url="docs/13.html" data-book-page-id="11781">Synchronous Replication</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/14.html" title="Apache HBase APIs" data-book-page-rel-url="docs/14.html" data-book-page-id="11782">Apache HBase APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/15.html" title="Apache HBase External APIs" data-book-page-rel-url="docs/15.html" data-book-page-id="11783">Apache HBase External APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/16.html" title="Thrift API and Filter Language" data-book-page-rel-url="docs/16.html" data-book-page-id="11784">Thrift API and Filter Language</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/17.html" title="HBase and Spark" data-book-page-rel-url="docs/17.html" data-book-page-id="11785">HBase and Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/18.html" title="Apache HBase Coprocessors" data-book-page-rel-url="docs/18.html" data-book-page-id="11786">Apache HBase Coprocessors</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/19.html" title="Apache HBase Performance Tuning" data-book-page-rel-url="docs/19.html" data-book-page-id="11787">Apache HBase Performance Tuning</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/20.html" title="Troubleshooting and Debugging Apache HBase" data-book-page-rel-url="docs/20.html" data-book-page-id="11788">Troubleshooting and Debugging Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/21.html" title="Apache HBase Case Studies" data-book-page-rel-url="docs/21.html" data-book-page-id="11789">Apache HBase Case Studies</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/22.html" title="Apache HBase Operational Management" data-book-page-rel-url="docs/22.html" data-book-page-id="11790">Apache HBase Operational Management</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/23.html" title="Building and Developing Apache HBase" data-book-page-rel-url="docs/23.html" data-book-page-id="11791">Building and Developing Apache HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/24.html" title="Unit Testing HBase Applications" data-book-page-rel-url="docs/24.html" data-book-page-id="11792">Unit Testing HBase Applications</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/25.html" title="Protobuf in HBase" data-book-page-rel-url="docs/25.html" data-book-page-id="11793">Protobuf in HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/26.html" title="Procedure Framework (Pv2): HBASE-12439" data-book-page-rel-url="docs/26.html" data-book-page-id="11794">Procedure Framework (Pv2): HBASE-12439</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/27.html" title="AMv2 Description for Devs" data-book-page-rel-url="docs/27.html" data-book-page-id="11795">AMv2 Description for Devs</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/28.html" title="ZooKeeper" data-book-page-rel-url="docs/28.html" data-book-page-id="11796">ZooKeeper</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/29.html" title="Community" data-book-page-rel-url="docs/29.html" data-book-page-id="11797">Community</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/173/docs/30.html" title="Appendix" data-book-page-rel-url="docs/30.html" data-book-page-id="11798">Appendix</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =173;var bookPageId =11794;var bookPageRelUrl ='docs/26.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

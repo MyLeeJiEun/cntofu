@@ -1,0 +1,1466 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Database——查询构造器与语法编译器源码分析(上)-Laravel 源码详解</title>
+<meta content='Laravel Database——查询构造器与语法编译器源码分析(上),Laravel 源码详解' name='keywords'>
+<meta content='Laravel Database——查询构造器与语法编译器源码分析(上),Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Dat..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html">
+<span class="">Laravel Dat..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="前言">前言</h2>
+<p>在前两个文章中，我们分析了数据库的连接启动与数据库底层 <code>CRUD</code> 的原理，底层数据库服务支持原生 <code>sql</code> 的运行。本文以 <code>mysql</code> 为例，向大家讲述支持 <code>Fluent</code> 的查询构造器 <code>query</code> 与语法编译器 <code>grammer</code> 的原理。</p>
+<h2 id="dbtable-与-查询构造器">DB::table 与 查询构造器</h2>
+<p>若是不想使用原生的 <code>sql</code> 语句，我们可以使用 <code>DB::table</code> 语句，该语句会返回一个 <code>query</code> 对象：</p>
+<pre><code class="language-php">public function table($table)
+{
+    return $this-&gt;query()-&gt;from($table);
+}
+
+public function query()
+{
+    return new QueryBuilder(
+        $this, $this-&gt;getQueryGrammar(), $this-&gt;getPostProcessor()
+    );
+}
+</code></pre>
+<p>我们可以看到，<code>query</code> 会有两个成员，<code>queryGrammar</code> 与 <code>postProcessor</code>。<code>queryGrammar</code> 负责对 <code>QueryBuilcder</code> 的结果进行 <code>sql</code> 语言的转化，<code>postProcessor</code> 负责查询结果的后处理。</p>
+<p>之所以 <code>laravel</code> 推荐我们使用查询构造器，而不是原生的 <code>sql</code>，原因在于可以避免 <code>sql</code> 注入漏洞。当然，我们也可以在使用 <code>DB::select()</code> 函数中手动写 <code>bindings</code> 的值，但是这样的话，我们写 <code>sql</code> 的语句是就必须是这样：</p>
+<pre><code class="language-php">DB::select('select * from table where col=?',[1]);
+</code></pre>
+<p>必然会带来很多不便。</p>
+<p>有了查询构造器，我们就可以写出 <code>fluent</code> 类型的语句：</p>
+<pre><code class="language-php">DB::table('table')-&gt;select('*')-&gt;where('col', 1);
+
+</code></pre>
+<p>是不是很方便？</p>
+<h2 id="crud-与语法编译器">CRUD 与语法编译器</h2>
+<p>相应于 <code>connection</code> 对象的 <code>CRUD</code>，语法编译器有 <code>compileInsert</code>、<code>compileSelect</code>、<code>compileUpdate</code>、<code>compileDelete</code>。其中最重要的是 <code>compileSelect</code>，因为它不仅负责了 <code>select</code> 语句的语法编译，还负责聚合语句 <code>aggregate</code>、<code>from</code> 语句、<code>join</code> 连接语句、<code>wheres</code> 条件语句、<code>groups</code> 分组语句、<code>havings</code> 条件语句、<code>orders</code> 排序语句、<code>limit</code> 语句、<code>offset</code> 语句、<code>unions</code> 联合语句、<code>lock</code> 语句：</p>
+<pre><code class="language-php">protected $selectComponents = [
+    'aggregate',
+    'columns',
+    'from',
+    'joins',
+    'wheres',
+    'groups',
+    'havings',
+    'orders',
+    'limit',
+    'offset',
+    'unions',
+    'lock',
+];
+
+public function compileSelect(Builder $query)
+{
+   
+    $original = $query-&gt;columns;
+
+    if (is_null($query-&gt;columns)) {
+        $query-&gt;columns = ['*'];
+    }
+
+    $sql = trim($this-&gt;concatenate(
+        $this-&gt;compileComponents($query))
+    );
+
+    $query-&gt;columns = $original;
+
+    return $sql;
+}
+
+protected function compileComponents(Builder $query)
+{
+    $sql = [];
+
+    foreach ($this-&gt;selectComponents as $component) {
+        if (! is_null($query-&gt;$component)) {
+            $method = 'compile'.ucfirst($component);
+
+            $sql[$component] = $this-&gt;$method($query, $query-&gt;$component);
+        }
+    }
+
+    return $sql;
+}
+</code></pre>
+<p>可以看出来，语法编译器会将上述所有的语句放入 <code>$sql[]</code> 成员中，然后通过 <code>concatenate</code> 函数组装成 <code>sql</code> 语句：</p>
+<pre><code class="language-php">protected function concatenate($segments)
+{
+    return implode(' ', array_filter($segments, function ($value) {
+        return (string) $value !== '';
+    }));
+}
+
+</code></pre>
+<h3 id="wrap-函数">wrap 函数</h3>
+<p>若想要了解语法编译器，我们就必须先要了解 <code>grammer</code> 中一个重要的函数 <code>wrap</code>，这个函数专门对表名与列名进行处理，</p>
+<pre><code class="language-php">public function wrap($value, $prefixAlias = false)
+{
+    if ($this-&gt;isExpression($value)) {
+        return $this-&gt;getValue($value);
+    }
+
+    if (strpos(strtolower($value), ' as ') !== false) {
+        return $this-&gt;wrapAliasedValue($value, $prefixAlias);
+    }
+
+    return $this-&gt;wrapSegments(explode('.', $value));
+}
+</code></pre>
+<p>处理的流程：</p>
+<ul>
+<li>若是 <code>Expression</code> 对象，利用函数 <code>getValue</code> 直接取出对象值，不对其进行任何处理，用于处理原生 <code>sql</code>。<code>expression</code> 对象的作用是保护原始参数，避免框架解析的一种方式。也就是说，当我们用了 <code>expression</code> 来包装参数的话，<code>laravel</code> 将不会对其进行任何处理，包括库名解析、表名前缀、别名等。</li>
+<li>若表名/列名存在 <code>as</code>，则利用函数 <code>wrapAliasedValue</code> 为表名设置别名。</li>
+<li>若表名/列名含有 <code>.</code>，则会被分解为 <code>库名/表名</code>，或者 <code>表名/列名</code>，并调用函数 <code>wrapSegments</code>。</li>
+</ul>
+<h3 id="wrapaliasedvalue-函数">wrapAliasedValue 函数</h3>
+<p><code>wrapAliasedValue</code> 函数用于处理别名：</p>
+<pre><code class="language-php">protected function wrapAliasedValue($value, $prefixAlias = false)
+{
+    $segments = preg_split('/\s+as\s+/i', $value);
+
+    if ($prefixAlias) {
+        $segments[1] = $this-&gt;tablePrefix.$segments[1];
+    }
+
+    return $this-&gt;wrap(
+        $segments[0]).' as '.$this-&gt;wrapValue($segments[1]
+    );
+}
+</code></pre>
+<p>可以看到，首先程序会根据 <code>as</code> 将字符串分为两部分，<code>as</code> 前的部分递归调用 <code>wrap</code> 函数，<code>as</code> 后的部分调用 <code>wrapValue</code> 函数.</p>
+<h3 id="wrapvalue-函数">wrapValue 函数</h3>
+<p><code>wrapValue</code> 函数用来处理添加符号 <code>"</code>，例如 <code>table</code>，会被这个函数变为 <code>"table"</code>。需要注意的是 <code>table1"table2</code> 这种情况，假如我们的数据库中存在一个表，名字就叫做: <code>table1"table2</code>，我们在数据库查询的时候，必须将表名转化为 <code>"table1""table2"</code>，只有这样，数据库才会有效地转化表名为 <code>"table1"table2"</code>，否则数据库就会报告错误：找不到表。</p>
+<pre><code class="language-php">protected function wrapValue($value)
+{
+    if ($value !== '*') {
+        return '"'.str_replace('"', '""', $value).'"';
+    }
+
+    return $value;
+}
+</code></pre>
+<h3 id="wrapsegments-函数">wrapSegments 函数</h3>
+<p><code>wrapSegments</code> 函数会判断当前参数，如果是 <code>table.column</code>，会将前一部分 <code>table</code> 调用 <code>wrapTable</code>, <code>column</code> 调用 <code>wrapValue</code>，最后生成 <code>“table”."column"</code>。</p>
+<pre><code class="language-php">protected function wrapSegments($segments)
+{
+    return collect($segments)-&gt;map(function ($segment, $key) use ($segments) {
+        return $key == 0 &amp;&amp; count($segments) &gt; 1
+                        ? $this-&gt;wrapTable($segment)
+                        : $this-&gt;wrapValue($segment);
+    })-&gt;implode('.');
+}
+</code></pre>
+<h3 id="wraptable-函数">wrapTable 函数</h3>
+<p><code>wrapTable</code> 函数用于为数据表添加表前缀：</p>
+<pre><code>public function wrapTable($table)
+{
+    if (! $this-&gt;isExpression($table)) {
+        return $this-&gt;wrap($this-&gt;tablePrefix.$table, true);
+    }
+
+    return $this-&gt;getValue($table);
+}
+</code></pre>
+<p><code>wrap</code> 整体流程图如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/17-9-23/27965477.jpg" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/17-9-23/27965477.jpg" alt="Markdown"></a></p>
+<h2 id="from-语句">from 语句</h2>
+<p>我们看到 <code>DB::table</code> 实际上是调用了查询构造器的 <code>from</code> 函数。接下来我们就看看，当我们写下了</p>
+<pre><code class="language-php">DB::table('table')-&gt;get()
+</code></pre>
+<p>时发生了什么。</p>
+<pre><code class="language-php">public function from($table)
+{
+    $this-&gt;from = $table;
+
+    return $this;
+}
+</code></pre>
+<p>我们看到，<code>from</code> 函数极其简单，我们接下来看 <code>get</code>：</p>
+<pre><code class="language-php">public function get($columns = ['*'])
+{
+    $original = $this-&gt;columns;
+
+    if (is_null($original)) {
+        $this-&gt;columns = $columns;
+    }
+
+    $results = $this-&gt;processor-&gt;processSelect($this, $this-&gt;runSelect());
+
+    $this-&gt;columns = $original;
+
+    return collect($results);
+}
+</code></pre>
+<p><code>laravel</code> 的查询构造器是懒加载的，只有调用了 <code>get</code> 函数才会真正的调用语法编译器，采用调用底层 <code>connection</code> 对象进行数据库查询：</p>
+<pre><code class="language-php">protected function runSelect()
+{
+    return $this-&gt;connection-&gt;select(
+        $this-&gt;toSql(), $this-&gt;getBindings(), ! $this-&gt;useWritePdo
+    );
+}
+
+public function toSql()
+{
+    return $this-&gt;grammar-&gt;compileSelect($this);
+}
+</code></pre>
+<h3 id="compilefrom-函数">compileFrom 函数</h3>
+<p>首先我们先看看流程图：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/17-9-23/10116808.jpg" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/17-9-23/10116808.jpg" alt="Markdown"></a></p>
+<p>语法编译器 <code>grammer</code> 对于 <code>from</code> 语句的处理由函数 <code>compileFrom</code> 负责：</p>
+<pre><code class="language-php">protected function compileFrom(Builder $query, $table)
+{
+    return 'from '.$this-&gt;wrapTable($table);
+}
+</code></pre>
+<p>从流程图可以看出，具体流程与 <code>wrap</code> 类似。</p>
+<p>我们调用 <code>from</code> 时，可以传递两种参数，一种是字符串，另一种是 <code>expression</code> 对象：</p>
+<pre><code class="language-php">DB::table('table');
+DB::table(new Expression('table'));
+</code></pre>
+<ul>
+<li>传递 <code>expression</code> 对象</li>
+</ul>
+<p>当我们传递 <code>expression</code> 对象的时候，<code>grammer</code> 就会调用 <code>getValue</code> 取出原生 <code>sql</code> 语句。</p>
+<ul>
+<li>传递字符串</li>
+</ul>
+<p>当我们向 <code>from</code> 传递普通的字符串时，<code>laravel</code> 就会对字符串调用 <code>wrap</code> 函数进行处理，处理流程上一个小节已经说明：</p>
+<ul>
+<li>为表名加上前缀 <code>$this-&gt;tablePrefix</code></li>
+<li>若字符串存在 <code>as</code>，则为表名设置别名。</li>
+<li>若字符串含有 <code>.</code>，则会被分解为 <code>库名</code> 与 <code>表名</code>，并进行分别调用 <code>wrapTable</code> 函数与 <code>wrapValue</code> 进行处理。</li>
+<li>为表名前后添加 <code>"</code>，例如 <code>t1.t2</code> 会被转化为 <code>"t1"."t2"</code>（不同的数据库添加的字符不同，mysql 就不是 <code>"</code>）</li>
+</ul>
+<p><code>laravel</code> 对 <code>from</code> 处理流程存在一些问题，表名前缀设置功能与数据库名功能公用存在问题，相关 <code>issue</code> 地址是：<a href="https://github.com/laravel/framework/issues/21305">[Bug] Table prefix added to database name when using database.table</a>，有任何兴趣的同学可以在这个 <code>issue</code> 里面讨论，或者直接向作者提 <code>PR</code>。若作者对此部分有任何修改，我会同步修改这篇文章。</p>
+<h2 id="select-语句">Select 语句</h2>
+<p>本小节会介绍 <code>select</code> 语句：</p>
+<pre><code class="language-php">public function select($columns = ['*'])
+{
+    $this-&gt;columns = is_array($columns) ? $columns : func_get_args();
+
+    return $this;
+}
+</code></pre>
+<p><code>queryBuilder</code> 的 <code>select</code> 语句很简单，我们不多讨论.</p>
+<p><code>selectRaw</code> ：</p>
+<pre><code class="language-php">public function selectRaw($expression, array $bindings = [])
+{
+    $this-&gt;addSelect(new Expression($expression));
+
+    if ($bindings) {
+        $this-&gt;addBinding($bindings, 'select');
+    }
+
+    return $this;
+}
+
+public function addSelect($column)
+{
+    $column = is_array($column) ? $column : func_get_args();
+
+    $this-&gt;columns = array_merge((array) $this-&gt;columns, $column);
+
+    return $this;
+}
+</code></pre>
+<p>可以看到， <code>selectRaw</code> 就是将 <code>Expression</code> 对象赋值到 <code>columns</code> 中，我们在前面说到，框架不会对 <code>Expression</code> 进行任何处理（更准确的说是 <code>wrap</code> 函数），这样就保证了原生语句的执行。</p>
+<p>我们接着看 <code>grammer</code> .</p>
+<h3 id="compilecolumns-函数">compileColumns 函数</h3>
+<pre><code class="language-php">protected function compileColumns(Builder $query, $columns)
+{
+    if (! is_null($query-&gt;aggregate)) {
+        return;
+    }
+
+    $select = $query-&gt;distinct ? 'select distinct ' : 'select ';
+
+    return $select.$this-&gt;columnize($columns);
+}
+
+public function columnize(array $columns)
+{
+    return implode(', ', array_map([$this, 'wrap'], $columns));
+}
+</code></pre>
+<p>可以看到，<code>grammer</code> 对 <code>select</code> 的语法编译调用 <code>wrap</code> 函数对每个 <code>select</code> 的字段进行处理，处理过程在上面详解过，在此不再赘述。</p>
+<h2 id="selectsub-语句">selectSub 语句</h2>
+<p>所谓的 <code>select</code> 子查询，就是查询的字段来源于其他数据表。对于这种查询，可以分成两部来理解，首先忽略整个select子查询，查出第一个表中的数据，然后根据第一个表的数据执行子查询，</p>
+<p><code>laravel</code> 的 <code>selectSub</code> 支持闭包函数、<code>queryBuild</code> 对象或者原生 <code>sql</code> 语句，以下是单元测试样例：</p>
+<pre><code class="language-php">$query = DB::table('one')-&gt;select(['foo', 'bar'])-&gt;where('key', '=', 'val');
+
+$query-&gt;selectSub(function ($query) {
+        $query-&gt;from('two')-&gt;select('baz')-&gt;where('subkey', '=', 'subval');
+    }, 'sub');
+</code></pre>
+<p>另一种写法：</p>
+<pre><code class="language-php">$query = DB::table('one')-&gt;select(['foo', 'bar'])-&gt;where('key', '=', 'val');
+$query_sub = DB::table('one')-&gt;select('baz')-&gt;where('subkey', '=', 'subval');
+
+$query-&gt;selectSub($query_sub, 'sub');
+</code></pre>
+<p>生成的 <code>sql</code>：</p>
+<pre><code>select "foo", "bar", (select "baz" from "two" where "subkey" = 'subval') as "sub" from "one" where "key" = 'val'
+</code></pre>
+<p><code>selectSub</code> 语句的实现比较简单：</p>
+<pre><code class="language-php">public function selectSub($query, $as)
+{
+    if ($query instanceof Closure) {
+        $callback = $query;
+
+        $callback($query = $this-&gt;forSubQuery());
+    }
+
+    list($query, $bindings) = $this-&gt;parseSubSelect($query);
+
+    return $this-&gt;selectRaw(
+        '('.$query.') as '.$this-&gt;grammar-&gt;wrap($as), $bindings
+    );
+}
+
+protected function parseSubSelect($query)
+{
+    if ($query instanceof self) {
+        $query-&gt;columns = [$query-&gt;columns[0]];
+
+        return [$query-&gt;toSql(), $query-&gt;getBindings()];
+    } elseif (is_string($query)) {
+        return [$query, []];
+    } else {
+        throw new InvalidArgumentException;
+    }
+}
+</code></pre>
+<p>可以看到，如果 <code>selectSub</code> 的参数是闭包函数，那么就会先执行闭包函数，闭包函数将会为 <code>query</code> 根据查询语句更新对象。</p>
+<p><code>parseSubSelect</code> 函数为子查询解析 <code>sql</code> 语句与 <code>binding</code> 变量。</p>
+<h2 id="where-语句总结">where 语句总结</h2>
+<p>在 <code>laravel</code> 文档中，<code>queryBuild</code> 的用法很详尽，但是为了更好的理解源码，我们在这里再次大概的总结一下：</p>
+<h3 id="基础用法">基础用法</h3>
+<pre><code class="language-php">users = DB::table('users')-&gt;where('votes', '=', 100)-&gt;get();
+$users = DB::table('users')-&gt;where('votes', 100)-&gt;get();
+</code></pre>
+<p>这两个是等价的写法。</p>
+<h3 id="where-数组"><code>where</code> 数组</h3>
+<pre><code class="language-php">$users = DB::table('users')-&gt;where(
+    ['status' =&gt; 1, 'subscribed' =&gt; 1],
+)-&gt;get();
+
+$users = DB::table('users')-&gt;where([
+    ['status', '1'],
+    ['subscribed', '1'],
+])-&gt;get();
+
+$users = DB::table('users')-&gt;where([
+    ['status', '1'],
+    ['subscribed', '&lt;&gt;', '1'],
+])-&gt;get();
+
+</code></pre>
+<h3 id="where-查询组"><code>where</code> 查询组</h3>
+<pre><code class="language-php">DB::table('users')
+    -&gt;where('name', '=', 'John')
+    -&gt;orWhere(function ($query) {
+        $query-&gt;where('votes', '&gt;', 100)
+              -&gt;where('title', '&lt;&gt;', 'Admin');
+    })
+    -&gt;get();
+</code></pre>
+<p>这一句的 <code>sql</code> 语句是</p>
+<pre><code class="language-php">select * from users where name = 'John' or (votes &gt; 100 and title &lt;&gt; 'Admin')
+</code></pre>
+<h3 id="where-子查询"><code>where</code> 子查询</h3>
+<pre><code class="language-php">public function testFullSubSelects()
+{
+    $builder = $this-&gt;getBuilder();
+    DB::table('users')
+        -&gt;Where('id', '=', function ($q) {
+        $q-&gt;select(new Raw('max(id)'))-&gt;from('users')-&gt;where('email', '=', 'bar');
+    });
+}
+</code></pre>
+<p>这一句的 <code>sql</code> 语句是</p>
+<pre><code class="language-php">select * from "users" where "email" = foo or "id" = (select max(id) from "users" where "email" = bar`
+</code></pre>
+<h3 id="orwhere">orWhere</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;where('votes', '&gt;', 100)
+            -&gt;orWhere('name', 'John')
+            -&gt;get();
+</code></pre>
+<h3 id="wheredate--wheremonth--whereday--whereyear--wheretime">whereDate / whereMonth / whereDay / whereYear / whereTime</h3>
+<pre><code class="language-php">$users = DB::table('users')
+	        -&gt;whereDate('created_at', '2016-12-31')
+	        -&gt;get();
+	        
+$users = DB::table('users')
+            -&gt;whereMonth('created_at', '12')
+            -&gt;get();	        
+
+$users = DB::table('users')
+            -&gt;whereDay('created_at', '31')
+            -&gt;get();
+            
+$users = DB::table('users')
+            -&gt;whereYear('created_at', '2016')
+            -&gt;get();
+            
+$users = DB::table('users')
+            -&gt;whereTime('created_at', '&gt;=', '22:00')
+            -&gt;get();
+</code></pre>
+<h3 id="wherebetween--wherenotbetween">whereBetween / whereNotBetween</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereBetween('votes', [1, 100])-&gt;get();
+            
+$users = DB::table('users')
+            -&gt;whereNotBetween('votes', [1, 100])
+            -&gt;get();
+</code></pre>
+<h3 id="whereraw--orwhereraw">whereRaw / orWhereRaw</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereRaw('id = ? or email = ?', [1, 'foo'])
+            -&gt;get();
+            
+$users = DB::table('users')
+            -&gt;orWhereRaw('id = ? or email = ?', [1, 'foo'])
+            -&gt;get();
+</code></pre>
+<h3 id="wherein--wherenotin--orwherein--orwherenotin">whereIn / whereNotIn / orWhereIn / orWhereNotIn</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereIn('id', [1, 2, 3])
+            -&gt;get();
+
+$users = DB::table('users')
+            -&gt;whereNotIn('id', [1, 2, 3])
+            -&gt;get();
+
+$users = DB::table('users')            
+				-&gt;whereIn('id', function ($q) {
+        			$q-&gt;select('id')-&gt;from('users')-&gt;where('age', '&gt;', 25)-&gt;take(3);
+    			});       
+    			
+$users = DB::table('users')            
+				-&gt;whereNotIn('id', function ($q) {
+        			$q-&gt;select('id')-&gt;from('users')-&gt;where('age', '&gt;', 25)-&gt;take(3);
+    			});  
+    			
+$query = DB::table('users')-&gt;select('id')-&gt;where('age', '&gt;', 25)-&gt;take(3);
+$users = DB::table('users')-&gt;whereIn('id', $query);   
+$users = DB::table('users')-&gt;whereNotIn('id', $query);
+			     
+</code></pre>
+<p>有意思的是，当我们在 <code>whereIn / whereNotIn / orWhereIn / orWhereNotIn</code> 中传入空数组的时候：</p>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereIn('id', [])
+            -&gt;get();
+
+$users = DB::table('users')
+            -&gt;orWhereIn('id', [])
+            -&gt;get();
+</code></pre>
+<p>这个时候，框架自动会生成如下的 <code>sql</code>：</p>
+<pre><code class="language-php">select * from "users" where 0 = 1;
+
+select * from "users" where "id" = ? or 0 = 1
+</code></pre>
+<h3 id="wherecolumn">whereColumn</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereColumn('first_name', 'last_name')
+            -&gt;get();
+
+$users = DB::table('users')
+            -&gt;whereColumn('updated_at', '&gt;', 'created_at')
+            -&gt;get();
+
+$users = DB::table('users')
+            -&gt;whereColumn([
+                ['first_name', '=', 'last_name'],
+                ['updated_at', '&gt;', 'created_at']
+            ])-&gt;get();            
+</code></pre>
+<h3 id="wherenull--wherenotnull--orwherenull--orwherenotnull">whereNull / whereNotNull / orWhereNull / orWhereNotNull</h3>
+<pre><code class="language-php">$users = DB::table('users')
+            -&gt;whereNull('updated_at')
+            -&gt;get();
+
+$users = DB::table('users')
+            -&gt;whereNotNull('updated_at')
+            -&gt;get();
+            
+$users = DB::table('users')
+            -&gt;orWhereNull('updated_at')
+            -&gt;get();
+            
+$users = DB::table('users')
+            -&gt;orWhereNotNull('updated_at')
+            -&gt;get();                        
+</code></pre>
+<h3 id="whereexists--wherenotexists--orwhereexists--orwherenotexists">whereExists / whereNotExists / orWhereExists / orWhereNotExists</h3>
+<pre><code class="language-php">DB::table('users')
+    -&gt;whereExists(function ($query) {
+        $query-&gt;select(DB::raw(1))
+              -&gt;from('orders')
+              -&gt;whereRaw('orders.user_id = users.id');
+    })
+    -&gt;get(); 
+// select * from users where exists ( select 1 from orders where orders.user_id = users.id)
+
+DB::table('users')
+    -&gt;whereNotExists(function ($query) {
+        $query-&gt;select(DB::raw(1))
+              -&gt;from('orders')
+              -&gt;whereRaw('orders.user_id = users.id');
+    })
+    -&gt;get();
+// select * from users where not exists ( select 1 from orders where orders.user_id = users.id)
+    
+DB::table('users')
+    -&gt;orWhereExists(function ($query) {
+        $query-&gt;select(DB::raw(1))
+              -&gt;from('orders')
+              -&gt;whereRaw('orders.user_id = users.id');
+    })
+    -&gt;get();
+// select * from users or exists ( select 1 from orders where orders.user_id = users.id)
+    
+DB::table('users')
+    -&gt;orWhereNotExists(function ($query) {
+        $query-&gt;select(DB::raw(1))
+              -&gt;from('orders')
+              -&gt;whereRaw('orders.user_id = users.id');
+    })
+    -&gt;get();  
+// select * from users or not exists ( select 1 from orders where orders.user_id = users.id)             
+</code></pre>
+<h2 id="where-函数">where 函数</h2>
+<p>我们首先先看看源码：</p>
+<pre><code class="language-php">public function where($column, $operator = null, $value = null, $boolean = 'and')
+{
+    if (is_array($column)) {
+        return $this-&gt;addArrayOfWheres($column, $boolean);
+    }
+
+    list($value, $operator) = $this-&gt;prepareValueAndOperator(
+        $value, $operator, func_num_args() == 2
+    );
+
+    if ($column instanceof Closure) {
+        return $this-&gt;whereNested($column, $boolean);
+    }
+
+    if ($this-&gt;invalidOperator($operator)) {
+        list($value, $operator) = [$operator, '='];
+    }
+
+    if ($value instanceof Closure) {
+        return $this-&gt;whereSub($column, $operator, $value, $boolean);
+    }
+
+    if (is_null($value)) {
+        return $this-&gt;whereNull($column, $boolean, $operator !== '=');
+    }
+
+    if (Str::contains($column, '-&gt;') &amp;&amp; is_bool($value)) {
+        $value = new Expression($value ? 'true' : 'false');
+    }
+
+    $type = 'Basic';
+
+    $this-&gt;wheres[] = compact(
+        'type', 'column', 'operator', 'value', 'boolean'
+    );
+
+    if (! $value instanceof Expression) {
+        $this-&gt;addBinding($value, 'where');
+    }
+
+    return $this;
+}
+</code></pre>
+<p>可以看到，为了支持框架的多种 <code>where</code> 形式，<code>where</code> 的代码中写了很多的条件语句。我们接下来一个个分析。</p>
+<h3 id="grammercompilewheres-函数">grammer——compileWheres 函数</h3>
+<p>在此之前，我们先看看语法编译器对 <code>where</code> 查询的处理：</p>
+<pre><code class="language-php">protected function compileWheres(Builder $query)
+{
+    if (is_null($query-&gt;wheres)) {
+        return '';
+    }
+
+    if (count($sql = $this-&gt;compileWheresToArray($query)) &gt; 0) {
+        return $this-&gt;concatenateWhereClauses($query, $sql);
+    }
+
+    return '';
+}
+</code></pre>
+<p><code>compileWheres</code> 函数负责所有 <code>where</code> 查询条件的语法编译工作，<code>compileWheresToArray</code> 函数负责循环编译查询条件，<code>concatenateWhereClauses</code> 函数负责将多个查询条件合并。</p>
+<pre><code class="language-php">protected function compileWheresToArray($query)
+{
+    return collect($query-&gt;wheres)-&gt;map(function ($where) use ($query) {
+        return $where['boolean'].' '.$this-&gt;{"where{$where['type']}"}($query, $where);
+    })-&gt;all();
+}
+
+protected function concatenateWhereClauses($query, $sql)
+{
+    $conjunction = $query instanceof JoinClause ? 'on' : 'where';
+
+    return $conjunction.' '.$this-&gt;removeLeadingBoolean(implode(' ', $sql));
+}
+</code></pre>
+<p><code>compileWheresToArray</code> 函数负责把 <code>$query-&gt;wheres</code> 中多个 <code>where</code> 条件循环起来：</p>
+<ul>
+<li><code>$where['boolean']</code> 是多个查询条件的连接，<code>and</code> 或者 <code>or</code>，一般 <code>where</code> 条件默认为 <code>and</code>,各种 <code>orWhere</code> 的连接是 <code>or</code></li>
+<li><code>where{$where['type']}</code> 是查询的类型，<code>laravel</code> 把查询条件分为以下几类：<code>base</code>、<code>raw</code>、<code>in</code>、<code>notIn</code>、<code>inSub</code>、<code>notInSub</code>、<code>null</code>、<code>notNull</code>、<code>between</code>、<code>column</code>、<code>nested</code>、<code>sub</code>、<code>exist</code>、<code>notExist</code>。每种类型的查询条件都有对应的 <code>grammer</code> 方法</li>
+</ul>
+<p><code>concatenateWhereClauses</code> 函数负责连接所有的搜索条件，由于 <code>join</code> 的连接条件也会调用 <code>compileWheres</code> 函数，所以会有判断是否是真正的 <code>where</code> 查询，</p>
+<h3 id="where-数组-1">where 数组</h3>
+<p>如果 <code>column</code> 是数组的话，就会调用：</p>
+<pre><code class="language-php">protected function addArrayOfWheres($column, $boolean, $method = 'where')
+{
+    return $this-&gt;whereNested(function ($query) use ($column, $method, $boolean) {
+        foreach ($column as $key =&gt; $value) {
+            if (is_numeric($key) &amp;&amp; is_array($value)) {
+                $query-&gt;{$method}(...array_values($value));
+            } else {
+                $query-&gt;$method($key, '=', $value, $boolean);
+            }
+        }
+    }, $boolean);
+}
+</code></pre>
+<p>可以看到，数组分为两类，一种是列名为 <code>key</code>，例如 <code>['foo' =&gt; 1, 'bar' =&gt; 2]</code>，这个时候就是调用 <code>query-&gt;where('foo', '=', '1', ‘and’)</code>。还有一种是 <code>[['foo','1'],['bar','2']]</code>，这个时候就会调用 <code>$query-&gt;where(['foo','1'])</code>。</p>
+<pre><code class="language-php">public function whereNested(Closure $callback, $boolean = 'and')
+{
+    call_user_func($callback, $query = $this-&gt;forNestedWhere());
+
+    return $this-&gt;addNestedWhereQuery($query, $boolean);
+}
+
+public function addNestedWhereQuery($query, $boolean = 'and')
+{
+    if (count($query-&gt;wheres)) {
+        $type = 'Nested';
+
+        $this-&gt;wheres[] = compact('type', 'query', 'boolean');
+
+        $this-&gt;addBinding($query-&gt;getBindings(), 'where');
+    }
+
+    return $this;
+}
+</code></pre>
+<h4 id="grammerwherenested">grammer——whereNested</h4>
+<p>语法编译器中负责查询组的函数是 <code>whereNested</code>，它会取出 <code>where</code> 中的 <code>query</code>，递归调用 <code>compileWheres</code> 函数</p>
+<pre><code class="language-php">protected function whereNested(Builder $query, $where)
+{
+    $offset = $query instanceof JoinClause ? 3 : 6;
+
+    return '('.substr($this-&gt;compileWheres($where['query']), $offset).')';
+}
+</code></pre>
+<p>由于 <code>compileWheres</code> 会返回 <code>where ...</code> 或者 <code>on ...</code> 等开头的 <code>sql</code> 语句，所以我们需要把返回结果截取前3个字符或6个字符。</p>
+<h3 id="where-查询组-1">where 查询组</h3>
+<p>若查询条件是一个闭包函数，也就是第一个参数 <code>column</code> 是个闭包函数，那么就要调用 <code>whereNested</code> 函数，过程和上述过程一致。</p>
+<h3 id="wheresub-子查询">whereSub 子查询</h3>
+<p>如果第二个参数或者第三个参数是一个闭包函数的话，就是 <code>where</code> 子查询语句，这时需要调用 <code>whereSub</code> 函数：</p>
+<pre><code class="language-php">protected function whereSub($column, $operator, Closure $callback, $boolean)
+{
+    $type = 'Sub';
+
+    call_user_func($callback, $query = $this-&gt;forSubQuery());
+
+    $this-&gt;wheres[] = compact(
+        'type', 'column', 'operator', 'query', 'boolean'
+    );
+
+    $this-&gt;addBinding($query-&gt;getBindings(), 'where');
+
+    return $this;
+}
+</code></pre>
+<h4 id="grammerwheresub">grammer——whereSub</h4>
+<p><code>grammer</code> 中负责子查询的是 <code>whereSub</code> 函数：</p>
+<pre><code class="language-php">protected function whereSub(Builder $query, $where)
+{
+    $select = $this-&gt;compileSelect($where['query']);
+
+    return $this-&gt;wrap($where['column']).' '.$where['operator']." ($select)";
+}
+</code></pre>
+<p>因为子查询中可以存在 <code>select</code> 、<code>where</code> 、<code>join</code> 等一切 <code>sql</code> 语句，所以递归的是 <code>compileSelect</code> 这个大的函数，而不是仅仅 <code>compileWheres</code>。</p>
+<h3 id="wherenull-语句">whereNull 语句</h3>
+<p><code>whereNull</code> 函数也很简单：</p>
+<pre><code class="language-php">public function whereNull($column, $boolean = 'and', $not = false)
+{
+    $type = $not ? 'NotNull' : 'Null';
+
+    $this-&gt;wheres[] = compact('type', 'column', 'boolean');
+
+    return $this;
+}
+</code></pre>
+<h4 id="grammerwherenull-函数">grammer——whereNull 函数</h4>
+<pre><code class="language-php">protected function whereNull(Builder $query, $where)
+{
+    return $this-&gt;wrap($where['column']).' is null';
+}
+</code></pre>
+<h3 id="wherebasic-语句">whereBasic 语句</h3>
+<p>如果上述情况都不符合，那么就是最基础的 <code>where</code> 语句，类型是 <code>basic</code>.</p>
+<pre><code class="language-php">$type = 'Basic';
+
+$this-&gt;wheres[] = compact(
+    'type', 'column', 'operator', 'value', 'boolean'
+);
+
+if (! $value instanceof Expression) {
+    $this-&gt;addBinding($value, 'where');
+}
+</code></pre>
+<h4 id="grammerwherebasic-函数">grammer——whereBasic 函数</h4>
+<p><code>grammer</code> 中最基础的 <code>where</code> 语句由 <code>wherebasic</code> 函数负责：</p>
+<pre><code class="language-php">protected function whereBasic(Builder $query, $where)
+{
+    $value = $this-&gt;parameter($where['value']);
+
+    return $this-&gt;wrap($where['column']).' '.$where['operator'].' '.$value;
+}
+
+public function parameter($value)
+{
+    return $this-&gt;isExpression($value) ? $this-&gt;getValue($value) : '?';
+}
+</code></pre>
+<p><code>wherebasic</code> 函数对参数进行了替换，利用 <code>?</code> 来替换真正的值。</p>
+<h2 id="orwhere-语句">orWhere 语句</h2>
+<p><code>orWhere</code> 函数只是在 <code>where</code> 函数的基础上固定了最后一个参数：</p>
+<pre><code class="language-php">public function orWhere($column, $operator = null, $value = null)
+{
+    return $this-&gt;where($column, $operator, $value, 'or');
+}
+</code></pre>
+<h2 id="wherecolumn-语句">whereColumn 语句</h2>
+<p><code>whereColumn</code> 函数是简化版的 <code>where</code> 函数，只是 <code>where</code> 类型不是 <code>basic</code>，而是 <code>column</code>：</p>
+<pre><code class="language-php">public function whereColumn($first, $operator = null, $second = null, $boolean = 'and')
+{
+    if (is_array($first)) {
+        return $this-&gt;addArrayOfWheres($first, $boolean, 'whereColumn');
+    }
+
+    if ($this-&gt;invalidOperator($operator)) {
+        list($second, $operator) = [$operator, '='];
+    }
+
+    $type = 'Column';
+
+    $this-&gt;wheres[] = compact(
+        'type', 'first', 'operator', 'second', 'boolean'
+    );
+
+    return $this;
+}
+</code></pre>
+<h3 id="grammerwherecolumn">grammer——whereColumn</h3>
+<p>可以看到 <code>whereColumn</code> 与 <code>whereBasic</code> 的区别是对 <code>value</code> 的不同处理，<code>whereBasic</code> 实际上是将其看作值，需要用 <code>?</code> 来替换，参数加载到 <code>binding</code> 中去的。而 <code>whereColumn</code> 是将 <code>second</code> 当做列名来处理，是需要经过表名、别名等处理的：</p>
+<pre><code class="language-php">protected function whereColumn(Builder $query, $where)
+{
+    return $this-&gt;wrap($where['first']).' '.$where['operator'].' '.$this-&gt;wrap($where['second']);
+}
+</code></pre>
+<h2 id="wherein-语句">whereIn 语句</h2>
+<pre><code class="language-php">public function whereIn($column, $values, $boolean = 'and', $not = false)
+{
+    $type = $not ? 'NotIn' : 'In';
+
+    if ($values instanceof EloquentBuilder) {
+        $values = $values-&gt;getQuery();
+    }
+
+    if ($values instanceof self) {
+        return $this-&gt;whereInExistingQuery(
+            $column, $values, $boolean, $not
+        );
+    }
+
+    if ($values instanceof Closure) {
+        return $this-&gt;whereInSub($column, $values, $boolean, $not);
+    }
+
+    if ($values instanceof Arrayable) {
+        $values = $values-&gt;toArray();
+    }
+
+    $this-&gt;wheres[] = compact('type', 'column', 'values', 'boolean');
+
+    foreach ($values as $value) {
+        if (! $value instanceof Expression) {
+            $this-&gt;addBinding($value, 'where');
+        }
+    }
+
+    return $this;
+}
+</code></pre>
+<p>可以看出来，<code>whereIn</code> 支持四种参数: <code>EloquentBuilder</code>、<code>queryBuilder</code>、<code>Closure</code>、<code>Arrayable</code>。</p>
+<h3 id="whereinexistingquery-函数">whereInExistingQuery 函数</h3>
+<p>当 <code>whereIn</code> 第二个参数是 <code>queryBuild</code> 时，就会调用 <code>whereInExistingQuery</code> 函数：</p>
+<pre><code class="language-php">protected function whereInExistingQuery($column, $query, $boolean, $not)
+{
+    $type = $not ? 'NotInSub' : 'InSub';
+
+    $this-&gt;wheres[] = compact('type', 'column', 'query', 'boolean');
+
+    $this-&gt;addBinding($query-&gt;getBindings(), 'where');
+
+    return $this;
+}
+</code></pre>
+<p>可以看出，这个函数添加了一个类型为 <code>InSub</code> 或 <code>NotInSub</code> 类型的 <code>where</code>，我们接着在语法编译器来看：</p>
+<h4 id="grammerwhereinsub--wherenotinsub">grammer——whereInSub / whereNotInSub</h4>
+<p><code>whereInSub</code> / <code>whereNotInSub</code> 与 <code>whereSub</code> 类似，只是 <code>operator</code> 被固定成 <code>in</code> / <code>not in</code> 而已：</p>
+<pre><code class="language-php">protected function whereInSub(Builder $query, $where)
+{
+    return $this-&gt;wrap($where['column']).' in ('.$this-&gt;compileSelect($where['query']).')';
+}
+
+protected function whereNotInSub(Builder $query, $where)
+{
+    return $this-&gt;wrap($where['column']).' not in ('.$this-&gt;compileSelect($where['query']).')';
+}
+</code></pre>
+<h3 id="whereinsub-函数">whereInSub 函数</h3>
+<p>当 <code>whereIn</code> 第二个参数是闭包函数的时候，就会调用 <code>whereInSub</code> 函数：</p>
+<pre><code class="language-php">protected function whereInSub($column, Closure $callback, $boolean, $not)
+{
+    $type = $not ? 'NotInSub' : 'InSub';
+
+    call_user_func($callback, $query = $this-&gt;forSubQuery());
+
+    $this-&gt;wheres[] = compact('type', 'column', 'query', 'boolean');
+
+    $this-&gt;addBinding($query-&gt;getBindings(), 'where');
+
+    return $this;
+}
+</code></pre>
+<p>可以看出来，除了闭包函数需要执行获得 <code>query</code> 对象之外，<code>whereInSub</code> 函数与 <code>whereInExistingQuery</code> 函数一致。</p>
+<h3 id="in--notin-类型-where">In / NotIn 类型 where</h3>
+<p>如果参数传递了数组，那么就会创建 <code>In</code> 或者 <code>NotIn</code> 类型的 <code>where</code>:</p>
+<pre><code class="language-php">$this-&gt;wheres[] = compact('type', 'column', 'values', 'boolean');
+
+foreach ($values as $value) {
+    if (! $value instanceof Expression) {
+        $this-&gt;addBinding($value, 'where');
+    }
+}
+</code></pre>
+<h4 id="grammerwherein--wherenotin">grammer——whereIn / whereNotIn</h4>
+<p><code>whereIn</code> 或者 <code>whereNotIn</code> 与 <code>whereBasic</code> 函数基本一致，只是参数值需要循环调用 <code>parameter</code> 函数：</p>
+<pre><code class="language-php">protected function whereIn(Builder $query, $where)
+{
+    if (! empty($where['values'])) {
+        return $this-&gt;wrap($where['column']).' in ('.$this-&gt;parameterize($where['values']).')';
+    }
+
+    return '0 = 1';
+}
+
+protected function whereNotIn(Builder $query, $where)
+{
+    if (! empty($where['values'])) {
+        return $this-&gt;wrap($where['column']).' not in ('.$this-&gt;parameterize($where['values']).')';
+    }
+
+    return '1 = 1';
+}
+
+public function parameterize(array $values)
+{
+    return implode(', ', array_map([$this, 'parameter'], $values));
+}
+</code></pre>
+<h2 id="wherebetween-语句">whereBetween 语句</h2>
+<p>类似的 <code>whereBetween</code> 创建了新的 <code>between</code> 类型的 <code>where</code>：</p>
+<pre><code class="language-php">public function whereBetween($column, array $values, $boolean = 'and', $not = false)
+{
+    $type = 'between';
+
+    $this-&gt;wheres[] = compact('column', 'type', 'boolean', 'not');
+
+    $this-&gt;addBinding($values, 'where');
+
+    return $this;
+}
+</code></pre>
+<h3 id="grammerwherebetween">grammer——whereBetween</h3>
+<p>有意思的是，<code>whereBetween</code> 不支持原生的参数值，也就是不支持 <code>expression</code> 对象，所以直接用 <code>?</code> 来代替参数值：</p>
+<pre><code class="language-php">protected function whereBetween(Builder $query, $where)
+{
+    $between = $where['not'] ? 'not between' : 'between';
+
+    return $this-&gt;wrap($where['column']).' '.$between.' ? and ?';
+}
+</code></pre>
+<h2 id="whereexist-语句">whereExist 语句</h2>
+<p><code>whereExist</code> 只支持闭包函数作为子查询语句，和之前一样，创建了 <code>Exist</code> 或者 <code>NotExist</code> 类型的 <code>where</code></p>
+<pre><code class="language-php">public function whereExists(Closure $callback, $boolean = 'and', $not = false)
+{
+    $query = $this-&gt;forSubQuery();
+
+    call_user_func($callback, $query);
+
+    return $this-&gt;addWhereExistsQuery($query, $boolean, $not);
+}
+
+public function addWhereExistsQuery(Builder $query, $boolean = 'and', $not = false)
+{
+    $type = $not ? 'NotExists' : 'Exists';
+
+    $this-&gt;wheres[] = compact('type', 'operator', 'query', 'boolean');
+
+    $this-&gt;addBinding($query-&gt;getBindings(), 'where');
+
+    return $this;
+}
+</code></pre>
+<h3 id="grammerwhereexists--wherenotexists">grammer——whereExists / whereNotExists</h3>
+<p>可以看到，这部分的语法编译器仍然和 <code>whereSub</code> 非常类似：</p>
+<pre><code class="language-php">protected function whereExists(Builder $query, $where)
+{
+    return 'exists ('.$this-&gt;compileSelect($where['query']).')';
+}
+
+protected function whereNotExists(Builder $query, $where)
+{
+    return 'not exists ('.$this-&gt;compileSelect($where['query']).')';
+}
+</code></pre>
+<h2 id="wheredate--wheremonth--whereday--whereyear--wheretime-1">whereDate / whereMonth / whereDay / whereYear / whereTime</h2>
+<p>关于时间的查询条件都由函数 <code>addDateBasedWhere</code> 负责创建新的类型的 <code>where</code>，由于这些函数大致相同，我这里只贴一种：</p>
+<pre><code class="language-php">protected function addDateBasedWhere($type, $column, $operator, $value, $boolean = 'and')
+{
+    $this-&gt;wheres[] = compact('column', 'type', 'boolean', 'operator', 'value');
+
+    $this-&gt;addBinding($value, 'where');
+
+    return $this;
+}
+
+public function whereDate($column, $operator, $value = null, $boolean = 'and')
+{
+    list($value, $operator) = $this-&gt;prepareValueAndOperator(
+        $value, $operator, func_num_args() == 2
+    );
+
+    return $this-&gt;addDateBasedWhere('Date', $column, $operator, $value, $boolean);
+}
+
+...
+</code></pre>
+<h3 id="grammerdatebasedwhere">grammer——dateBasedWhere</h3>
+<p>时间查询条件都是利用数据库的 <code>date</code>、<code>month</code>、<code>day</code>、<code>year</code>、<code>time</code> 函数实现的：</p>
+<pre><code class="language-php">protected function whereTime(Builder $query, $where)
+{
+    return $this-&gt;dateBasedWhere('time', $query, $where);
+}
+
+protected function dateBasedWhere($type, Builder $query, $where)
+{
+    $value = $this-&gt;parameter($where['value']);
+
+    return $type.'('.$this-&gt;wrap($where['column']).') '.$where['operator'].' '.$value;
+}
+</code></pre>
+<h2 id="whereraw-语句">whereRaw 语句</h2>
+<p>原生的 <code>sql</code> 语句及其简单：</p>
+<pre><code class="language-php">public function whereRaw($sql, $bindings = [], $boolean = 'and')
+{
+    $this-&gt;wheres[] = ['type' =&gt; 'raw', 'sql' =&gt; $sql, 'boolean' =&gt; $boolean];
+
+    $this-&gt;addBinding((array) $bindings, 'where');
+
+    return $this;
+}
+</code></pre>
+<p>语法编译器工作：</p>
+<pre><code class="language-php">protected function whereRaw(Builder $query, $where)
+{
+    return $where['sql'];
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/133/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/vuejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/133/index.html">vue中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/71.html">srzyhead</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="vuejs">vuejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/205/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/205/index.html">从0到1实战微服务架构</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/115.html">skyline75489</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="mysql">mysql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">62页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/41/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/41/index.html">Android官方培訓課程中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">294页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/3/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/2/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/typescript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/2/index.html">TypeScript使用手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/2.html">zhongsp</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="typescript">typescript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1879个">1879</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/193/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/193/index.html">Pixi教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/109.html">Zainking</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2020年5月17日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7764;var bookPageRelUrl ='Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

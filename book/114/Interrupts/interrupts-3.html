@@ -1,0 +1,919 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>初步中断处理-Linux 内核揭密</title>
+<meta content='初步中断处理,Linux 内核揭密' name='keywords'>
+<meta content='初步中断处理,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Interrupts/interrupts-2.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">深入 Linux 内核..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Interrupts/interrupts-4.html">
+<span class="">中断处理</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="interrupts-and-interrupt-handling-part-3">Interrupts and Interrupt Handling. Part 3.</h1>
+<h2 id="exception-handling">Exception Handling</h2>
+<p>This is the third part of the <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/index.html">chapter</a> about an interrupts and an exceptions handling in the Linux kernel and in the previous <a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/index.html">part</a> we stopped at the <code>setup_arch</code> function from the <a href="https://github.com/torvalds/linux/blame/master/arch/x86/kernel/setup.c">arch/x86/kernel/setup.c</a> source code file.</p>
+<p>We already know that this function executes initialization of architecture-specific stuff. In our case the <code>setup_arch</code> function does <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture related initializations. The <code>setup_arch</code> is big function, and in the previous part we stopped on the setting of the two exceptions handlers for the two following exceptions:</p>
+<ul>
+<li><code>#DB</code> - debug exception, transfers control from the interrupted process to the debug handler;</li>
+<li><code>#BP</code> - breakpoint exception, caused by the <code>int 3</code> instruction.</li>
+</ul>
+<p>These exceptions allow the <code>x86_64</code> architecture to have early exception processing for the purpose of debugging via the <a href="https://en.wikipedia.org/wiki/KGDB">kgdb</a>.</p>
+<p>As you can remember we set these exceptions handlers in the <code>early_trap_init</code> function:</p>
+<pre><code class="language-C">void __init early_trap_init(void)
+{
+        set_intr_gate_ist(X86_TRAP_DB, &amp;debug, DEBUG_STACK);
+        set_system_intr_gate_ist(X86_TRAP_BP, &amp;int3, DEBUG_STACK);
+        load_idt(&amp;idt_descr);
+}
+</code></pre>
+<p>from the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/kernel/traps.c">arch/x86/kernel/traps.c</a>. We already saw implementation of the <code>set_intr_gate_ist</code> and <code>set_system_intr_gate_ist</code> functions in the previous part and now we will look on the implementation of these two exceptions handlers.</p>
+<h2 id="debug-and-breakpoint-exceptions">Debug and Breakpoint exceptions</h2>
+<p>Ok, we setup exception handlers in the <code>early_trap_init</code> function for the <code>#DB</code> and <code>#BP</code> exceptions and now time is to consider their implementations. But before we will do this, first of all let's look on details of these exceptions.</p>
+<p>The first exceptions - <code>#DB</code> or <code>debug</code> exception occurs when a debug event occurs. For example - attempt to change the contents of a <a href="http://en.wikipedia.org/wiki/X86_debug_register">debug register</a>. Debug registers are special registers that were presented in <code>x86</code> processors starting from the <a href="http://en.wikipedia.org/wiki/Intel_80386">Intel 80386</a> processor and as you can understand from name of this CPU extension, main purpose of these registers is debugging.</p>
+<p>These registers allow to set breakpoints on the code and read or write data to trace it. Debug registers may be accessed only in the privileged mode and an attempt to read or write the debug registers when executing at any other privilege level causes a <a href="https://en.wikipedia.org/wiki/General_protection_fault">general protection fault</a> exception. That's why we have used <code>set_intr_gate_ist</code> for the <code>#DB</code> exception, but not the <code>set_system_intr_gate_ist</code>.</p>
+<p>The verctor number of the <code>#DB</code> exceptions is <code>1</code> (we pass it as <code>X86_TRAP_DB</code>) and as we may read in specification, this exception has no error code:</p>
+<pre><code>+-----------------------------------------------------+
+|Vector|Mnemonic|Description         |Type |Error Code|
++-----------------------------------------------------+
+|1     | #DB    |Reserved            |F/T  |NO        |
++-----------------------------------------------------+
+</code></pre>
+<p>The second exception is <code>#BP</code> or <code>breakpoint</code> exception occurs when processor executes the <a href="http://en.wikipedia.org/wiki/INT_%28x86_instruction%29#INT_3">int 3</a> instruction. Unlike the <code>DB</code> exception, the <code>#BP</code> exception may occur in userspace. We can add it anywhere in our code, for example let's look on the simple program:</p>
+<pre><code class="language-C">// breakpoint.c
+#include &lt;stdio.h&gt;
+
+int main() {
+    int i;
+    while (i &lt; 6){
+	    printf("i equal to: %d\n", i);
+	    __asm__("int3");
+		++i;
+    }
+}
+</code></pre>
+<p>If we will compile and run this program, we will see following output:</p>
+<pre><code>$ gcc breakpoint.c -o breakpoint
+i equal to: 0
+Trace/breakpoint trap
+</code></pre>
+<p>But if will run it with gdb, we will see our breakpoint and can continue execution of our program:</p>
+<pre><code>$ gdb breakpoint
+...
+...
+...
+(gdb) run
+Starting program: /home/alex/breakpoints 
+i equal to: 0
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0000000000400585 in main ()
+=&gt; 0x0000000000400585 &lt;main+31&gt;:	83 45 fc 01	add    DWORD PTR [rbp-0x4],0x1
+(gdb) c
+Continuing.
+i equal to: 1
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0000000000400585 in main ()
+=&gt; 0x0000000000400585 &lt;main+31&gt;:	83 45 fc 01	add    DWORD PTR [rbp-0x4],0x1
+(gdb) c
+Continuing.
+i equal to: 2
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0000000000400585 in main ()
+=&gt; 0x0000000000400585 &lt;main+31&gt;:	83 45 fc 01	add    DWORD PTR [rbp-0x4],0x1
+...
+...
+...
+</code></pre>
+<p>From this moment we know a little about these two exceptions and we can move on to consideration of their handlers.</p>
+<h2 id="preparation-before-an-exception-handler">Preparation before an exception handler</h2>
+<p>As you may note before, the <code>set_intr_gate_ist</code> and <code>set_system_intr_gate_ist</code> functions takes an addresses of exceptions handlers in theirs second parameter. In or case our two exception handlers will be:</p>
+<ul>
+<li><code>debug</code>;</li>
+<li><code>int3</code>.</li>
+</ul>
+<p>You will not find these functions in the C code. all of that could be found in the kernel's <code>*.c/*.h</code> files only definition of these functions which are located in the <a href="https://github.com/torvalds/linux/tree/master/arch/x86/include/asm/traps.h">arch/x86/include/asm/traps.h</a> kernel header file:</p>
+<pre><code class="language-C">asmlinkage void debug(void);
+</code></pre>
+<p>and</p>
+<pre><code class="language-C">asmlinkage void int3(void);
+</code></pre>
+<p>You may note <code>asmlinkage</code> directive in definitions of these functions. The directive is the special specificator of the <a href="http://en.wikipedia.org/wiki/GNU_Compiler_Collection">gcc</a>. Actually for a <code>C</code> functions which are called from assembly, we need in explicit declaration of the function calling convention. In our case, if function made with <code>asmlinkage</code> descriptor, then <code>gcc</code> will compile the function to retrieve parameters from stack.</p>
+<p>So, both handlers are defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/entry/entry_64.S">arch/x86/entry/entry_64.S</a> assembly source code file with the <code>idtentry</code> macro:</p>
+<pre><code class="language-assembly">idtentry debug do_debug has_error_code=0 paranoid=1 shift_ist=DEBUG_STACK
+</code></pre>
+<p>and</p>
+<pre><code class="language-assembly">idtentry int3 do_int3 has_error_code=0 paranoid=1 shift_ist=DEBUG_STACK
+</code></pre>
+<p>Each exception handler may be consists from two parts. The first part is generic part and it is the same for all exception handlers. An exception handler should to save <a href="https://en.wikipedia.org/wiki/Processor_register">general purpose registers</a> on the stack, switch to kernel stack if an exception came from userspace and transfer control to the second part of an exception handler. The second part of an exception handler does certain work depends on certain exception. For example page fault exception handler should find virtual page for given address, invalid opcode exception handler should send <code>SIGILL</code> <a href="https://en.wikipedia.org/wiki/Unix_signal">signal</a> and etc.</p>
+<p>As we just saw, an exception handler starts from definition of the <code>idtentry</code> macro from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/kernel/entry_64.S">arch/x86/kernel/entry_64.S</a> assembly source code file, so let's look at implementation of this macro. As we may see, the <code>idtentry</code> macro takes five arguments:</p>
+<ul>
+<li><code>sym</code> - defines global symbol with the <code>.globl name</code> which will be an an entry of exception handler;</li>
+<li><code>do_sym</code> - symbol name which represents a secondary entry of an exception handler;</li>
+<li><code>has_error_code</code> - information about existence of an error code of exception.</li>
+</ul>
+<p>The last two parameters are optional:</p>
+<ul>
+<li><code>paranoid</code> - shows us how we need to check current mode (will see explanation in details later);</li>
+<li><code>shift_ist</code> - shows us is an exception running at <code>Interrupt Stack Table</code>.</li>
+</ul>
+<p>Definition of the <code>.idtentry</code> macro looks:</p>
+<pre><code class="language-assembly">.macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1
+ENTRY(\sym)
+...
+...
+...
+END(\sym)
+.endm
+</code></pre>
+<p>Before we will consider internals of the <code>idtentry</code> macro, we should to know state of stack when an exception occurs. As we may read in the <a href="http://www.intel.com/content/www/us/en/processors/architectures-software-developer-manuals.html">Intel® 64 and IA-32 Architectures Software Developer’s Manual 3A</a>, the state of stack when an exception occurs is following:</p>
+<pre><code>    +------------+
++40 | %SS        |
++32 | %RSP       |
++24 | %RFLAGS    |
++16 | %CS        |
+ +8 | %RIP       |
+  0 | ERROR CODE | &lt;-- %RSP
+    +------------+
+</code></pre>
+<p>Now we may start to consider implementation of the <code>idtmacro</code>. Both <code>#DB</code> and <code>BP</code> exception handlers are defined as:</p>
+<pre><code class="language-assembly">idtentry debug do_debug has_error_code=0 paranoid=1 shift_ist=DEBUG_STACK
+idtentry int3 do_int3 has_error_code=0 paranoid=1 shift_ist=DEBUG_STACK
+</code></pre>
+<p>If we will look at these definitions, we may know that compiler will generate two routines with <code>debug</code> and <code>int3</code> names and both of these exception handlers will call <code>do_debug</code> and <code>do_int3</code> secondary handlers after some preparation. The third parameter defines existence of error code and as we may see both our exception do not have them. As we may see on the diagram above, processor pushes error code on stack if an exception provides it. In our case, the <code>debug</code> and <code>int3</code> exception do not have error codes. This may bring some difficulties because stack will look differently for exceptions which provides error code and for exceptions which not. That's why implementation of the <code>idtentry</code> macro starts from putting a fake error code to the stack if an exception does not provide it:</p>
+<pre><code class="language-assembly">.ifeq \has_error_code
+    pushq	$-1
+.endif
+</code></pre>
+<p>But it is not only fake error-code. Moreover the <code>-1</code> also represents invalid system call number, so that the system call restart logic will not be triggered.</p>
+<p>The last two parameters of the <code>idtentry</code> macro <code>shift_ist</code> and <code>paranoid</code> allow to know do an exception handler runned at stack from <code>Interrupt Stack Table</code> or not. You already may know that each kernel thread in the system has own stack. In addition to these stacks, there are some specialized stacks associated with each processor in the system. One of these stacks is - exception stack. The <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture provides special feature which is called - <code>Interrupt Stack Table</code>. This feature allows to switch to a new stack for designated events such as an atomic exceptions like <code>double fault</code> and etc. So the <code>shift_ist</code> parameter allows us to know do we need to switch on <code>IST</code> stack for an exception handler or not.</p>
+<p>The second parameter - <code>paranoid</code> defines the method which helps us to know did we come from userspace or not to an exception handler. The easiest way to determine this is to via <code>CPL</code> or <code>Current Privilege Level</code> in <code>CS</code> segment register. If it is equal to <code>3</code>, we came from userspace, if zero we came from kernel space:</p>
+<pre><code>testl $3,CS(%rsp)
+jnz userspace
+...
+...
+...
+// we are from the kernel space
+</code></pre>
+<p>But unfortunately this method does not give a 100% guarantee. As described in the kernel documentation:</p>
+<blockquote>
+<p>if we are in an NMI/MCE/DEBUG/whatever super-atomic entry context, which might have triggered right after a normal entry wrote CS to the stack but before we executed SWAPGS, then the only safe way to check for GS is the slower method: the RDMSR.</p>
+</blockquote>
+<p>In other words for example <code>NMI</code> could happen inside the critical section of a <a href="http://www.felixcloutier.com/x86/SWAPGS.html">swapgs</a> instruction. In this way we should check value of the <code>MSR_GS_BASE</code> <a href="https://en.wikipedia.org/wiki/Model-specific_register">model specific register</a> which stores pointer to the start of per-cpu area. So to check did we come from userspace or not, we should to check value of the <code>MSR_GS_BASE</code> model specific register and if it is negative we came from kernel space, in other way we came from userspace:</p>
+<pre><code class="language-assembly">movl $MSR_GS_BASE,%ecx
+rdmsr
+testl %edx,%edx
+js 1f
+</code></pre>
+<p>In first two lines of code we read value of the <code>MSR_GS_BASE</code> model specific register into <code>edx:eax</code> pair. We can't set negative value to the <code>gs</code> from userspace. But from other side we know that direct mapping of the physical memory starts from the <code>0xffff880000000000</code> virtual address. In this way, <code>MSR_GS_BASE</code> will contain an address from <code>0xffff880000000000</code> to <code>0xffffc7ffffffffff</code>. After the <code>rdmsr</code> instruction will be executed, the smallest possible value in the <code>%edx</code> register will be - <code>0xffff8800</code> which is <code>-30720</code> in unsigned 4 bytes. That's why kernel space <code>gs</code> which points to start of <code>per-cpu</code> area will contain negative value.</p>
+<p>After we pushed fake error code on the stack, we should allocate space for general purpose registers with:</p>
+<pre><code class="language-assembly">ALLOC_PT_GPREGS_ON_STACK
+</code></pre>
+<p>macro which is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/entry/calling.h">arch/x86/entry/calling.h</a> header file. This macro just allocates 15*8 bytes space on the stack to preserve general purpose registers:</p>
+<pre><code class="language-assembly">.macro ALLOC_PT_GPREGS_ON_STACK addskip=0
+    addq	$-(15*8+\addskip), %rsp
+.endm
+</code></pre>
+<p>So the stack will look like this after execution of the <code>ALLOC_PT_GPREGS_ON_STACK</code>:</p>
+<pre><code>     +------------+
++160 | %SS        |
++152 | %RSP       |
++144 | %RFLAGS    |
++136 | %CS        |
++128 | %RIP       |
++120 | ERROR CODE |
+     |------------|
++112 |            |
++104 |            |
+ +96 |            |
+ +88 |            |
+ +80 |            |
+ +72 |            |
+ +64 |            |
+ +56 |            |
+ +48 |            |
+ +40 |            |
+ +32 |            |
+ +24 |            |
+ +16 |            |
+  +8 |            |
+  +0 |            | &lt;- %RSP
+     +------------+
+</code></pre>
+<p>After we allocated space for general purpose registers, we do some checks to understand did an exception come from userspace or not and if yes, we should move back to an interrupted process stack or stay on exception stack:</p>
+<pre><code class="language-assembly">.if \paranoid
+    .if \paranoid == 1
+	    testb	$3, CS(%rsp)
+	    jnz	1f
+	.endif
+	call	paranoid_entry
+.else
+	call	error_entry
+.endif
+</code></pre>
+<p>Let's consider all of these there cases in course.</p>
+<h2 id="an-exception-occured-in-userspace">An exception occured in userspace</h2>
+<p>In the first let's consider a case when an exception has <code>paranoid=1</code> like our <code>debug</code> and <code>int3</code> exceptions. In this case we check selector from <code>CS</code> segment register and jump at <code>1f</code> label if we came from userspace or the <code>paranoid_entry</code> will be called in other way.</p>
+<p>Let's consider first case when we came from userspace to an exception handler. As described above we should jump at <code>1</code> label. The <code>1</code> label starts from the call of the</p>
+<pre><code class="language-assembly">call	error_entry
+</code></pre>
+<p>routine which saves all general purpose registers in the previously allocated area on the stack:</p>
+<pre><code class="language-assembly">SAVE_C_REGS 8
+SAVE_EXTRA_REGS 8
+</code></pre>
+<p>These both macros are defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/entry/calling.h">arch/x86/entry/calling.h</a> header file and just move values of general purpose registers to a certain place at the stack, for example:</p>
+<pre><code class="language-assembly">.macro SAVE_EXTRA_REGS offset=0
+	movq %r15, 0*8+\offset(%rsp)
+	movq %r14, 1*8+\offset(%rsp)
+	movq %r13, 2*8+\offset(%rsp)
+	movq %r12, 3*8+\offset(%rsp)
+	movq %rbp, 4*8+\offset(%rsp)
+	movq %rbx, 5*8+\offset(%rsp)
+.endm
+</code></pre>
+<p>After execution of <code>SAVE_C_REGS</code> and <code>SAVE_EXTRA_REGS</code> the stack will look:</p>
+<pre><code>     +------------+
++160 | %SS        |
++152 | %RSP       |
++144 | %RFLAGS    |
++136 | %CS        |
++128 | %RIP       |
++120 | ERROR CODE |
+     |------------|
++112 | %RDI       |
++104 | %RSI       |
+ +96 | %RDX       |
+ +88 | %RCX       |
+ +80 | %RAX       |
+ +72 | %R8        |
+ +64 | %R9        |
+ +56 | %R10       |
+ +48 | %R11       |
+ +40 | %RBX       |
+ +32 | %RBP       |
+ +24 | %R12       |
+ +16 | %R13       |
+  +8 | %R14       |
+  +0 | %R15       | &lt;- %RSP
+     +------------+
+</code></pre>
+<p>After the kernel saved general purpose registers at the stack, we should check that we came from userspace space again with:</p>
+<pre><code class="language-assembly">testb	$3, CS+8(%rsp)
+jz	.Lerror_kernelspace
+</code></pre>
+<p>because we may have potentially fault if as described in documentation truncated <code>%RIP</code> was reported. Anyway, in both cases the <a href="http://www.felixcloutier.com/x86/SWAPGS.html">SWAPGS</a> instruction will be executed and values from <code>MSR_KERNEL_GS_BASE</code> and <code>MSR_GS_BASE</code> will be swapped. From this moment the <code>%gs</code> register will point to the base address of kernel structures. So, the <code>SWAPGS</code> instruction is called and it was main point of the <code>error_entry</code> routing.</p>
+<p>Now we can back to the <code>idtentry</code> macro. We may see following assembler code after the call of <code>error_entry</code>:</p>
+<pre><code class="language-assembly">movq	%rsp, %rdi
+call	sync_regs
+</code></pre>
+<p>Here we put base address of stack pointer <code>%rdi</code> register which will be first argument (according to <a href="https://www.uclibc.org/docs/psABI-x86_64.pdf">x86_64 ABI</a>) of the <code>sync_regs</code> function and call this function which is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/kernel/traps.c">arch/x86/kernel/traps.c</a> source code file:</p>
+<pre><code class="language-C">asmlinkage __visible notrace struct pt_regs *sync_regs(struct pt_regs *eregs)
+{
+	struct pt_regs *regs = task_pt_regs(current);
+	*regs = *eregs;
+	return regs;
+}
+</code></pre>
+<p>This function takes the result of the <code>task_ptr_regs</code> macro which is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/include/asm/processor.h">arch/x86/include/asm/processor.h</a> header file, stores it in the stack pointer and return it. The <code>task_ptr_regs</code> macro expands to the address of <code>thread.sp0</code> which represents pointer to the normal kernel stack:</p>
+<pre><code class="language-C">#define task_pt_regs(tsk)       ((struct pt_regs *)(tsk)-&gt;thread.sp0 - 1)
+</code></pre>
+<p>As we came from userspace, this means that exception handler will run in real process context. After we got stack pointer from the <code>sync_regs</code> we switch stack:</p>
+<pre><code class="language-assembly">movq	%rax, %rsp
+</code></pre>
+<p>The last two steps before an exception handler will call secondary handler are:</p>
+<ol>
+<li>Passing pointer to <code>pt_regs</code> structure which contains preserved general purpose registers to the <code>%rdi</code> register:</li>
+</ol>
+<pre><code class="language-assembly">movq	%rsp, %rdi
+</code></pre>
+<p>as it will be passed as first parameter of secondary exception handler.</p>
+<ol start="2">
+<li>Pass error code to the <code>%rsi</code> register as it will be second argument of an exception handler and set it to <code>-1</code> on the stack for the same purpose as we did it before - to prevent restart of a system call:</li>
+</ol>
+<pre><code>.if \has_error_code
+	movq	ORIG_RAX(%rsp), %rsi
+	movq	$-1, ORIG_RAX(%rsp)
+.else
+	xorl	%esi, %esi
+.endif
+</code></pre>
+<p>Additionally you may see that we zeroed the <code>%esi</code> register above in a case if an exception does not provide error code.</p>
+<p>In the end we just call secondary exception handler:</p>
+<pre><code class="language-assembly">call	\do_sym
+</code></pre>
+<p>which:</p>
+<pre><code class="language-C">dotraplinkage void do_debug(struct pt_regs *regs, long error_code);
+</code></pre>
+<p>will be for <code>debug</code> exception and:</p>
+<pre><code class="language-C">dotraplinkage void notrace do_int3(struct pt_regs *regs, long error_code);
+</code></pre>
+<p>will be for <code>int 3</code> exception. In this part we will not see implementations of secondary handlers, because of they are very specific, but will see some of them in one of next parts.</p>
+<p>We just considered first case when an exception occurred in userspace. Let's consider last two.</p>
+<h2 id="an-exception-with-paranoid--0-occurred-in-kernelspace">An exception with paranoid &gt; 0 occurred in kernelspace</h2>
+<p>In this case an exception was occurred in kernelspace and <code>idtentry</code> macro is defined with <code>paranoid=1</code> for this exception. This value of <code>paranoid</code> means that we should use slower way that we saw in the beginning of this part to check do we really came from kernelspace or not. The <code>paranoid_entry</code> routing allows us to know this:</p>
+<pre><code class="language-assembly">ENTRY(paranoid_entry)
+	cld
+	SAVE_C_REGS 8
+	SAVE_EXTRA_REGS 8
+	movl	$1, %ebx
+	movl	$MSR_GS_BASE, %ecx
+	rdmsr
+	testl	%edx, %edx
+	js	1f
+	SWAPGS
+	xorl	%ebx, %ebx
+1:	ret
+END(paranoid_entry)
+</code></pre>
+<p>As you may see, this function represents the same that we covered before. We use second (slow) method to get information about previous state of an interrupted task. As we checked this and executed <code>SWAPGS</code> in a case if we came from userspace, we should to do the same that we did before: We need to put pointer to a structure which holds general purpose registers to the <code>%rdi</code> (which will be first parameter of a secondary handler) and put error code if an exception provides it to the <code>%rsi</code> (which will be second parameter of a secondary handler):</p>
+<pre><code class="language-assembly">movq	%rsp, %rdi
+
+.if \has_error_code
+	movq	ORIG_RAX(%rsp), %rsi
+	movq	$-1, ORIG_RAX(%rsp)
+.else
+	xorl	%esi, %esi
+.endif
+</code></pre>
+<p>The last step before a secondary handler of an exception will be called is cleanup of new <code>IST</code> stack fram:</p>
+<pre><code class="language-assembly">.if \shift_ist != -1
+	subq	$EXCEPTION_STKSZ, CPU_TSS_IST(\shift_ist)
+.endif
+</code></pre>
+<p>You may remember that we passed the <code>shift_ist</code> as argument of the <code>idtentry</code> macro. Here we check its value and if its not equal to <code>-1</code>, we get pointer to a stack from <code>Interrupt Stack Table</code> by <code>shift_ist</code> index and setup it.</p>
+<p>In the end of this second way we just call secondary exception handler as we did it before:</p>
+<pre><code class="language-assembly">call	\do_sym
+</code></pre>
+<p>The last method is similar to previous both, but an exception occured with <code>paranoid=0</code> and we may use fast method determination of where we are from.</p>
+<h2 id="exit-from-an-exception-handler">Exit from an exception handler</h2>
+<p>After secondary handler will finish its works, we will return to the <code>idtentry</code> macro and the next step will be jump to the <code>error_exit</code>:</p>
+<pre><code class="language-assembly">jmp	error_exit
+</code></pre>
+<p>routine. The <code>error_exit</code> function defined in the same <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/arch/x86/entry/entry_64.S">arch/x86/entry/entry_64.S</a> assembly source code file and the main goal of this function is to know where we are from (from userspace or kernelspace) and execute <code>SWPAGS</code> depends on this. Restore registers to previous state and execute <code>iret</code> instruction to transfer control to an interrupted task.</p>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>It is the end of the third part about interrupts and interrupt handling in the Linux kernel. We saw the initialization of the <a href="https://en.wikipedia.org/wiki/Interrupt_descriptor_table">Interrupt descriptor table</a> in the previous part with the <code>#DB</code> and <code>#BP</code> gates and started to dive into preparation before control will be transferred to an exception handler and implementation of some interrupt handlers in this part. In the next part we will continue to dive into this theme and will go next by the <code>setup_arch</code> function and will try to understand interrupts handling related stuff.</p>
+<p>If you have any questions or suggestions write me a comment or ping me at <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/0xAX/linux-insides">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/X86_debug_register">Debug registers</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Intel_80386">Intel 80385</a></li>
+<li><a href="http://en.wikipedia.org/wiki/INT_%28x86_instruction%29#INT_3">INT 3</a></li>
+<li><a href="http://en.wikipedia.org/wiki/GNU_Compiler_Collection">gcc</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Task_state_segment">TSS</a></li>
+<li><a href="https://sourceware.org/binutils/docs/as/Error.html#Error">GNU assembly .error directive</a></li>
+<li><a href="http://en.wikipedia.org/wiki/DWARF">dwarf2</a></li>
+<li><a href="https://sourceware.org/binutils/docs/as/CFI-directives.html">CFI directives</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQ</a></li>
+<li><a href="http://en.wikipedia.org/wiki/System_call">system call</a></li>
+<li><a href="http://www.felixcloutier.com/x86/SWAPGS.html">swapgs</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Unix_signal#SIGTRAP">SIGTRAP</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/Concepts/per-cpu.html">Per-CPU variables</a></li>
+<li><a href="https://en.wikipedia.org/wiki/KGDB">kgdb</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Configuration_and_Power_Interface">ACPI</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/interrupts/index.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/131/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/visualstudio_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/131/index.html">Office 365 开发入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/70.html">chenxizhang</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="visualstudio">visualstudio</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 98个">98</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/196/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/196/index.html">全栈开发指南2021</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/79/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/79/index.html">SpringBoot学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/50.html">clsaa</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8086;var bookPageRelUrl ='Interrupts/interrupts-3.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

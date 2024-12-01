@@ -1,0 +1,524 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Martini下的并发-Go语言博客实践(Go Blog In Action)</title>
+<meta content='Martini下的并发,Go语言博客实践,Go Blog In Action' name='keywords'>
+<meta content='Martini下的并发,Go语言博客实践,Go Blog In Action' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/17/Chapter02.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">TypePress的方法</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/17/Chapter04.html">
+<span class="">模块化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/17/index.html">Go语言博客实践 (Go Blog In Action)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/achun/Go-Blog-In-Action" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="面向对象">面向对象</h1>
+<p><a href="http://zh.wikipedia.org/wiki/%E9%9D%A2%E5%90%91%E5%AF%B9%E8%B1%A1%E7%A8%8B%E5%BA%8F%E8%AE%BE%E8%AE%A1">OOP</a> 的思想, 无疑是非常实用有效的. 事实是, 无论语言是否直接支持面向对象的编程. 程序员在写代码的时候常常会应用 OOP 的思想.</p>
+<p>Go 语言下没有类(Class), 没有构造函数, 没有 <code>this</code> 指针, 没有多态, 只有复合对象(或匿名属性). 复合对象和继承是完全不同的. 在以后的文字中, 继承这个词不再代表一般 OOP 下的继承, 指的是复合对象. 应用 OOP 的思想, WEB 应用下控制器常见形式祖先类型的示意写法(现实中没有太大意义).</p>
+<pre><code class="language-go">// 定义基础控制器结构
+type BaseController struct {
+	Data interface{}         // 应用要维护的数据
+	Req  *http.Request       // 请求对象
+	Res  http.ResponseWriter // 响应对象
+}
+
+// 官方 net/http 包要求实现的接口
+func (p *BaseController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.Req = r // 保存起来供实例使用
+	p.Res = w
+	if r.Method == "POST" {
+		p.Post()
+	}
+}
+
+// 对应 http POST 方式
+func (p *BaseController) Post() {
+	// 继承者必须覆盖这个方法, 否则认为不允许 POST 访问
+	// BaseController 是不可能知道继承者要做什么, 那就只能返回 403 拒绝访问
+	p.Res.WriteHeader(403)
+}
+
+// Login 控制器
+type Login struct {
+	BaseController // 匿名复合
+}
+
+// 这里必须覆盖 BaseController.Post, 以实现 Login 的具体行为
+func (p *Login) Post() {
+	if p.Req.Form.Get("login_name") == "" {
+		p.Data = "无效的登录名"
+		return
+	}
+	// 这里省略登录成功的过程
+	p.Data = "登录成功"
+}
+
+// 把这些行为定义成接口
+type Controller interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+	Post()
+}
+</code></pre>
+<p>用例</p>
+<pre><code class="language-go">http.Handle("../../login", &amp;Login{})
+</code></pre>
+<p><strong>但是这有并发问题</strong></p>
+<h1 id="并发下维护上下文">并发下维护上下文</h1>
+<p>很明显现实中这样的用法是错误的, 因为 WEB 的请求是<strong>并发</strong>的, 这样写所有并发的请求都由同一个 <code>&amp;Login{}</code> 去处理响应, <code>Req</code>,<code>Res</code>,<code>Data</code> 在并发中都被指向相同的对象. 这是无法正常工作的. 这就是常说的维护上下文, Context.</p>
+<p><strong>并发环境每一个请求都要有维护独占数据的能力.</strong> 除非没有独占数据要维护.</p>
+<p>先重新审视 官方包 server.go 中的代码</p>
+<pre><code class="language-go">type Handler interface {
+	ServeHTTP(ResponseWriter, *Request)
+}
+
+func Handle(pattern string, handler Handler) { DefaultServeMux.Handle(pattern, handler) }
+
+func HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
+	DefaultServeMux.HandleFunc(pattern, handler)
+}
+
+func (mux *ServeMux) HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
+	mux.Handle(pattern, HandlerFunc(handler)) // 进行了转换, 只是为了符合接口要求
+}
+
+type HandlerFunc func(ResponseWriter, *Request) // 确实没有独占数据要维护
+
+// ServeHTTP calls f(w, r).
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
+	f(w, r)
+}
+</code></pre>
+<p>这个<code>http.Handler</code>接口其实只是被当作一个函数使用了. 并发问题留给使用者自己解决. 可以这样做</p>
+<pre><code class="language-go">http.HandleFunc("../../login", func(w http.ResponseWriter, r *http.Request) {
+	p := &amp;Login{}
+	p.ServeHTTP(w, r)
+})
+</code></pre>
+<p>每次请求都有新的<code>Login</code>对象产生. 当然这个写法很生硬, 如果有 100 个控制器, 难道还要写 100 个不同的写法?! 可以采用下面的方法.</p>
+<h2 id="函数法">函数法</h2>
+<p>不用结构体直接使用函数, 所有上下文维护都在函数内部定义成局部变量, 局部变量在函数内部是独占的.</p>
+<pre><code class="language-go">func main() {
+	http.HandleFunc("../../login", login)
+}
+func login(w http.ResponseWriter, r *http.Request) {
+    // 维护的数据是局部变量
+	var data interface{}
+	var post = func() { // 用闭包函数访问局部变量
+		if r.Form.Get("login_name") == "" {
+			data = "无效的登录名"
+			return
+		}
+		data = "登录成功"
+	}
+	post()
+}
+</code></pre>
+<p>完全就是个函数, 但是并发下, 这完全没有问题. 问题在于如何和其他的模块进行数据沟通, 方法确实有, 比如可以用 <a href="https://github.com/gorilla/context">gorilla/context</a>. 但是无法想象整个项目都用这种写法.</p>
+<h2 id="约定构造函数">约定构造函数</h2>
+<p>Go 没有构造函数的概念的. 没关系我们约定一个. 其他语言常用<code>Constructor</code>, 这里选用 <code>New</code> 更符合 Go 风格.</p>
+<pre><code class="language-go">// 给控制器接口增加一个构造函数
+type Controller interface {
+	New() Controller
+	ServeHTTP(w http.ResponseWriter, r *http.Request)
+	Post()
+}
+
+// 扩充 Login , 实现 New 方法
+func (p *Login) New() Controller {
+	return &amp;Login{}
+}
+
+// 定义一个 http.Handler 接口, 支持构造函数
+type HandlerNew struct {
+	Controller Controller
+}
+
+// http.Handler 接口实现
+func (p *HandlerNew) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	c := p.Constructor.New()
+	c.ServeHTTP(w, r)
+}
+</code></pre>
+<p>用例</p>
+<pre><code class="language-go">http.Handle("../../login", HandlerNew{new(Login)})
+</code></pre>
+<h2 id="用反射valuenew">用反射Value.New</h2>
+<p>反射包 <code>reflect</code> 中的 <code>reflect.Value</code> 有 <code>New</code> 方法, 可以动态的构造出一个新对象. 有些框架就是采用了这种方法, 但是用 <code>Value.New</code> 只是得到一个空属性对象, 要对对象进行初始化依然要约定初始化函数, 这反而比 约定构造函数费事儿. 这里就不具体讨论了.</p>
+<h1 id="martini下的并发">Martini下的并发</h1>
+<p>笔者在发现 Martini 之前也很困惑到底用什么办法更好, 所以写了早期的 <a href="https://github.com/achun/typepress">TypePress</a>, 和对应的 <a href="https://github.com/achun/Go-Blog-In-Action/tree/master">Go-Blog-In-Action</a>. Martini 巧妙解决了 WEB 并发中的上下文维护. Martini 发现了 WEB 开发中单个请求响应要维护的上下文有这样的事实:</p>
+<ul>
+<li>数据类型是预知的 很显然</li>
+<li>数据类型有限的 很显然</li>
+<li>数据类型常常是唯一的 就算偶有不唯一, 定义个别名就行了, 这很容易</li>
+<li>阶段响应, 完整的响应过程往往分多个阶段, 为了代码复用, 各个阶段有独立的代码</li>
+</ul>
+<p>因此 Martini 采用了这样的方案:</p>
+<ol>
+<li>Martini 负责动态构建一个 Context 对象, Context 继承自 Injector</li>
+<li>Martini 的 Handler 是一组 []Hanlder, 有序执行</li>
+<li>使用者对 Handler 进行阶段性功能划分, 先执行的负责准备好上下文数据 dat</li>
+<li>通过 Map(dat) 保存到 Context. (实际由 Injector 负责)</li>
+<li>后续 Hander 要用 dat, 直接在 Handler 函数中加入参数 dat datType</li>
+<li>Injector 通过 reflect 分析 Handler 的参数类型, 并取出 dat, 调用 Handler</li>
+</ol>
+<p>这个方法比 gorilla/context 更高效实用, 虽然都是用 map 保存上下文数据, 差别有</p>
+<ul>
+<li>gorilla/context 的 map 是全局的, Martini 保存到 Context</li>
+<li>gorilla/context 只是做了 key/value 存储, Martini 完成了 Handler 调用</li>
+</ul>
+<p>这和 OOP 有何关系? 关系是</p>
+<pre><code>golang 不是真正的继承, 这给维护上下文数据造成了问题.
+Martini 解决了上下文数据维护问题, 应用可以放心的用复合写逻辑代码.
+上下文数据交给 Martini 就好.
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/19/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/19/index.html">Go命令教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/14.html">hyper0x</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1478个">1478</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/3/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/89/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/191/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/124/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nginx_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/124/index.html">Nginx学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/66.html">tyloafer</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/98/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/visualstudio_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/98/index.html">Microsoft Visual Studio Code 中文手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="visualstudio">visualstudio</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">66页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/17/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/17/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第1章：" disabled data-book-page-rel-url="" data-book-page-id="9200">第1章：</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter01.html" title="依赖注入" data-book-page-rel-url="Chapter01.html" data-book-page-id="9201">依赖注入</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第2章：" disabled data-book-page-rel-url="" data-book-page-id="9205">第2章：</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter02.html" title="TypePress的方法" data-book-page-rel-url="Chapter02.html" data-book-page-id="9206">TypePress的方法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第3章:" disabled data-book-page-rel-url="" data-book-page-id="9207">第3章:</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter03.html" title="Martini下的并发" data-book-page-rel-url="Chapter03.html" data-book-page-id="9208">Martini下的并发</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第4章：" disabled data-book-page-rel-url="" data-book-page-id="9209">第4章：</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第3节：" disabled data-book-page-rel-url="" data-book-page-id="9204">第3节：</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter04.html" title="模块化" data-book-page-rel-url="Chapter04.html" data-book-page-id="9210">模块化</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第5章:" disabled data-book-page-rel-url="" data-book-page-id="9211">第5章:</a>
+</li>
+<li>
+<a class="pjax" href="../../book/17/Chapter05.html" title="静态博客" data-book-page-rel-url="Chapter05.html" data-book-page-id="9212">静态博客</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第6章:" disabled data-book-page-rel-url="" data-book-page-id="9213">第6章:</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第1节：" disabled data-book-page-rel-url="" data-book-page-id="9202">第1节：</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第2节：" disabled data-book-page-rel-url="" data-book-page-id="9203">第2节：</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter06.html" title="PEG" data-book-page-rel-url="Chapter06.html" data-book-page-id="9214">PEG</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第7章:" disabled data-book-page-rel-url="" data-book-page-id="9215">第7章:</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第4节:" disabled data-book-page-rel-url="" data-book-page-id="9220">第4节:</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter07.html" title="手工至上" data-book-page-rel-url="Chapter07.html" data-book-page-id="9216">手工至上</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第8章:" disabled data-book-page-rel-url="" data-book-page-id="9221">第8章:</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第1节:" disabled data-book-page-rel-url="" data-book-page-id="9217">第1节:</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第2节:" disabled data-book-page-rel-url="" data-book-page-id="9218">第2节:</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="第3节:" disabled data-book-page-rel-url="" data-book-page-id="9219">第3节:</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/17/Chapter08.html" title="Module" data-book-page-rel-url="Chapter08.html" data-book-page-id="9222">Module</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =17;var bookPageId =9208;var bookPageRelUrl ='Chapter03.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

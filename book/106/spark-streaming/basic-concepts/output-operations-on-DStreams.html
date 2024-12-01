@@ -1,0 +1,576 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>DStream的输出操作-Spark 编程指南简体中文版</title>
+<meta content='DStream的输出操作,Spark 编程指南简体中文版' name='keywords'>
+<meta content='DStream的输出操作,Spark 编程指南简体中文版' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/106/spark-streaming/basic-concepts/transformations-on-DStreams.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">DStream中的转换</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/106/spark-streaming/basic-concepts/caching-persistence.html">
+<span class="">缓存或持久化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/106/index.html">Spark 编程指南简体中文版</a>
+<a target="_blank" rel="nofollow" href="https://github.com/aiyanbo/spark-programming-guide-zh-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="dstreams上的输出操作">DStreams上的输出操作</h1>
+<p>输出操作允许DStream的操作推到如数据库、文件系统等外部系统中。因为输出操作实际上是允许外部系统消费转换后的数据，它们触发的实际操作是DStream转换。目前，定义了下面几种输出操作：</p>
+<table>
+<thead>
+<tr>
+<th>Output Operation</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>print()</td>
+<td>在DStream的每个批数据中打印前10条元素，这个操作在开发和调试中都非常有用。在Python API中调用<code>pprint()</code>。</td>
+</tr>
+<tr>
+<td>saveAsObjectFiles(prefix, [suffix])</td>
+<td>保存DStream的内容为一个序列化的文件<code>SequenceFile</code>。每一个批间隔的文件的文件名基于<code>prefix</code>和<code>suffix</code>生成。"prefix-TIME_IN_MS[.suffix]"，在Python API中不可用。</td>
+</tr>
+<tr>
+<td>saveAsTextFiles(prefix, [suffix])</td>
+<td>保存DStream的内容为一个文本文件。每一个批间隔的文件的文件名基于<code>prefix</code>和<code>suffix</code>生成。"prefix-TIME_IN_MS[.suffix]"</td>
+</tr>
+<tr>
+<td>saveAsHadoopFiles(prefix, [suffix])</td>
+<td>保存DStream的内容为一个hadoop文件。每一个批间隔的文件的文件名基于<code>prefix</code>和<code>suffix</code>生成。"prefix-TIME_IN_MS[.suffix]"，在Python API中不可用。</td>
+</tr>
+<tr>
+<td>foreachRDD(func)</td>
+<td>在从流中生成的每个RDD上应用函数<code>func</code>的最通用的输出操作。这个函数应该推送每个RDD的数据到外部系统，例如保存RDD到文件或者通过网络写到数据库中。需要注意的是，<code>func</code>函数在驱动程序中执行，并且通常都有RDD action在里面推动RDD流的计算。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="利用foreachrdd的设计模式">利用foreachRDD的设计模式</h2>
+<p>dstream.foreachRDD是一个强大的原语，发送数据到外部系统中。然而，明白怎样正确地、有效地用这个原语是非常重要的。下面几点介绍了如何避免一般错误。</p>
+<ul>
+<li>经常写数据到外部系统需要建一个连接对象（例如到远程服务器的TCP连接），用它发送数据到远程系统。为了达到这个目的，开发人员可能不经意的在Spark驱动中创建一个连接对象，但是在Spark worker中 尝试调用这个连接对象保存记录到RDD中，如下：</li>
+</ul>
+<pre><code class="language-scala">  dstream.foreachRDD(rdd =&gt; {
+      val connection = createNewConnection()  // executed at the driver
+      rdd.foreach(record =&gt; {
+          connection.send(record) // executed at the worker
+      })
+  })
+</code></pre>
+<p>这是不正确的，因为这需要先序列化连接对象，然后将它从driver发送到worker中。这样的连接对象在机器之间不能传送。它可能表现为序列化错误（连接对象不可序列化）或者初始化错误（连接对象应该 在worker中初始化）等等。正确的解决办法是在worker中创建连接对象。</p>
+<ul>
+<li>然而，这会造成另外一个常见的错误-为每一个记录创建了一个连接对象。例如：</li>
+</ul>
+<pre><code>  dstream.foreachRDD(rdd =&gt; {
+      rdd.foreach(record =&gt; {
+          val connection = createNewConnection()
+          connection.send(record)
+          connection.close()
+      })
+  })
+</code></pre>
+<p>通常，创建一个连接对象有资源和时间的开支。因此，为每个记录创建和销毁连接对象会导致非常高的开支，明显的减少系统的整体吞吐量。一个更好的解决办法是利用<code>rdd.foreachPartition</code>方法。 为RDD的partition创建一个连接对象，用这个两件对象发送partition中的所有记录。</p>
+<pre><code> dstream.foreachRDD(rdd =&gt; {
+      rdd.foreachPartition(partitionOfRecords =&gt; {
+          val connection = createNewConnection()
+          partitionOfRecords.foreach(record =&gt; connection.send(record))
+          connection.close()
+      })
+  })
+</code></pre>
+<p>这就将连接对象的创建开销分摊到了partition的所有记录上了。</p>
+<ul>
+<li>最后，可以通过在多个RDD或者批数据间重用连接对象做更进一步的优化。开发者可以保有一个静态的连接对象池，重复使用池中的对象将多批次的RDD推送到外部系统，以进一步节省开支。</li>
+</ul>
+<pre><code>  dstream.foreachRDD(rdd =&gt; {
+      rdd.foreachPartition(partitionOfRecords =&gt; {
+          // ConnectionPool is a static, lazily initialized pool of connections
+          val connection = ConnectionPool.getConnection()
+          partitionOfRecords.foreach(record =&gt; connection.send(record))
+          ConnectionPool.returnConnection(connection)  // return to the pool for future reuse
+      })
+  })
+</code></pre>
+<p>需要注意的是，池中的连接对象应该根据需要延迟创建，并且在空闲一段时间后自动超时。这样就获取了最有效的方式发生数据到外部系统。</p>
+<p>其它需要注意的地方：</p>
+<ul>
+<li>输出操作通过懒执行的方式操作DStreams，正如RDD action通过懒执行的方式操作RDD。具体地看，RDD actions和DStreams输出操作接收数据的处理。因此，如果你的应用程序没有任何输出操作或者 用于输出操作<code>dstream.foreachRDD()</code>，但是没有任何RDD action操作在<code>dstream.foreachRDD()</code>里面，那么什么也不会执行。系统仅仅会接收输入，然后丢弃它们。</li>
+<li>默认情况下，DStreams输出操作是分时执行的，它们按照应用程序的定义顺序按序执行。</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/122/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/122/index.html">Databricks Spark 知识库简体中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/120/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/128/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/128/index.html">写给人类的机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 29个">29</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/35/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/django_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/35/index.html">Django 1.8 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="django">django</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">172页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/141/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/141/index.html">各种程序开发相关的Awesome开源项目清单</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/74.html">sindresorhus</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">25页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 102911个">102911</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/139/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/docker_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/139/index.html">Docker — 从入门到实践</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="docker">docker</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">159页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年9月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9408个">9408</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/106/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7668">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/quick-start/README.html" title="快速上手" data-book-page-rel-url="quick-start/README.html" data-book-page-id="7669">快速上手</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/quick-start/using-spark-shell.html" title="Spark Shell" data-book-page-rel-url="quick-start/using-spark-shell.html" data-book-page-id="7670">Spark Shell</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/quick-start/standalone-applications.html" title="独立应用程序" data-book-page-rel-url="quick-start/standalone-applications.html" data-book-page-id="7671">独立应用程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/quick-start/where-to-go-from-here.html" title="开始翻滚吧!" data-book-page-rel-url="quick-start/where-to-go-from-here.html" data-book-page-id="7672">开始翻滚吧!</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/README.html" title="编程指南" data-book-page-rel-url="programming-guide/README.html" data-book-page-id="7673">编程指南</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/linking-with-spark.html" title="引入 Spark" data-book-page-rel-url="programming-guide/linking-with-spark.html" data-book-page-id="7674">引入 Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/initializing-spark.html" title="初始化 Spark" data-book-page-rel-url="programming-guide/initializing-spark.html" data-book-page-id="7675">初始化 Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/README.html" title="Spark RDDs" data-book-page-rel-url="programming-guide/rdds/README.html" data-book-page-id="7676">Spark RDDs</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/parallelized-collections.html" title="并行集合" data-book-page-rel-url="programming-guide/rdds/parallelized-collections.html" data-book-page-id="7677">并行集合</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/external-datasets.html" title="外部数据集" data-book-page-rel-url="programming-guide/rdds/external-datasets.html" data-book-page-id="7678">外部数据集</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/rdd-operations.html" title="RDD 操作" data-book-page-rel-url="programming-guide/rdds/rdd-operations.html" data-book-page-id="7679">RDD 操作</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/passing-functions-to-spark.html" title="传递函数到 Spark" data-book-page-rel-url="programming-guide/rdds/passing-functions-to-spark.html" data-book-page-id="7680">传递函数到 Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/working-with-key-value-pairs.html" title="使用键值对" data-book-page-rel-url="programming-guide/rdds/working-with-key-value-pairs.html" data-book-page-id="7681">使用键值对</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/transformations.html" title="Transformations" data-book-page-rel-url="programming-guide/rdds/transformations.html" data-book-page-id="7682">Transformations</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/actions.html" title="Actions" data-book-page-rel-url="programming-guide/rdds/actions.html" data-book-page-id="7683">Actions</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/rdd-persistences.html" title="RDD持久化" data-book-page-rel-url="programming-guide/rdds/rdd-persistences.html" data-book-page-id="7684">RDD持久化</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/shared-variables.html" title="共享变量" data-book-page-rel-url="programming-guide/shared-variables.html" data-book-page-id="7685">共享变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/from-here.html" title="从这里开始" data-book-page-rel-url="programming-guide/from-here.html" data-book-page-id="7686">从这里开始</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/README.html" title="Spark Streaming" data-book-page-rel-url="spark-streaming/README.html" data-book-page-id="7687">Spark Streaming</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/a-quick-example.html" title="一个快速的例子" data-book-page-rel-url="spark-streaming/a-quick-example.html" data-book-page-id="7688">一个快速的例子</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/README.html" title="基本概念" data-book-page-rel-url="spark-streaming/basic-concepts/README.html" data-book-page-id="7689">基本概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/linking.html" title="关联" data-book-page-rel-url="spark-streaming/basic-concepts/linking.html" data-book-page-id="7690">关联</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/initializing-StreamingContext.html" title="初始化StreamingContext" data-book-page-rel-url="spark-streaming/basic-concepts/initializing-StreamingContext.html" data-book-page-id="7691">初始化StreamingContext</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/discretized-streams.html" title="离散流" data-book-page-rel-url="spark-streaming/basic-concepts/discretized-streams.html" data-book-page-id="7692">离散流</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/input-DStreams.html" title="输入DStreams" data-book-page-rel-url="spark-streaming/basic-concepts/input-DStreams.html" data-book-page-id="7693">输入DStreams</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/transformations-on-DStreams.html" title="DStream中的转换" data-book-page-rel-url="spark-streaming/basic-concepts/transformations-on-DStreams.html" data-book-page-id="7694">DStream中的转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/output-operations-on-DStreams.html" title="DStream的输出操作" data-book-page-rel-url="spark-streaming/basic-concepts/output-operations-on-DStreams.html" data-book-page-id="7695">DStream的输出操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/caching-persistence.html" title="缓存或持久化" data-book-page-rel-url="spark-streaming/basic-concepts/caching-persistence.html" data-book-page-id="7696">缓存或持久化</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/checkpointing.html" title="Checkpointing" data-book-page-rel-url="spark-streaming/basic-concepts/checkpointing.html" data-book-page-id="7697">Checkpointing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/deploying-applications.html" title="部署应用程序" data-book-page-rel-url="spark-streaming/basic-concepts/deploying-applications.html" data-book-page-id="7698">部署应用程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/basic-concepts/monitoring-applications.html" title="监控应用程序" data-book-page-rel-url="spark-streaming/basic-concepts/monitoring-applications.html" data-book-page-id="7699">监控应用程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/performance-tuning/README.html" title="性能调优" data-book-page-rel-url="spark-streaming/performance-tuning/README.html" data-book-page-id="7700">性能调优</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/performance-tuning/reducing-processing-time.html" title="减少批数据的执行时间" data-book-page-rel-url="spark-streaming/performance-tuning/reducing-processing-time.html" data-book-page-id="7701">减少批数据的执行时间</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/performance-tuning/setting-right-batch-size.html" title="设置正确的批容量" data-book-page-rel-url="spark-streaming/performance-tuning/setting-right-batch-size.html" data-book-page-id="7702">设置正确的批容量</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/performance-tuning/memory-tuning.html" title="内存调优" data-book-page-rel-url="spark-streaming/performance-tuning/memory-tuning.html" data-book-page-id="7703">内存调优</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-streaming/fault-tolerance-semantics/README.html" title="容错语义" data-book-page-rel-url="spark-streaming/fault-tolerance-semantics/README.html" data-book-page-id="7704">容错语义</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/README.html" title="Spark SQL" data-book-page-rel-url="spark-sql/README.html" data-book-page-id="7705">Spark SQL</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/getting-started.html" title="开始" data-book-page-rel-url="spark-sql/getting-started.html" data-book-page-id="7706">开始</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/data-sources/README.html" title="数据源" data-book-page-rel-url="spark-sql/data-sources/README.html" data-book-page-id="7707">数据源</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/data-sources/rdds.html" title="RDDs" data-book-page-rel-url="spark-sql/data-sources/rdds.html" data-book-page-id="7708">RDDs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/data-sources/parquet-files.html" title="parquet文件" data-book-page-rel-url="spark-sql/data-sources/parquet-files.html" data-book-page-id="7709">parquet文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/data-sources/jSON-datasets.html" title="JSON数据集" data-book-page-rel-url="spark-sql/data-sources/jSON-datasets.html" data-book-page-id="7710">JSON数据集</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/data-sources/hive-tables.html" title="Hive表" data-book-page-rel-url="spark-sql/data-sources/hive-tables.html" data-book-page-id="7711">Hive表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/performance-tuning.html" title="性能调优" data-book-page-rel-url="spark-sql/performance-tuning.html" data-book-page-id="7712">性能调优</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/other-sql-interfaces.html" title="其它SQL接口" data-book-page-rel-url="spark-sql/other-sql-interfaces.html" data-book-page-id="7713">其它SQL接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/writing-language-integrated-relational-queries.html" title="编写语言集成(Language-Integrated)的相关查询" data-book-page-rel-url="spark-sql/writing-language-integrated-relational-queries.html" data-book-page-id="7714">编写语言集成(Language-Integrated)的相关查询</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/spark-sql/spark-sql-dataType-reference.html" title="Spark SQL数据类型" data-book-page-rel-url="spark-sql/spark-sql-dataType-reference.html" data-book-page-id="7715">Spark SQL数据类型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/README.html" title="GraphX编程指南" data-book-page-rel-url="graphx-programming-guide/README.html" data-book-page-id="7716">GraphX编程指南</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/getting-started.html" title="开始" data-book-page-rel-url="graphx-programming-guide/getting-started.html" data-book-page-id="7717">开始</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/property-graph.html" title="属性图" data-book-page-rel-url="graphx-programming-guide/property-graph.html" data-book-page-id="7718">属性图</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/graph-operators.html" title="图操作符" data-book-page-rel-url="graphx-programming-guide/graph-operators.html" data-book-page-id="7719">图操作符</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/pregel-api.html" title="Pregel API" data-book-page-rel-url="graphx-programming-guide/pregel-api.html" data-book-page-id="7720">Pregel API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/graph-builders.html" title="图构造者" data-book-page-rel-url="graphx-programming-guide/graph-builders.html" data-book-page-id="7721">图构造者</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/vertex-and-edge-rdds.html" title="顶点和边RDDs" data-book-page-rel-url="graphx-programming-guide/vertex-and-edge-rdds.html" data-book-page-id="7722">顶点和边RDDs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/graph-algorithms.html" title="图算法" data-book-page-rel-url="graphx-programming-guide/graph-algorithms.html" data-book-page-id="7723">图算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/graphx-programming-guide/examples.html" title="例子" data-book-page-rel-url="graphx-programming-guide/examples.html" data-book-page-id="7724">例子</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/deploying/submitting-applications.html" title="提交应用程序" data-book-page-rel-url="deploying/submitting-applications.html" data-book-page-id="7725">提交应用程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/deploying/spark-standalone-mode.html" title="独立运行Spark" data-book-page-rel-url="deploying/spark-standalone-mode.html" data-book-page-id="7726">独立运行Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/deploying/running-spark-on-yarn.html" title="在yarn上运行Spark" data-book-page-rel-url="deploying/running-spark-on-yarn.html" data-book-page-id="7727">在yarn上运行Spark</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/106/more/spark-configuration.html" title="Spark配置" data-book-page-rel-url="more/spark-configuration.html" data-book-page-id="7728">Spark配置</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/106/programming-guide/rdds/rdd_persistence.html" title="RDD 持久化" data-book-page-rel-url="programming-guide/rdds/rdd_persistence.html" data-book-page-id="7729">RDD 持久化</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =106;var bookPageId =7695;var bookPageRelUrl ='spark-streaming/basic-concepts/output-operations-on-DStreams.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

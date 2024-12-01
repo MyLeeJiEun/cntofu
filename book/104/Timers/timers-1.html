@@ -1,0 +1,829 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>简介-Linux 内核揭密</title>
+<meta content='简介,Linux 内核揭密' name='keywords'>
+<meta content='简介,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Timers/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">定时器和时钟管理</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Timers/timers-2.html">
+<span class="">时钟源框架简介</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="timers-and-time-management-in-the-linux-kernel-part-1">Timers and time management in the Linux kernel. Part 1.</h1>
+<h2 id="introduction">Introduction</h2>
+<p>This is yet another post that opens new chapter in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/">linux-insides</a> book. The previous <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-4.html">part</a> was a list part of the chapter that describes <a href="https://en.wikipedia.org/wiki/System_call">system call</a> concept and now time is to start new chapter. As you can understand from the post's title, this chapter will be devoted to the <code>timers</code> and <code>time management</code> in the Linux kernel. The choice of topic for the current chapter is not accidental. Timers and generally time management are very important and widely used in the Linux kernel. The Linux kernel uses timers for various tasks, different timeouts for example in <a href="https://en.wikipedia.org/wiki/Transmission_Control_Protocol">TCP</a> implementation, the kernel must know current time, scheduling asynchronous functions, next event interrupt scheduling and many many more.</p>
+<p>So, we will start to learn implementation of the different time management related stuff in this part. We will see different types of timers and how do different Linux kernel subsystems use them. As always we will start from the earliest part of the Linux kernel and will go through initialization process of the Linux kernel. We already did it in the special <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/index.html">chapter</a> which describes initialization process of the Linux kernel, but as you may remember we missed some things there. And one of them is the initialization of timers.</p>
+<p>Let's start.</p>
+<h2 id="initialization-of-non-standard-pc-hardware-clock">Initialization of non-standard PC hardware clock</h2>
+<p>After the Linux kernel was decompressed (more about this you can read in the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Booting/linux-bootstrap-5.html">Kernel decompression</a> part) the architecture non-specific code starts to work in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> source code file. After initialization of the <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a>, initialization of <a href="https://en.wikipedia.org/wiki/Cgroups">cgroups</a> and setting <a href="https://en.wikipedia.org/wiki/Buffer_overflow_protection">canary</a> value we can see the call of the <code>setup_arch</code> function.</p>
+<p>As you may remember this function defined in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c#L842">arch/x86/kernel/setup.c</a> source code file and prepares/initializes architecture-specific stuff (for example it reserves place for <a href="https://en.wikipedia.org/wiki/.bss">bss</a> section, reserves place for <a href="https://en.wikipedia.org/wiki/Initrd">initrd</a>, parses kernel command line and many many other things). Besides this, we can find some time management related functions there.</p>
+<p>The first is:</p>
+<pre><code class="language-C">x86_init.timers.wallclock_init();
+</code></pre>
+<p>We already saw <code>x86_init</code> structure in the chapter that describes initialization of the Linux kernel. This structure contains pointers to the default setup functions for the different platforms like <a href="https://en.wikipedia.org/wiki/Mobile_Internet_device#Intel_MID_platforms">Intel MID</a>, <a href="http://www.wpgholdings.com/epaper/US/newsRelease_20091215/255874.pdf">Intel CE4100</a> and etc. The <code>x86_init</code> structure defined in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/x86_init.c#L36">arch/x86/kernel/x86_init.c</a> and as you can see it determines standard PC hardware by default.</p>
+<p>As we can see, the <code>x86_init</code> structure has <code>x86_init_ops</code> type that provides a set of functions for platform specific setup like reserving standard resources, platform specific memory setup, initialization of interrupt handlers and etc. This structure looks like:</p>
+<pre><code class="language-C">struct x86_init_ops {
+	struct x86_init_resources       resources;
+    struct x86_init_mpparse         mpparse;
+    struct x86_init_irqs            irqs;
+    struct x86_init_oem             oem;
+    struct x86_init_paging          paging;
+    struct x86_init_timers          timers;
+    struct x86_init_iommu           iommu;
+    struct x86_init_pci             pci;
+};
+</code></pre>
+<p>We can note <code>timers</code> field that has <code>x86_init_timers</code> type and as we can understand by its name - this field is related to time management and timers. The <code>x86_init_timers</code> contains four fields which are all functions that returns pointer on <a href="https://en.wikipedia.org/wiki/Void_type">void</a>:</p>
+<ul>
+<li><code>setup_percpu_clockev</code> - set up the per cpu clock event device for the boot cpu;</li>
+<li><code>tsc_pre_init</code> - platform function called before <a href="https://en.wikipedia.org/wiki/Time_Stamp_Counter">TSC</a> init;</li>
+<li><code>timer_init</code> - initialize the platform timer;</li>
+<li><code>wallclock_init</code> - initialize the wallclock device.</li>
+</ul>
+<p>So, as we already know, in our case the <code>wallclock_init</code> executes initialization of the wallclock device. If we will look on the <code>x86_init</code> structure, we will see that <code>wallclock_init</code> points to the <code>x86_init_noop</code>:</p>
+<pre><code class="language-C">struct x86_init_ops x86_init __initdata = {
+	...
+	...
+	...
+	.timers = {
+		.wallclock_init		    = x86_init_noop,
+	},
+	...
+	...
+	...
+}
+</code></pre>
+<p>Where the <code>x86_init_noop</code> is just a function that does nothing:</p>
+<pre><code class="language-C">void __cpuinit x86_init_noop(void) { }
+</code></pre>
+<p>for the standard PC hardware. Actually, the <code>wallclock_init</code> function is used in the <a href="https://en.wikipedia.org/wiki/Mobile_Internet_device#Intel_MID_platforms">Intel MID</a> platform. Initialization of the <code>x86_init.timers.wallclock_init</code> located in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/platform/intel-mid/intel-mid.c">arch/x86/platform/intel-mid/intel-mid.c</a> source code file in the <code>x86_intel_mid_early_setup</code> function:</p>
+<pre><code class="language-C">void __init x86_intel_mid_early_setup(void)
+{
+	...
+	...
+	...
+	x86_init.timers.wallclock_init = intel_mid_rtc_init;
+	...
+	...
+	...
+}
+</code></pre>
+<p>Implementation of the <code>intel_mid_rtc_init</code> function is in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/platform/intel-mid/intel_mid_vrtc.c">arch/x86/platform/intel-mid/intel_mid_vrtc.c</a> source code file and looks pretty easy. First of all, this function parses <a href="https://en.wikipedia.org/wiki/Simple_Firmware_Interface">Simple Firmware Interface</a> M-Real-Time-Clock table for the getting such devices to the <code>sfi_mrtc_array</code> array and initialization of the <code>set_time</code> and <code>get_time</code> functions:</p>
+<pre><code class="language-C">void __init intel_mid_rtc_init(void)
+{
+	unsigned long vrtc_paddr;
+
+	sfi_table_parse(SFI_SIG_MRTC, NULL, NULL, sfi_parse_mrtc);
+
+	vrtc_paddr = sfi_mrtc_array[0].phys_addr;
+	if (!sfi_mrtc_num || !vrtc_paddr)
+		return;
+
+	vrtc_virt_base = (void __iomem *)set_fixmap_offset_nocache(FIX_LNW_VRTC,
+								vrtc_paddr);
+
+    x86_platform.get_wallclock = vrtc_get_time;
+	x86_platform.set_wallclock = vrtc_set_mmss;
+}
+</code></pre>
+<p>That's all, after this a device based on <code>Intel MID</code> will be able to get time from hardware clock. As I already wrote, the standard PC <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture does not support <code>x86_init_noop</code> and just do nothing during call of this function. We just saw initialization of the <a href="https://en.wikipedia.org/wiki/Real-time_clock">real time clock</a> for the <a href="https://en.wikipedia.org/wiki/Mobile_Internet_device#Intel_MID_platforms">Intel MID</a> architecture and now times to return to the general <code>x86_64</code> architecture and will look on the time management related stuff there.</p>
+<h2 id="acquainted-with-jiffies">Acquainted with jiffies</h2>
+<p>If we will return to the <code>setup_arch</code> function which is located as you remember in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c#L842">arch/x86/kernel/setup.c</a> source code file, we will see the next call of the time management related function:</p>
+<pre><code class="language-C">register_refined_jiffies(CLOCK_TICK_RATE);
+</code></pre>
+<p>Before we will look on the implementation of this function, we must know about <a href="https://en.wikipedia.org/wiki/Jiffy_%28time%29">jiffy</a>. As we can read on wikipedia:</p>
+<pre><code>Jiffy is an informal term for any unspecified short period of time
+</code></pre>
+<p>This definition is very similar to the <code>jiffy</code> in the Linux kernel. There is global variable with the <code>jiffies</code> which holds the number of ticks that have occurred since the system booted. The Linux kernel sets this variable to zero:</p>
+<pre><code class="language-C">extern unsigned long volatile __jiffy_data jiffies;
+</code></pre>
+<p>during initialization process. This global variable will be increased each time during timer interrupt. Besides this, near the <code>jiffies</code> variable we can see definition of the similar variable</p>
+<pre><code class="language-C">extern u64 jiffies_64;
+</code></pre>
+<p>Actually only one of these variables is in use in the Linux kernel. And it depends on the processor type. For the <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> it will be <code>u64</code> use and for the <a href="https://en.wikipedia.org/wiki/X86">x86</a> is <code>unsigned long</code>. We will see this if we will look on the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/vmlinux.lds.S">arch/x86/kernel/vmlinux.lds.S</a> linker script:</p>
+<pre><code>#ifdef CONFIG_X86_32
+...
+jiffies = jiffies_64;
+...
+#else
+...
+jiffies_64 = jiffies;
+...
+#endif
+</code></pre>
+<p>In the case of <code>x86_32</code> the <code>jiffies</code> will be lower <code>32</code> bits of the <code>jiffies_64</code> variable. Schematically, we can imagine it as follows</p>
+<pre><code>                    jiffies_64
++-----------------------------------------------------+
+|                       |                             |
+|                       |                             |
+|                       |       jiffies on `x86_32`   |
+|                       |                             |
+|                       |                             |
++-----------------------------------------------------+
+63                     31                             0
+</code></pre>
+<p>Now we know a little theory about <code>jiffies</code> and we can return to the our function. There is no architecture-specific implementation for our function - the <code>register_refined_jiffies</code>. This function located in the generic kernel code - <a href="https://github.com/torvalds/linux/blob/master/kernel/time/jiffies.c">kernel/time/jiffies.c</a> source code file. Main point of the <code>register_refined_jiffies</code> is registration of the jiffy <code>clocksource</code>. Before we will look on the implementation of the <code>register_refined_jiffies</code> function, we must know what is it <code>clocksource</code>. As we can read in the comments:</p>
+<pre><code>The `clocksource` is hardware abstraction for a free-running counter.
+</code></pre>
+<p>I'm not sure about you, but that description didn't give a good understanding about the <code>clocksource</code> concept. Let's try to understand what is it, but we will not go deeper because this topic will be described in a separate part in much more detail. The main point of the <code>clocksource</code> is timekeeping abstraction or in very simple words - it provides a time value to the kernel. We already know about <code>jiffies</code> interface that represents number of ticks that have occurred since the system booted. It represented by the global variable in the Linux kernel and increased each timer interrupt. The Linux kernel can use <code>jiffies</code> for time measurement. So why do we need in separate context like the <code>clocksource</code>? Actually different hardware devices provide different clock sources that are widely in their capabilities. The availability of more precise techniques for time intervals measurement is hardware-dependent.</p>
+<p>For example <code>x86</code> has on-chip a 64-bit counter that is called <a href="https://en.wikipedia.org/wiki/Time_Stamp_Counter">Time Stamp Counter</a> and its frequency can be equal to processor frequency. Or for example <a href="https://en.wikipedia.org/wiki/High_Precision_Event_Timer">High Precision Event Timer</a> that consists of a <code>64-bit</code> counter of at least <code>10 MHz</code> frequency. Two different timers and they are both for <code>x86</code>. If we will add timers from other architectures, this only makes this problem more complex. The Linux kernel provides <code>clocksource</code> concept to solve the problem.</p>
+<p>The clocksource concept represented by the <code>clocksource</code> structure in the Linux kernel. This structure defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/clocksource.h">include/linux/clocksource.h</a> header file and contains a couple of fields that describe a time counter. For example it contains - <code>name</code> field which is the name of a counter, <code>flags</code> field that describes different properties of a counter, pointers to the <code>suspend</code> and <code>resume</code> functions, and many more.</p>
+<p>Let's look on the <code>clocksource</code> structure for jiffies that defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/jiffies.c">kernel/time/jiffies.c</a> source code file:</p>
+<pre><code class="language-C">static struct clocksource clocksource_jiffies = {
+	.name		= "jiffies",
+	.rating		= 1,
+	.read		= jiffies_read,
+	.mask		= 0xffffffff,
+	.mult		= NSEC_PER_JIFFY &lt;&lt; JIFFIES_SHIFT,
+	.shift		= JIFFIES_SHIFT,
+	.max_cycles	= 10,
+};
+</code></pre>
+<p>We can see definition of the default name here - <code>jiffies</code>, the next is <code>rating</code> field allows the best registered clock source to be chosen by the clock source management code available for the specified hardware. The <code>rating</code> may have following value:</p>
+<ul>
+<li><code>1-99</code> - Only available for bootup and testing purposes;</li>
+<li><code>100-199</code> - Functional for real use, but not desired.</li>
+<li><code>200-299</code> - A correct and usable clocksource.</li>
+<li><code>300-399</code> - A reasonably fast and accurate clocksource.</li>
+<li><code>400-499</code> - The ideal clocksource. A must-use where available;</li>
+</ul>
+<p>For example rating of the <a href="https://en.wikipedia.org/wiki/Time_Stamp_Counter">time stamp counter</a> is <code>300</code>, but rating of the <a href="https://en.wikipedia.org/wiki/High_Precision_Event_Timer">high precision event timer</a> is <code>250</code>. The next field is <code>read</code> - is pointer to the function that allows to read clocksource's cycle value or in other words it just returns <code>jiffies</code> variable with <code>cycle_t</code> type:</p>
+<pre><code class="language-C">static cycle_t jiffies_read(struct clocksource *cs)
+{
+        return (cycle_t) jiffies;
+}
+</code></pre>
+<p>that is just 64-bit unsigned type:</p>
+<pre><code class="language-C">typedef u64 cycle_t;
+</code></pre>
+<p>The next field is the <code>mask</code> value ensures that subtraction between counters values from non <code>64 bit</code> counters do not need special overflow logic. In our case the mask is <code>0xffffffff</code> and it is <code>32</code> bits. This means that <code>jiffy</code> wraps around to zero after <code>42</code> seconds:</p>
+<pre><code class="language-python">&gt;&gt;&gt; 0xffffffff
+4294967295
+# 42 nanoseconds
+&gt;&gt;&gt; 42 * pow(10, -9)
+4.2000000000000006e-08
+# 43 nanoseconds
+&gt;&gt;&gt; 43 * pow(10, -9)
+4.3e-08
+</code></pre>
+<p>The next two fields <code>mult</code> and <code>shift</code> are used to convert the clocksource's period to nanoseconds per cycle. When the kernel calls the <code>clocksource.read</code> function, this function returns value in <code>machine</code> time units represented with <code>cycle_t</code> data type that we saw just now. To convert this return value to the <a href="https://en.wikipedia.org/wiki/Nanosecond">nanoseconds</a> we need in these two fields: <code>mult</code> and <code>shift</code>. The <code>clocksource</code> provides <code>clocksource_cyc2ns</code> function that will do it for us with the following expression:</p>
+<pre><code class="language-C">((u64) cycles * mult) &gt;&gt; shift;
+</code></pre>
+<p>As we can see the <code>mult</code> field is equal:</p>
+<pre><code class="language-C">NSEC_PER_JIFFY &lt;&lt; JIFFIES_SHIFT
+
+#define NSEC_PER_JIFFY  ((NSEC_PER_SEC+HZ/2)/HZ)
+#define NSEC_PER_SEC    1000000000L
+</code></pre>
+<p>by default, and the <code>shift</code> is</p>
+<pre><code class="language-C">#if HZ &lt; 34
+  #define JIFFIES_SHIFT   6
+#elif HZ &lt; 67
+  #define JIFFIES_SHIFT   7
+#else
+  #define JIFFIES_SHIFT   8
+#endif
+</code></pre>
+<p>The <code>jiffies</code> clock source uses the <code>NSEC_PER_JIFFY</code> multiplier conversion to specify the nanosecond over cycle ratio. Note that values of the <code>JIFFIES_SHIFT</code> and <code>NSEC_PER_JIFFY</code> depend on <code>HZ</code> value. The <code>HZ</code> represents the frequency of the system timer. This macro defined in the <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/param.h">include/asm-generic/param.h</a> and depends on the <code>CONFIG_HZ</code> kernel configuration option. The value of <code>HZ</code> differs for each supported architecture, but for <code>x86</code> it's defined like:</p>
+<pre><code class="language-C">#define HZ		CONFIG_HZ
+</code></pre>
+<p>Where <code>CONFIG_HZ</code> can be one of the following values:</p>
+<p><a href="http://s9.postimg.org/xy85r3jrj/image.png" data-uk-lightbox><img src="http://s9.postimg.org/xy85r3jrj/image.png" alt="HZ"></a></p>
+<p>This means that in our case the timer interrupt frequency is <code>250 HZ</code> or occurs <code>250</code> times per second or one timer interrupt each <code>4ms</code>.</p>
+<p>The last field that we can see in the definition of the <code>clocksource_jiffies</code> structure is the - <code>max_cycles</code> that holds the maximum cycle value that can safely be multiplied without potentially causing an overflow.</p>
+<pre><code>Ok, we just saw definition of the `clocksource_jiffies` structure, also we know a little about `jiffies` and `clocksource`, now is time to get back to the implementation of the our function. In the beginning of this part we have stopped on the call of the:
+</code></pre>
+<pre><code class="language-C">register_refined_jiffies(CLOCK_TICK_RATE);
+</code></pre>
+<p>function from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c#L842">arch/x86/kernel/setup.c</a> source code file.</p>
+<p>As I already wrote, the main purpose of the <code>register_refined_jiffies</code> function is to register <code>refined_jiffies</code> clocksource. We already saw the <code>clocksource_jiffies</code> structure represents standard <code>jiffies</code> clock source. Now, if you look in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/jiffies.c">kernel/time/jiffies.c</a> source code file, you will find yet another clock source definition:</p>
+<pre><code class="language-C">struct clocksource refined_jiffies;
+</code></pre>
+<p>There is one different between <code>refined_jiffies</code> and <code>clocksource_jiffies</code>: The standard <code>jiffies</code> based clock source is the lowest common denominator clock source which should function on all systems. As we already know, the <code>jiffies</code> global variable will be increased during each timer interrupt. This means that standard <code>jiffies</code> based clock source has the same resolution as the timer interrupt frequency. From this we can understand that standard <code>jiffies</code> based clock source may suffer from inaccuracies. The <code>refined_jiffies</code> uses <code>CLOCK_TICK_RATE</code> as the base of <code>jiffies</code> shift.</p>
+<p>Let's look on the implementation of this function. First of all we can see that the <code>refined_jiffies</code> clock source based on the <code>clocksource_jiffies</code> structure:</p>
+<pre><code class="language-C">int register_refined_jiffies(long cycles_per_second)
+{
+	u64 nsec_per_tick, shift_hz;
+	long cycles_per_tick;
+
+	refined_jiffies = clocksource_jiffies;
+	refined_jiffies.name = "refined-jiffies";
+	refined_jiffies.rating++;
+	...
+	...
+	...
+</code></pre>
+<p>Here we can see that we update the name of the <code>refined_jiffies</code> to <code>refined-jiffies</code> and increase the rating of this structure. As you remember, the <code>clocksource_jiffies</code> has rating - <code>1</code>, so our <code>refined_jiffies</code> clocksource will have rating - <code>2</code>. This means that the <code>refined_jiffies</code> will be best selection for clock source management code.</p>
+<p>In the next step we need to calculate number of cycles per one tick:</p>
+<pre><code class="language-C">cycles_per_tick = (cycles_per_second + HZ/2)/HZ;
+</code></pre>
+<p>Note that we have used <code>NSEC_PER_SEC</code> macro as the base of the standard <code>jiffies</code> multiplier. Here we are using the <code>cycles_per_second</code> which is the first parameter of the <code>register_refined_jiffies</code> function. We've passed the <code>CLOCK_TICK_RATE</code> macro to the <code>register_refined_jiffies</code> function. This macro definied in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/timex.h">arch/x86/include/asm/timex.h</a> header file and expands to the:</p>
+<pre><code class="language-C">#define CLOCK_TICK_RATE         PIT_TICK_RATE
+</code></pre>
+<p>where the <code>PIT_TICK_RATE</code> macro expands to the frequency of the [Intel 8253](Programmable interval timer):</p>
+<pre><code class="language-C">#define PIT_TICK_RATE 1193182ul
+</code></pre>
+<p>After this we calculate <code>shift_hz</code> for the <code>register_refined_jiffies</code> that will store <code>hz &lt;&lt; 8</code> or in other words frequency of the system timer. We shift left the <code>cycles_per_second</code> or frequency of the programmable interval timer on <code>8</code> in order to get extra accuracy:</p>
+<pre><code class="language-C">shift_hz = (u64)cycles_per_second &lt;&lt; 8;
+shift_hz += cycles_per_tick/2;
+do_div(shift_hz, cycles_per_tick);
+</code></pre>
+<p>In the next step we calculate the number of seconds per one tick by shifting left the <code>NSEC_PER_SEC</code> on <code>8</code> too as we did it with the <code>shift_hz</code> and do the same calculation as before:</p>
+<pre><code class="language-C">nsec_per_tick = (u64)NSEC_PER_SEC &lt;&lt; 8;
+nsec_per_tick += (u32)shift_hz/2;
+do_div(nsec_per_tick, (u32)shift_hz);
+</code></pre>
+<pre><code class="language-C">refined_jiffies.mult = ((u32)nsec_per_tick) &lt;&lt; JIFFIES_SHIFT;
+</code></pre>
+<p>In the end of the <code>register_refined_jiffies</code> function we register new clock source with the <code>__clocksource_register</code> function that defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/clocksource.h">include/linux/clocksource.h</a> header file and return:</p>
+<pre><code class="language-C">__clocksource_register(&amp;refined_jiffies);
+return 0;
+</code></pre>
+<p>The clock source management code provides the API for clock source registration and selection. As we can see, clock sources are registered by calling the <code>__clocksource_register</code> function during kernel initialization or from a kernel module. During registration, the clock source management code will choose the best clock source available in the system using the <code>clocksource.rating</code> field which we already saw when we initialized <code>clocksource</code> structure for <code>jiffies</code>.</p>
+<h2 id="using-the-jiffies">Using the jiffies</h2>
+<p>We just saw initialization of two <code>jiffies</code> based clock sources in the previous paragraph:</p>
+<ul>
+<li>standard <code>jiffies</code> based clock source;</li>
+<li>refined <code>jiffies</code> based clock source;</li>
+</ul>
+<p>Don't worry if you don't understand the calculations here. They look frightening at first. Soon, step by step we will learn these things. So, we just saw initialization of <code>jffies</code> based clock sources and also we know that the Linux kernel has the global variable <code>jiffies</code> that holds the number of ticks that have occurred since the kernel started to work. Now, let's look how to use it. To use <code>jiffies</code> we just can use <code>jiffies</code> global variable by its name or with the call of the <code>get_jiffies_64</code> function. This function defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/jiffies.c">kernel/time/jiffies.c</a> source code file and just returns full <code>64-bit</code> value of the <code>jiffies</code>:</p>
+<pre><code class="language-C">u64 get_jiffies_64(void)
+{
+	unsigned long seq;
+	u64 ret;
+
+	do {
+		seq = read_seqbegin(&amp;jiffies_lock);
+		ret = jiffies_64;
+	} while (read_seqretry(&amp;jiffies_lock, seq));
+	return ret;
+}
+EXPORT_SYMBOL(get_jiffies_64);
+</code></pre>
+<p>Note that the <code>get_jiffies_64</code> function does not implemented as <code>jiffies_read</code> for example:</p>
+<pre><code class="language-C">static cycle_t jiffies_read(struct clocksource *cs)
+{
+	return (cycle_t) jiffies;
+}
+</code></pre>
+<p>We can see that implementation of the <code>get_jiffies_64</code> is more complex. The reading of the <code>jiffies_64</code> variable is implemented using <a href="https://en.wikipedia.org/wiki/Seqlock">seqlocks</a>. Actually this is done for machines that cannot atomically read the full 64-bit values.</p>
+<p>If we can access the <code>jiffies</code> or the <code>jiffies_64</code> variable we can convert it to <code>human</code> time units. To get one second we can use following expression:</p>
+<pre><code class="language-C">jiffies / HZ
+</code></pre>
+<p>So, if we know this, we can get any time units. For example:</p>
+<pre><code class="language-C">/* Thirty seconds from now */
+jiffies + 30*HZ
+
+/* Two minutes from now */
+jiffies + 120*HZ
+
+/* One millisecond from now */
+jiffies + HZ / 1000
+</code></pre>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This concludes the first part covering time and time management related concepts in the Linux kernel. We met first two concepts and its initialization in this part: <code>jiffies</code> and <code>clocksource</code>. In the next part we will continue to dive into this interesting theme and as I already wrote in this part we will acquainted and try to understand insides of these and other time management concepts in the Linux kernel.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/System_call">system call</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Transmission_Control_Protocol">TCP</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Cgroups">cgroups</a></li>
+<li><a href="https://en.wikipedia.org/wiki/.bss">bss</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Initrd">initrd</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Mobile_Internet_device#Intel_MID_platforms">Intel MID</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Time_Stamp_Counter">TSC</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Void_type">void</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Simple_Firmware_Interface">Simple Firmware Interface</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Real-time_clock">real time clock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Jiffy_%28time%29">Jiffy</a></li>
+<li><a href="https://en.wikipedia.org/wiki/High_Precision_Event_Timer">high precision event timer</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Nanosecond">nanoseconds</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Intel_8253">Intel 8253</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Seqlock">seqlocks</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/timers/timekeeping.txt">cloksource documentation</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/index.html">Previous chapter</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/65/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/65/index.html">更先进的Java - Java 8指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/41.html">winterbe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9341个">9341</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/143/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/intellij_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/143/index.html">IntelliJ IDEA 简体中文专题教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/76.html">judasn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="intellij">intellij</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">43页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10995个">10995</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/25/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7493;var bookPageRelUrl ='Timers/timers-1.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

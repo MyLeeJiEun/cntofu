@@ -1,0 +1,728 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Nexus 私有maven仓库-从0到1实战微服务架构</title>
+<meta content='Nexus 私有maven仓库,从0到1实战微服务架构' name='keywords'>
+<meta content='Nexus 私有maven仓库,从0到1实战微服务架构' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/205/toolchain/gerrit.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">gerrit 代码的版..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/205/toolchain/bom.html">
+<span class="">BOM 减少版本冲突</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/205/index.html">从0到1实战微服务架构</a>
+<a target="_blank" rel="nofollow" href="https://github.com/skyline75489/hands-on-microservices" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="nexus-私有maven仓库">Nexus 私有maven仓库</h1>
+<p>依赖管理是技术栈的重要一环，几乎所有的现代编程语言都拥有自己的依赖管理系统。</p>
+<p>如果你在很久以前就从事了Java开发，或者参与过一些"不太正规"的项目，一定经历有过"jar包随便拷、jar包满天飞"的经历。在这种情况下，每次上线发布、升级jar包都是非常痛苦的事情。</p>
+<p>大概从2003年开始，构建工具逐渐走入Java开发者的视野，Maven是构建工具中应用最为广泛的工具之一，它在提供构建功能的同时，也自带了强大的依赖管理功能。采用maven后，我们只需要定义xml就可以自动下载依赖的jar包，而不需要"手动将jar包拷来拷去"。</p>
+<p>近几年来，作为一种更高效的构建工具 - Gradle - 逐渐崛起，在一些开发领域(如Android)，Gradle已经完全取代了Maven成为事实上的构建标准。</p>
+<p>尽管从构建工具的角度而言，Maven的地位有所下降，但它在Java依赖管理子领域的地位却不容撼动。Gradle默认也是直接采取Maven的依赖管理框架(只不过换为更简便的描述语言)。</p>
+<p>在<a href="architecture/README.html">架构概览</a>一章中，我们已经说明：在选型上，我们使用Gradle作为构建工具，但依然采用Maven来管理依赖。</p>
+<p>在Maven的依赖管理方面，我们将使用Nexus搭建私有Maven服务器。为什么要搭建私服呢？</p>
+<p>这和为什么搭建私有Git服务器却不用GitHub公开仓库是一个道理：没有公司愿意将自己的代码暴露给全世界:-)</p>
+<h2 id="nexus仓库的基本配置">Nexus仓库的基本配置</h2>
+<p>与前两节类似，我们首先在Kubernetes上部署Nexus服务。</p>
+<p>创建之前，先在物理机上创建Volume挂载点:</p>
+<pre><code class="language-shell">minikube ssh
+
+$sudo mkdir /data/nexus
+$sudo chmod -R 777 /data/nexus/
+</code></pre>
+<p>这里因为nexus需要有一个文件锁，默认权限是不够的，我们给了777权限，如果你觉得过于宽松，可以自行更改Kubernetes的启动用户，并设定相应权限。</p>
+<p>看一下部署文件, nexus-deployment.yaml:</p>
+<pre><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexus-deployment
+spec:
+  selector:
+    matchLabels:
+      app: nexus
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nexus
+    spec:
+      restartPolicy: Always 
+      nodeSelector:
+        kubernetes.io/hostname: minikube 
+      containers:
+      - name: nexus-ct
+        image: sonatype/nexus:2.14.8
+        ports:
+        - containerPort: 8081
+          hostPort: 8081 
+        volumeMounts:
+        - mountPath: "../../../sonatype-work"
+          name: volume 
+      volumes:
+      - name: volume 
+        hostPath:
+          path: /data/nexus/
+</code></pre>
+<p>部署一下:</p>
+<pre><code class="language-shell">kubectl apply -f ./nexus-deployment.yaml
+</code></pre>
+<p>一切顺利的话，稍等一会访问"http://192.168.99.100:8081/nexus"，部署成功，如下图所示:</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-welcome.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-welcome.png" alt="nexus部署成功" title="nexus部署成功"></a></p>
+<h2 id="nexus接入ldap帐号">Nexus接入LDAP帐号</h2>
+<p>服务虽然好了，但还没有接入LDAP帐号系统，Nexus中接入LDAP帐号较为繁琐，请耐心操作完。</p>
+<p>首先，设置一下LDAP的连接配置。</p>
+<ol>
+<li>使用默认管理员帐号登录，用户名admin，密码admin123</li>
+<li>点击左侧菜单"Security" -&gt; "LDAP Configuration"</li>
+<li>设置LDAP配置如下</li>
+<li>Protocol: ldap</li>
+<li>Hostname: 192.168.99.100</li>
+<li>SearchBase: dc=coder4,dc=com</li>
+<li>Authentication Method: Simple Authentication</li>
+<li>Username: cn=guest,dc=coder4,dc=com</li>
+<li>Password: guest123</li>
+<li>Base DN: ou=users</li>
+<li>Object Class: inetOrgPerson</li>
+<li>User ID Attribute: cn</li>
+<li>Real Name Attribute: sn</li>
+<li>E-Mail Attribute: mail</li>
+<li>Group Element Mapping: 不选中</li>
+</ol>
+<p>上述配置稍显繁琐，请耐心完成。都配置完成后，点击"Save"。</p>
+<p>此外，点击底部的"Check User Mapping"，如果一切配置正确，可以展示所有的列表，如下图所示。</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-ldap-config.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-ldap-config.png" alt="nexus配置ldap帐号接入" title="nexus配置ldap帐号接入"></a></p>
+<p>第二步，下面我们来更改默认认证方式为LDAP。</p>
+<p>点击左侧菜单"Administration" -&gt; "Server"，进行如下配置:</p>
+<ol>
+<li>在Security Settings中，将右侧的"OSS LDAP Authentication Realm"加入到左边，并将其拖动到最顶部。</li>
+<li>取消勾选"Anoymous Access"。</li>
+</ol>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-auth-config.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-auth-config.png" alt="配置认证方式为LDAP" title="配置认证方式为LDAP"></a></p>
+<p>配置可以参考上图，设置好后，点击"Save"。</p>
+<p>最后，我们需要对所有用户配置权限，注意，每次LDAP新接入用户后，都要执行下述操作。</p>
+<p>点击左侧菜单"Security" -&gt; "Users" ，执行下述操作:</p>
+<ol>
+<li>点击"All Configured Users"旁边的小箭头，选择"LDAP"</li>
+<li>点击"Refresh"，此时就能拿到所有LDAP中的用户了。</li>
+<li>选中一个要操作的用户，例如"lihy"，选择底部的"Config"，然后"Role Management"。</li>
+<li>一般用户给"Nexus Deployment Role"就可以了，管理员可以给"Nexus Administrator Role"。</li>
+<li>设置好后点击"Save"</li>
+</ol>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-role.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-role.png" alt="nexus给用户权限" title="nexus给用户权限"></a></p>
+<p>一个配置好的结果如上图所示。</p>
+<p>至此，我们已经成功接入了LDAP，试着用配置好的用户登录下，发现可以登录成功。</p>
+<h2 id="配置nexus中央仓库的缓存">配置Nexus中央仓库的缓存</h2>
+<p>Maven依赖仓库也是分布式，我们最长用的，是"Maven Central"这个中央仓库。</p>
+<p>我们建议将中央仓库的索引缓存到Nexus私服上，这大约需要20GB的空间。</p>
+<p>使用管理员帐号登录后，点击左侧菜单"View/Repositories":</p>
+<ol>
+<li>选择"Repositories"</li>
+<li>在右侧选择"Central"这个仓库</li>
+<li>底部"Configuration"配置</li>
+<li>Remote Storage Location: http://maven.aliyun.com/nexus/content/repositories/central/ (这里我们使用了阿里云的国内镜像以加快速度)</li>
+<li>Download Remote Indexes: True</li>
+<li>最后点击底部的"Save"</li>
+</ol>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-maven-central-cache.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-maven-central-cache.png" alt="nexus私服配置maven中央仓库缓存" title="nexusa中央仓库缓存配置"></a></p>
+<p>缓存的时间比较长，在我的虚拟机上，花费了20分钟。进度可以在这里查看，左侧菜单"Administration" -&gt; "Logging" 选择Log, 可以看到目前还在缓存:</p>
+<pre><code class="language-shell">2018-05-28 08:40:19,792+0000 INFO  [pxpool-1-thread-1] admin org.sonatype.nexus.index.DefaultIndexerManager - Trying to get remote index for repository "Central" [id=central]
+</code></pre>
+<p>等缓存成功后，在本地仓库的"Browse Index中"，应当能看到与中央仓库一样的目录结构，如下图所示：</p>
+<p><a href="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-maven-central-cache.png" data-uk-lightbox><img src="https://img.cntofu.com/book/hands-on-microservices/toolchain/nexus-maven-central-cache.png" alt="nexus私服中查看中央仓库结构" title="nexus私服中查看仓库结构"></a></p>
+<p>至此，我们成功架设了基于Nexus的Maven私有仓库，集成了LDAP登录，并缓存了Maven中央仓库。</p>
+<h2 id="如何在gradle中应用私有仓库">如何在Gradle中应用私有仓库</h2>
+<p>在配置了私有仓库后，我们还需要在微服务项目中启用这个私有仓库。</p>
+<p>这大致需要2步</p>
+<ol>
+<li>配置maven私有仓库用户名和密码</li>
+<li>build.gradle中配置</li>
+</ol>
+<p>下面我们分别看一下</p>
+<h2 id="配置maven私有仓库用户名和米按摩">配置Maven私有仓库用户名和米按摩</h2>
+<pre><code class="language-shell">vim ~/.m2/settings.xml
+
+# 新增如下内容
+&lt;settings&gt;
+    &lt;servers&gt;
+        &lt;server&gt;
+            &lt;id&gt;nexus_coder4&lt;/id&gt;
+            &lt;username&gt;lihy&lt;/username&gt;
+            &lt;password&gt;pass&lt;/password&gt;
+        &lt;/server&gt;
+    &lt;/servers&gt;
+    &lt;mirrors&gt;
+        &lt;mirror&gt;
+            &lt;!--This sends everything else to /public --&gt;
+            &lt;id&gt;nexus_coder4&lt;/id&gt;
+            &lt;mirrorOf&gt;central&lt;/mirrorOf&gt;
+            &lt;url&gt;http://192.168.99.100:8081/content/groups/public&lt;/url&gt;
+        &lt;/mirror&gt;
+    &lt;/mirrors&gt;
+    &lt;profiles&gt;
+        &lt;profile&gt;
+            &lt;id&gt;nexus_coder4&lt;/id&gt;
+            &lt;!--Enable snapshots for the built in central repo to direct --&gt;
+            &lt;repositories&gt;
+                &lt;repository&gt;
+                    &lt;id&gt;central&lt;/id&gt;
+                    &lt;url&gt;http://192.168.99.100:8081/content/groups/public&lt;/url&gt;
+                    &lt;releases&gt;&lt;enabled&gt;true&lt;/enabled&gt;&lt;/releases&gt;
+                    &lt;snapshots&gt;&lt;enabled&gt;true&lt;/enabled&gt;&lt;/snapshots&gt;
+                &lt;/repository&gt;
+            &lt;/repositories&gt;
+            &lt;pluginRepositories&gt;
+                &lt;pluginRepository&gt;
+                    &lt;id&gt;central&lt;/id&gt;
+                    &lt;url&gt;http://192.168.99.100:8081/content/groups/public&lt;/url&gt;
+                    &lt;releases&gt;&lt;enabled&gt;true&lt;/enabled&gt;&lt;/releases&gt;
+                    &lt;snapshots&gt;&lt;enabled&gt;true&lt;/enabled&gt;&lt;/snapshots&gt;
+                &lt;/pluginRepository&gt;
+            &lt;/pluginRepositories&gt;
+        &lt;/profile&gt;
+    &lt;/profiles&gt;
+    &lt;activeProfiles&gt;
+        &lt;activeProfile&gt;nexus_coder4&lt;/activeProfile&gt;
+    &lt;/activeProfiles&gt;
+&lt;/settings&gt;
+
+</code></pre>
+<p>如上，我们新增了私有仓库的地址、用户配置，如果你觉得在文件中直接"裸写"密码不安全，可以参考<a href="https://maven.apache.org/guides/mini/guide-encryption.html#How_to_encrypt_server_passwords">maven密码加密方法</a>。</p>
+<p>下面，我们在build.gradle中配置：</p>
+<pre><code class="language-build.gradle">buildscript {
+
+    repositories {
+        maven { url 'http://maven.aliyun.com/nexus/content/groups/public' }
+        maven { url 'https://jitpack.io' }
+    }
+
+    dependencies {
+        // version just for plugin, not important
+        classpath("org.springframework.boot:spring-boot-gradle-plugin:1.5.6.RELEASE")
+    }
+}
+
+subprojects {
+
+    apply plugin: 'java'
+    apply plugin: 'idea'
+    apply plugin: 'maven'
+    apply plugin: 'org.springframework.boot'
+
+    sourceCompatibility = 1.8
+    targetCompatibility = 1.8
+
+    group = 'com.coder4.lmsia'
+    version = '0.0.1'
+
+    repositories {
+        maven {
+            credentials {
+                username "$mavenUser"
+                password "$mavenPass"
+            }
+            url 'http://192.168.99.100:8081/nexus/content/groups/public'
+        }
+        mavenLocal()
+    }
+
+    // maven deploy config start
+    configurations {
+        deployerJars
+    }
+
+    uploadArchives {
+        repositories.mavenDeployer {
+            configuration = configurations.deployerJars
+            repository(url: "http://192.168.99.100:8081/nexus/content/repositories/releases/") {
+                authentication(userName: "$mavenUser", password: "$mavenPass")
+            }
+            snapshotRepository(url: "http://192.168.99.100:8081/nexus/content/repositories/snapshots/") {
+                authentication(userName: "$mavenUser", password: "$mavenPass")
+            }
+        }
+    }
+
+    // maven deploy config end
+
+}
+</code></pre>
+<p>如上，build.gradle主要进行如下配置:</p>
+<ul>
+<li>子项目的仓库，采用私有仓库</li>
+<li>子项目发布包时，也发布到私有仓库上</li>
+</ul>
+<p>至此，我们成功地将maven私有仓库应用到了gradle的微服务上。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/187/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/187/index.html">软件开发的工程化</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 112个">112</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/116/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/116/index.html">Protocol Buffer 3学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/138/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/138/index.html">开发经验总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 641个">641</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/12/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/swift_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/12/index.html">Swift 官方教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/8.html">numbbbbb</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="swift">swift</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 18022个">18022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/13/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/13/index.html">Go实战开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2789个">2789</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/199/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/199/index.html">什么是 Markdown</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">38页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/205/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/README.html" title="从0到1实战微服务架构" data-book-page-rel-url="README.html" data-book-page-id="13723">从0到1实战微服务架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/README.html" title="架构概览" data-book-page-rel-url="architecture/README.html" data-book-page-id="13724">架构概览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/architecture/overview.html" title="微服务架构概览" data-book-page-rel-url="architecture/overview.html" data-book-page-id="13725">微服务架构概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/devops.html" title="运维技术链概览" data-book-page-rel-url="architecture/devops.html" data-book-page-id="13726">运维技术链概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/microservics.html" title="微服务技术栈概览" data-book-page-rel-url="architecture/microservics.html" data-book-page-id="13727">微服务技术栈概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/toolchain.html" title="研发工具链概览" data-book-page-rel-url="architecture/toolchain.html" data-book-page-id="13728">研发工具链概览</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/README.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/README.html" data-book-page-id="13729">微服务的自动发现与负载均衡</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/k8s-intro.html" title="Kubernetes 快速入门" data-book-page-rel-url="ms-discovery/k8s-intro.html" data-book-page-id="13730">Kubernetes 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/msd.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/msd.html" data-book-page-id="13731">微服务的自动发现与负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/README.html" title="微服务的开发框架" data-book-page-rel-url="spring-boot/README.html" data-book-page-id="13732">微服务的开发框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-gradle-structure.html" title="Gradle子项目划分与微服务的代码结构" data-book-page-rel-url="spring-boot/sb-gradle-structure.html" data-book-page-id="13733">Gradle子项目划分与微服务的代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-thrift.html" title="Spring Boot整合Thrift RPC" data-book-page-rel-url="spring-boot/sb-thrift.html" data-book-page-id="13734">Spring Boot整合Thrift RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-rest.html" title="Spring Boot整合REST服务" data-book-page-rel-url="spring-boot/sb-rest.html" data-book-page-id="13735">Spring Boot整合REST服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-mockito.html" title="Mockito 单元测试打桩神器" data-book-page-rel-url="spring-boot/sb-mockito.html" data-book-page-id="13736">Mockito 单元测试打桩神器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/README.html" title="微服务的存储与缓存" data-book-page-rel-url="ms-storage/README.html" data-book-page-id="13737">微服务的存储与缓存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/mysql-devops.html" title="MySQL 数据库的运维" data-book-page-rel-url="ms-storage/mysql-devops.html" data-book-page-id="13738">MySQL 数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-mysql.html" title="Spring Boot整合MySQL" data-book-page-rel-url="ms-storage/sb-mysql.html" data-book-page-id="13739">Spring Boot整合MySQL</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/memcached-devops.html" title="Memcached 缓存服务的运维" data-book-page-rel-url="ms-storage/memcached-devops.html" data-book-page-id="13740">Memcached 缓存服务的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-memcached.html" title="Spring Boot整合Memcached" data-book-page-rel-url="ms-storage/sb-memcached.html" data-book-page-id="13741">Spring Boot整合Memcached</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/redis-devops.html" title="Redis 内存数据库的运维" data-book-page-rel-url="ms-storage/redis-devops.html" data-book-page-id="13742">Redis 内存数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-redis.html" title="Spring Boot整合Redis" data-book-page-rel-url="ms-storage/sb-redis.html" data-book-page-id="13743">Spring Boot整合Redis</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/README.html" title="微服务的消息队列" data-book-page-rel-url="ms-msgq/README.html" data-book-page-id="13744">微服务的消息队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rabbitmq-devops.html" title="RabbitMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rabbitmq-devops.html" data-book-page-id="13745">RabbitMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rabitmq.html" title="Spring Boot整合RabbitMQ" data-book-page-rel-url="ms-msgq/sb-rabitmq.html" data-book-page-id="13746">Spring Boot整合RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rocketmq-devops.html" title="RocketMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rocketmq-devops.html" data-book-page-id="13747">RocketMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rocketmq.html" title="Spring Boot整合RocketMQ" data-book-page-rel-url="ms-msgq/sb-rocketmq.html" data-book-page-id="13748">Spring Boot整合RocketMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/kafka-devops.html" title="Kafka 流处理平台的运维" data-book-page-rel-url="ms-msgq/kafka-devops.html" data-book-page-id="13749">Kafka 流处理平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/dev-kafka.html" title="Kafka 流处理开发简介" data-book-page-rel-url="ms-msgq/dev-kafka.html" data-book-page-id="13750">Kafka 流处理开发简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/README.html" title="微服务日志监控" data-book-page-rel-url="ms-log/README.html" data-book-page-id="13751">微服务日志监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-logback.html" title="Spring Boot配置Logback日志" data-book-page-rel-url="ms-log/sb-logback.html" data-book-page-id="13752">Spring Boot配置Logback日志</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-trace.html" title="Spring Boot整合分布式追踪" data-book-page-rel-url="ms-log/sb-trace.html" data-book-page-id="13753">Spring Boot整合分布式追踪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/elk-devops.html" title="ELK日志分析平台的运维" data-book-page-rel-url="ms-log/elk-devops.html" data-book-page-id="13754">ELK日志分析平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-eblk.html" title="Spring Boot整合EBLK日志分析平台" data-book-page-rel-url="ms-log/sb-eblk.html" data-book-page-id="13755">Spring Boot整合EBLK日志分析平台</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/README.html" title="微服务平台监控" data-book-page-rel-url="ms-monitor/README.html" data-book-page-id="13756">微服务平台监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sentry-devops.html" title="Sentry 错误预警系统的运维" data-book-page-rel-url="ms-monitor/sentry-devops.html" data-book-page-id="13757">Sentry 错误预警系统的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sb-sentry.html" title="Spring Boot整合Sentry" data-book-page-rel-url="ms-monitor/sb-sentry.html" data-book-page-id="13758">Spring Boot整合Sentry</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/k8s-prometheus-grafana.html" title="Kubernetes + Prometheus + Grafana平台监控" data-book-page-rel-url="ms-monitor/k8s-prometheus-grafana.html" data-book-page-id="13759">Kubernetes + Prometheus + Grafana平台监控</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/README.html" title="微服务配置中心" data-book-page-rel-url="ms-config/README.html" data-book-page-id="13760">微服务配置中心</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/cfg4j.html" title="cfg4j及方案简介" data-book-page-rel-url="ms-config/cfg4j.html" data-book-page-id="13761">cfg4j及方案简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/sb-config.html" title="Spring Boot整合配置中心" data-book-page-rel-url="ms-config/sb-config.html" data-book-page-id="13762">Spring Boot整合配置中心</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/README.html" title="微服务熔断与限流" data-book-page-rel-url="ms-circuit-breaker-and-limit/README.html" data-book-page-id="13763">微服务熔断与限流</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-hystrix.html" title="熔断与Hystrix" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-hystrix.html" data-book-page-id="13764">熔断与Hystrix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-limit.html" title="限流的实现" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-limit.html" data-book-page-id="13765">限流的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/README.html" title="微服务持续交付" data-book-page-rel-url="ms-delivery/README.html" data-book-page-id="13766">微服务持续交付</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/jenkins-devops.html" title="Jenkins平台的运维" data-book-page-rel-url="ms-delivery/jenkins-devops.html" data-book-page-id="13767">Jenkins平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-ci.html" title="Jenkins持续集成" data-book-page-rel-url="ms-delivery/ms-ci.html" data-book-page-id="13768">Jenkins持续集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-cd.html" title="Jenkins持续部署" data-book-page-rel-url="ms-delivery/ms-cd.html" data-book-page-id="13769">Jenkins持续部署</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/README.html" title="研发工具链" data-book-page-rel-url="toolchain/README.html" data-book-page-id="13770">研发工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/ldap.html" title="LDAP 内部账号管理系统" data-book-page-rel-url="toolchain/ldap.html" data-book-page-id="13771">LDAP 内部账号管理系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/gerrit.html" title="gerrit 代码的版本管理与评审" data-book-page-rel-url="toolchain/gerrit.html" data-book-page-id="13772">gerrit 代码的版本管理与评审</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/nexus.html" title="Nexus 私有maven仓库" data-book-page-rel-url="toolchain/nexus.html" data-book-page-id="13773">Nexus 私有maven仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/bom.html" title="BOM 减少版本冲突" data-book-page-rel-url="toolchain/bom.html" data-book-page-id="13774">BOM 减少版本冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-template.html" title="Spring Boot 项目模板" data-book-page-rel-url="toolchain/spring-boot-template.html" data-book-page-id="13775">Spring Boot 项目模板</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-scripts.html" title="开发效率脚本" data-book-page-rel-url="toolchain/spring-boot-scripts.html" data-book-page-id="13776">开发效率脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/stress-test.html" title="打压工具" data-book-page-rel-url="toolchain/stress-test.html" data-book-page-id="13777">打压工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/README.html" title="运维工具链" data-book-page-rel-url="devops/README.html" data-book-page-id="13778">运维工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/devops/docker-repo.html" title="Docker 私有仓库" data-book-page-rel-url="devops/docker-repo.html" data-book-page-id="13779">Docker 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/discovery.html" title="Nginx REST 网关自动配置" data-book-page-rel-url="devops/discovery.html" data-book-page-id="13780">Nginx REST 网关自动配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/k8s-cluster.html" title="搭建Kubernetes集群" data-book-page-rel-url="devops/k8s-cluster.html" data-book-page-id="13781">搭建Kubernetes集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/openvpn-k8s.html" title="OpenVPN访问Kubernetes集群内网" data-book-page-rel-url="devops/openvpn-k8s.html" data-book-page-id="13782">OpenVPN访问Kubernetes集群内网</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/jump-server.html" title="线上跳板机" data-book-page-rel-url="devops/jump-server.html" data-book-page-id="13783">线上跳板机</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =205;var bookPageId =13773;var bookPageRelUrl ='toolchain/nexus.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

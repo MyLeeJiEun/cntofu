@@ -1,0 +1,538 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Spring Boot 使用 FastDFS-Spring Boot 开源电子书</title>
+<meta content='Spring Boot 使用 FastDFS,Spring Boot 开源电子书' name='keywords'>
+<meta content='Spring Boot 使用 FastDFS,Spring Boot 开源电子书' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/87/middleware/spring-boot-rabbitmq.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Spring Boot..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/87/depoly/spring-boot-deploy.html">
+<span class="">Spring Boot..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/87/index.html">Spring Boot 开源电子书</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ityouknow/spring-boot-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<p>上篇文章介绍了<a href="http://www.ityouknow.com/springboot/2018/01/12/spring-boot-upload-file.html">如何使用Spring Boot上传文件</a>，这篇文章我们介绍如何使用Spring Boot将文件上传到分布式文件系统FastDFS中。</p>
+<p>这个项目会在上一个项目的基础上进行构建。</p>
+<h2 id="1pom包配置">1、pom包配置</h2>
+<p>我们使用Spring Boot最新版本1.5.9、jdk使用1.8、tomcat8.0。</p>
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.csource&lt;/groupId&gt;
+    &lt;artifactId&gt;fastdfs-client-java&lt;/artifactId&gt;
+    &lt;version&gt;1.27-SNAPSHOT&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+<p>加入了<code>fastdfs-client-java</code>包，用来调用FastDFS相关的API。</p>
+<h2 id="2配置文件">2、配置文件</h2>
+<p>resources目录下添加<code>fdfs_client.conf</code>文件</p>
+<pre><code class="language-java">connect_timeout = 60
+network_timeout = 60
+charset = UTF-8
+http.tracker_http_port = 8080
+http.anti_steal_token = no
+http.secret_key = 123456
+
+tracker_server = 192.168.53.85:22122
+tracker_server = 192.168.53.86:22122
+</code></pre>
+<p>配置文件设置了连接的超时时间，编码格式以及tracker_server地址等信息</p>
+<p>详细内容参考：<a href="https://github.com/happyfish100/fastdfs-client-java">fastdfs-client-java</a></p>
+<h2 id="3封装fastdfs上传工具类">3、封装FastDFS上传工具类</h2>
+<p>封装FastDFSFile，文件基础信息包括文件名、内容、文件类型、作者等。</p>
+<pre><code class="language-java">public class FastDFSFile {
+    private String name;
+    private byte[] content;
+    private String ext;
+    private String md5;
+    private String author;
+    //省略getter、setter
+</code></pre>
+<p>封装FastDFSClient类，包含常用的上传、下载、删除等方法。</p>
+<p>首先在类加载的时候读取相应的配置信息，并进行初始化。</p>
+<pre><code class="language-java">static {
+    try {
+        String filePath = new ClassPathResource("fdfs_client.conf").getFile().getAbsolutePath();;
+        ClientGlobal.init(filePath);
+        trackerClient = new TrackerClient();
+        trackerServer = trackerClient.getConnection();
+        storageServer = trackerClient.getStoreStorage(trackerServer);
+    } catch (Exception e) {
+        logger.error("FastDFS Client Init Fail!",e);
+    }
+}
+</code></pre>
+<p><strong>文件上传</strong></p>
+<pre><code class="language-java">public static String[] upload(FastDFSFile file) {
+    logger.info("File Name: " + file.getName() + "File Length:" + file.getContent().length);
+
+    NameValuePair[] meta_list = new NameValuePair[1];
+    meta_list[0] = new NameValuePair("author", file.getAuthor());
+
+    long startTime = System.currentTimeMillis();
+    String[] uploadResults = null;
+    try {
+        storageClient = new StorageClient(trackerServer, storageServer);
+        uploadResults = storageClient.upload_file(file.getContent(), file.getExt(), meta_list);
+    } catch (IOException e) {
+        logger.error("IO Exception when uploadind the file:" + file.getName(), e);
+    } catch (Exception e) {
+        logger.error("Non IO Exception when uploadind the file:" + file.getName(), e);
+    }
+    logger.info("upload_file time used:" + (System.currentTimeMillis() - startTime) + " ms");
+
+    if (uploadResults == null) {
+        logger.error("upload file fail, error code:" + storageClient.getErrorCode());
+    }
+    String groupName = uploadResults[0];
+    String remoteFileName = uploadResults[1];
+
+    logger.info("upload file successfully!!!" + "group_name:" + groupName + ", remoteFileName:" + " " + remoteFileName);
+    return uploadResults;
+}
+</code></pre>
+<p>使用FastDFS提供的客户端storageClient来进行文件上传，最后将上传结果返回。</p>
+<p>根据groupName和文件名获取文件信息。</p>
+<pre><code class="language-java">public static FileInfo getFile(String groupName, String remoteFileName) {
+    try {
+        storageClient = new StorageClient(trackerServer, storageServer);
+        return storageClient.get_file_info(groupName, remoteFileName);
+    } catch (IOException e) {
+        logger.error("IO Exception: Get File from Fast DFS failed", e);
+    } catch (Exception e) {
+        logger.error("Non IO Exception: Get File from Fast DFS failed", e);
+    }
+    return null;
+}
+</code></pre>
+<p><strong>下载文件</strong></p>
+<pre><code class="language-java">public static InputStream downFile(String groupName, String remoteFileName) {
+    try {
+        storageClient = new StorageClient(trackerServer, storageServer);
+        byte[] fileByte = storageClient.download_file(groupName, remoteFileName);
+        InputStream ins = new ByteArrayInputStream(fileByte);
+        return ins;
+    } catch (IOException e) {
+        logger.error("IO Exception: Get File from Fast DFS failed", e);
+    } catch (Exception e) {
+        logger.error("Non IO Exception: Get File from Fast DFS failed", e);
+    }
+    return null;
+}
+</code></pre>
+<p><strong>删除文件</strong></p>
+<pre><code class="language-java">public static void deleteFile(String groupName, String remoteFileName)
+        throws Exception {
+    storageClient = new StorageClient(trackerServer, storageServer);
+    int i = storageClient.delete_file(groupName, remoteFileName);
+    logger.info("delete file successfully!!!" + i);
+}
+</code></pre>
+<p>使用FastDFS时，直接调用FastDFSClient对应的方法即可。</p>
+<h2 id="4编写上传控制类">4、编写上传控制类</h2>
+<p>从MultipartFile中读取文件信息，然后使用FastDFSClient将文件上传到FastDFS集群中。</p>
+<pre><code class="language-java">public String saveFile(MultipartFile multipartFile) throws IOException {
+    String[] fileAbsolutePath={};
+    String fileName=multipartFile.getOriginalFilename();
+    String ext = fileName.substring(fileName.lastIndexOf(".") + 1);
+    byte[] file_buff = null;
+    InputStream inputStream=multipartFile.getInputStream();
+    if(inputStream!=null){
+        int len1 = inputStream.available();
+        file_buff = new byte[len1];
+        inputStream.read(file_buff);
+    }
+    inputStream.close();
+    FastDFSFile file = new FastDFSFile(fileName, file_buff, ext);
+    try {
+        fileAbsolutePath = FastDFSClient.upload(file);  //upload to fastdfs
+    } catch (Exception e) {
+        logger.error("upload file Exception!",e);
+    }
+    if (fileAbsolutePath==null) {
+        logger.error("upload file failed,please upload again!");
+    }
+    String path=FastDFSClient.getTrackerUrl()+fileAbsolutePath[0]+ "../../../"+fileAbsolutePath[1];
+    return path;
+}
+</code></pre>
+<p>请求控制，调用上面方法<code>saveFile()</code>。</p>
+<pre><code class="language-java">@PostMapping("../../../upload") //new annotation since 4.3
+public String singleFileUpload(@RequestParam("file") MultipartFile file,
+                               RedirectAttributes redirectAttributes) {
+    if (file.isEmpty()) {
+        redirectAttributes.addFlashAttribute("message", "Please select a file to upload");
+        return "redirect:uploadStatus";
+    }
+    try {
+        // Get the file and save it somewhere
+        String path=saveFile(file);
+        redirectAttributes.addFlashAttribute("message",
+                "You successfully uploaded '" + file.getOriginalFilename() + "'");
+        redirectAttributes.addFlashAttribute("path",
+                "file path url '" + path + "'");
+    } catch (Exception e) {
+        logger.error("upload file failed",e);
+    }
+    return "redirect:/uploadStatus";
+}
+</code></pre>
+<p>上传成功之后，将文件的路径展示到页面，效果图如下：</p>
+<p><a href="http://www.ityouknow.com/assets/images/2018/fastdfs/fastDfs_sucees.png" data-uk-lightbox><img src="http://www.ityouknow.com/assets/images/2018/fastdfs/fastDfs_sucees.png" alt=""></a></p>
+<p>在浏览器中访问此Url，可以看到成功通过FastDFS展示：</p>
+<p><a href="http://www.ityouknow.com/assets/images/2018/fastdfs/fastDfs_pic.png" data-uk-lightbox><img src="http://www.ityouknow.com/assets/images/2018/fastdfs/fastDfs_pic.png" alt=""></a></p>
+<blockquote>
+<p>这样使用Spring Boot 集成FastDFS的案例就完成了。</p>
+</blockquote>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/79/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/79/index.html">SpringBoot学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/50.html">clsaa</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/81/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/81/index.html">《SpringBoot参考指南》中文翻译 基于1.5.7 RELEASE</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/52.html">wangjingjing</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">100页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/12/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/swift_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/12/index.html">Swift 官方教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/8.html">numbbbbb</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="swift">swift</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 18022个">18022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/171/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/171/index.html">[译] 写给不耐烦程序员的 JavaScript</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 145个">145</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/113/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/react_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/113/index.html">React Native中文文档0.51版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="react">react</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">118页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/99/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/99/index.html">ECMAScript 6入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/87/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="6818">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/about.html" title="关于" data-book-page-rel-url="about.html" data-book-page-id="6819">关于</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 入门" disabled data-book-page-rel-url="spring-boot-start/README.html" data-book-page-id="6820">Spring Boot 入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-start/spring-boot-quick-start.html" title="快速了解 Spring Boot" data-book-page-rel-url="spring-boot-start/spring-boot-quick-start.html" data-book-page-id="6821">快速了解 Spring Boot</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-start/spring-boot-web.html" title="Spring Boot Web 开发入门" data-book-page-rel-url="spring-boot-start/spring-boot-web.html" data-book-page-id="6822">Spring Boot Web 开发入门</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot Web 编程" disabled data-book-page-rel-url="spring-boot-web/README.html" data-book-page-id="6823">Spring Boot Web 编程</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-thymeleaf.html" title="Spring Boot 使用 Thymeleaf" data-book-page-rel-url="spring-boot-web/spring-boot-thymeleaf.html" data-book-page-id="6824">Spring Boot 使用 Thymeleaf</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-jpa-thymeleaf.html" title="Spring Boot Jpa  Thymeleaf 增删改查示例" data-book-page-rel-url="spring-boot-web/spring-boot-jpa-thymeleaf.html" data-book-page-id="6825">Spring Boot Jpa Thymeleaf 增删改查示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-upload-file.html" title="Spring Boot 上传文件" data-book-page-rel-url="spring-boot-web/spring-boot-upload-file.html" data-book-page-id="6826">Spring Boot 上传文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-schedule.html" title="Spring Boot 使用定时任务" data-book-page-rel-url="spring-boot-web/spring-boot-schedule.html" data-book-page-id="6827">Spring Boot 使用定时任务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-mail.html" title="Spring Boot 发送邮件" data-book-page-rel-url="spring-boot-web/spring-boot-mail.html" data-book-page-id="6828">Spring Boot 发送邮件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-web/spring-boot-shiro.html" title="Spring Boot 使用 Shiro" data-book-page-rel-url="spring-boot-web/spring-boot-shiro.html" data-book-page-id="6829">Spring Boot 使用 Shiro</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 和数据库" disabled data-book-page-rel-url="spring-boot-data/README.html" data-book-page-id="6830">Spring Boot 和数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-mybatis.html" title="Spring Boot 使用 Mybatis" data-book-page-rel-url="spring-boot-data/spring-boot-mybatis.html" data-book-page-id="6831">Spring Boot 使用 Mybatis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-multi-mybatis.html" title="Spring Boot 多数据源使用 Mybatis" data-book-page-rel-url="spring-boot-data/spring-boot-multi-mybatis.html" data-book-page-id="6832">Spring Boot 多数据源使用 Mybatis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-jpa.html" title="Spring Boot 使用 Jpa" data-book-page-rel-url="spring-boot-data/spring-boot-jpa.html" data-book-page-id="6833">Spring Boot 使用 Jpa</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/spring-boot-data/spring-boot-mongodb.html" title="Spring Boot 使用 MongoDB" data-book-page-rel-url="spring-boot-data/spring-boot-mongodb.html" data-book-page-id="6834">Spring Boot 使用 MongoDB</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Spring Boot 和中间件" disabled data-book-page-rel-url="middleware/README.html" data-book-page-id="6835">Spring Boot 和中间件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-redis.html" title="Spring Boot 使用 Redis" data-book-page-rel-url="middleware/spring-boot-redis.html" data-book-page-id="6836">Spring Boot 使用 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-rabbitmq.html" title="Spring Boot 使用 RabbitMQ" data-book-page-rel-url="middleware/spring-boot-rabbitmq.html" data-book-page-id="6837">Spring Boot 使用 RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/middleware/spring-boot-fastdfs.html" title="Spring Boot 使用 FastDFS" data-book-page-rel-url="middleware/spring-boot-fastdfs.html" data-book-page-id="6838">Spring Boot 使用 FastDFS</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="部署监控" disabled data-book-page-rel-url="depoly/depoly.html" data-book-page-id="6839">部署监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-deploy.html" title="Spring Boot 如何测试打包部署" data-book-page-rel-url="depoly/spring-boot-deploy.html" data-book-page-id="6840">Spring Boot 如何测试打包部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-actuator.html" title="Spring Boot Actuator 监控应用" data-book-page-rel-url="depoly/spring-boot-actuator.html" data-book-page-id="6841">Spring Boot Actuator 监控应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/87/depoly/spring-boot-admin.html" title="Spring Boot Admin 监控多个应用" data-book-page-rel-url="depoly/spring-boot-admin.html" data-book-page-id="6842">Spring Boot Admin 监控多个应用</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =87;var bookPageId =6838;var bookPageRelUrl ='middleware/spring-boot-fastdfs.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

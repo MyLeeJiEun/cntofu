@@ -1,0 +1,396 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>01. 组件版本和集群环境-和我一步步部署 kubernetes 集群</title>
+<meta content='01. 组件版本和集群环境,和我一步步部署 kubernetes 集群' name='keywords'>
+<meta content='01. 组件版本和集群环境,和我一步步部署 kubernetes 集群' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/111/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Introduction</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/111/02-创建CA证书和秘钥.html">
+<span class="">02. 创建 CA 证..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/111/index.html">和我一步步部署 kubernetes 集群</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/follow-me-install-kubernetes-cluster" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<p>tags: kubernetes, environment</p>
+<h1 id="组件版本和集群环境">组件版本和集群环境</h1>
+<h2 id="集群组件和版本">集群组件和版本</h2>
+<ul>
+<li>Kubernetes 1.6.2</li>
+<li>Docker 17.04.0-ce</li>
+<li>Etcd 3.1.6</li>
+<li>Flanneld 0.7.1 vxlan 网络</li>
+<li>TLS 认证通信 (所有组件，如 etcd、kubernetes master 和 node)</li>
+<li>RBAC 授权</li>
+<li>kubelet TLS BootStrapping</li>
+<li>kubedns、dashboard、heapster (influxdb、grafana)、EFK (elasticsearch、fluentd、kibana) 插件</li>
+<li>私有 docker registry，使用 ceph rgw 后端存储，TLS + HTTP Basic 认证</li>
+</ul>
+<h2 id="集群机器">集群机器</h2>
+<ul>
+<li>10.64.3.7</li>
+<li>10.64.3.8</li>
+<li>10.66.3.86</li>
+</ul>
+<p>本着测试的目的，etcd 集群、kubernetes master 集群、kubernetes node 均使用这三台机器。</p>
+<blockquote>
+<p>若有安装 Vagrant 与 Virtualbox，这三台机器可以用本着提供的 Vagrantfile 来建置：</p>
+</blockquote>
+<pre><code class="language-bash">$ cd vagrant
+$ vagrant up
+</code></pre>
+<h2 id="集群环境变量">集群环境变量</h2>
+<p>后续的部署步骤将使用下面定义的全局环境变量，根据<strong>自己的机器、网络情况</strong>修改：</p>
+<pre><code class="language-bash"># TLS Bootstrapping 使用的 Token，可以使用命令 head -c 16 /dev/urandom | od -An -t x | tr -d ' ' 生成
+BOOTSTRAP_TOKEN="41f7e4ba8b7be874fcff18bf5cf41a7c"
+
+# 建议用 未用的网段 来定义服务网段和 Pod 网段
+
+# 服务网段 (Service CIDR），部署前路由不可达，部署后集群内使用 IP:Port 可达
+SERVICE_CIDR="10.254.0.0/16"
+
+# POD 网段 (Cluster CIDR），部署前路由不可达，**部署后**路由可达 (flanneld 保证)
+CLUSTER_CIDR="172.30.0.0/16"
+
+# 服务端口范围 (NodePort Range)
+NODE_PORT_RANGE="8400-9000"
+
+# etcd 集群服务地址列表
+ETCD_ENDPOINTS="https://10.64.3.7:2379,https://10.64.3.8:2379,https://10.66.3.86:2379"
+
+# flanneld 网络配置前缀
+FLANNEL_ETCD_PREFIX="../../kubernetes/network"
+
+# kubernetes 服务 IP (预分配，一般是 SERVICE_CIDR 中第一个IP)
+CLUSTER_KUBERNETES_SVC_IP="10.254.0.1"
+
+# 集群 DNS 服务 IP (从 SERVICE_CIDR 中预分配)
+CLUSTER_DNS_SVC_IP="10.254.0.2"
+
+# 集群 DNS 域名
+CLUSTER_DNS_DOMAIN="cluster.local."
+</code></pre>
+<ul>
+<li>打包后的变量定义见 <a href="https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/manifests/environment.sh">environment.sh</a>，后续部署时会<strong>提示导入</strong>该脚本；</li>
+</ul>
+<h2 id="分发集群环境变量定义脚本">分发集群环境变量定义脚本</h2>
+<p>把全局变量定义脚本拷贝到<strong>所有</strong>机器的 <code>/root/local/bin</code> 目录：</p>
+<pre><code class="language-bash">$ cp environment.sh /root/local/bin
+$
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/89/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/67/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/132/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/vuejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/132/index.html">vue-router文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/71.html">srzyhead</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="vuejs">vuejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/4/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/4/index.html">Redux 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/4.html">camsong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">69页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2786个">2786</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/62/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/62/index.html">Google 深度学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/38.html">ahangchen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1243个">1243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/184/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/111/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7884">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/01-组件版本和集群环境.html" title="01. 组件版本和集群环境" data-book-page-rel-url="01-组件版本和集群环境.html" data-book-page-id="7885">01. 组件版本和集群环境</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/02-创建CA证书和秘钥.html" title="02. 创建 CA 证书和秘钥" data-book-page-rel-url="02-创建CA证书和秘钥.html" data-book-page-id="7886">02. 创建 CA 证书和秘钥</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/03-部署高可用Etcd集群.html" title="03. 部署高可用 Etcd 集群" data-book-page-rel-url="03-部署高可用Etcd集群.html" data-book-page-id="7887">03. 部署高可用 Etcd 集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/04-部署Kubectl命令行工具.html" title="04. 下载和配置 Kubectl 命令行工具" data-book-page-rel-url="04-部署Kubectl命令行工具.html" data-book-page-id="7888">04. 下载和配置 Kubectl 命令行工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/05-部署Flannel网络.html" title="05. 配置 Flannel 网络" data-book-page-rel-url="05-部署Flannel网络.html" data-book-page-id="7889">05. 配置 Flannel 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/06-部署Master节点.html" title="06. 部署 Master 节点" data-book-page-rel-url="06-部署Master节点.html" data-book-page-id="7890">06. 部署 Master 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/07-部署Node节点.html" title="07. 部署 Node 节点" data-book-page-rel-url="07-部署Node节点.html" data-book-page-id="7891">07. 部署 Node 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/08-部署DNS插件.html" title="08. 部署 DNS 插件" data-book-page-rel-url="08-部署DNS插件.html" data-book-page-id="7892">08. 部署 DNS 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/09-部署Dashboard插件.html" title="09. 部署 Dashboard 插件" data-book-page-rel-url="09-部署Dashboard插件.html" data-book-page-id="7893">09. 部署 Dashboard 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/10-部署Heapster插件.html" title="10. 部署 Heapster 插件" data-book-page-rel-url="10-部署Heapster插件.html" data-book-page-id="7894">10. 部署 Heapster 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/11-部署EFK插件.html" title="11. 部署 EFK 插件" data-book-page-rel-url="11-部署EFK插件.html" data-book-page-id="7895">11. 部署 EFK 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/12-部署Docker-Registry.html" title="12. 部署 Docker Registry" data-book-page-rel-url="12-部署Docker-Registry.html" data-book-page-id="7896">12. 部署 Docker Registry</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/13-部署harbor私有仓库.html" title="13. 部署 Harbor 私有仓库" data-book-page-rel-url="13-部署harbor私有仓库.html" data-book-page-id="7897">13. 部署 Harbor 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/14-清理集群.html" title="14. 清理集群" data-book-page-rel-url="14-清理集群.html" data-book-page-id="7898">14. 清理集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/tags.html" title="标签" data-book-page-rel-url="tags.html" data-book-page-id="7899">标签</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =111;var bookPageId =7885;var bookPageRelUrl ='01-组件版本和集群环境.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

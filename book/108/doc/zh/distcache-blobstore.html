@@ -1,0 +1,998 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Blobstore(Distcahce)-Apache Storm 官方文档中文版</title>
+<meta content='Blobstore(Distcahce),Apache Storm 官方文档中文版' name='keywords'>
+<meta content='Blobstore(Distcahce),Apache Storm 官方文档中文版' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/108/doc/zh/Joins.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Joining Str..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/108/doc/zh/dynamic-log-level-settings.html">
+<span class="">Dynamic Log..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/108/index.html">Apache Storm 官方文档中文版</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/storm-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<hr>
+<h2 id="title-storm-distributed-cache-apilayout-documentationdocumentation-true">title: Storm Distributed Cache API layout: documentation documentation: true</h2>
+<h1 id="storm-distributed-cache-api">Storm Distributed Cache API</h1>
+<p>The distributed cache feature in storm is used to efficiently distribute files (or blobs, which is the equivalent terminology for a file in the distributed cache and is used interchangeably in this document) that are large and can change during the lifetime of a topology, such as geo-location data, dictionaries, etc. Typical use cases include phrase recognition, entity extraction, document classification, URL re-writing, location/address detection and so forth. Such files may be several KB to several GB in size. For small datasets that don't need dynamic updates, including them in the topology jar could be fine. But for large files, the startup times could become very large. In these cases, the distributed cache feature can provide fast topology startup, especially if the files were previously downloaded for the same submitter and are still in the cache. This is useful with frequent deployments, sometimes few times a day with updated jars, because the large cached files will remain available without changes. The large cached blobs that do not change frequently will remain available in the distributed cache.</p>
+<p>At the starting time of a topology, the user specifies the set of files the topology needs. Once a topology is running, the user at any time can request for any file in the distributed cache to be updated with a newer version. The updating of blobs happens in an eventual consistency model. If the topology needs to know what version of a file it has access to, it is the responsibility of the user to find this information out. The files are stored in a cache with Least-Recently Used (LRU) eviction policy, where the supervisor decides which cached files are no longer needed and can delete them to free disk space. The blobs can be compressed, and the user can request the blobs to be uncompressed before it accesses them.</p>
+<h2 id="motivation-for-distributed-cache">Motivation for Distributed Cache</h2>
+<ul>
+<li>Allows sharing blobs among topologies.</li>
+<li>Allows updating the blobs from the command line.</li>
+</ul>
+<h2 id="distributed-cache-implementations">Distributed Cache Implementations</h2>
+<p>The current BlobStore interface has the following two implementations</p>
+<ul>
+<li>LocalFsBlobStore</li>
+<li>HdfsBlobStore</li>
+</ul>
+<p>Appendix A contains the interface for blobstore implementation.</p>
+<h2 id="localfsblobstore">LocalFsBlobStore</h2>
+<p><a href="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/local_blobstore.png" data-uk-lightbox><img src="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/local_blobstore.png" alt="LocalFsBlobStore"></a></p>
+<p>Local file system implementation of Blobstore can be depicted in the above timeline diagram.</p>
+<p>There are several stages from blob creation to blob download and corresponding execution of a topology. The main stages can be depicted as follows</p>
+<h3 id="blob-creation-command">Blob Creation Command</h3>
+<p>Blobs in the blobstore can be created through command line using the following command.</p>
+<pre><code>storm blobstore create --file README.txt --acl o::rwa --replication-factor 4 key1
+</code></pre>
+<p>The above command creates a blob with a key name “key1” corresponding to the file README.txt. The access given to all users being read, write and admin with a replication factor of 4.</p>
+<h3 id="topology-submission-and-blob-mapping">Topology Submission and Blob Mapping</h3>
+<p>Users can submit their topology with the following command. The command includes the topology map configuration. The configuration holds two keys “key1” and “key2” with the key “key1” having a local file name mapping named “blob_file” and it is not compressed.</p>
+<pre><code>storm jar /home/y/lib/storm-starter/current/storm-starter-jar-with-dependencies.jar 
+org.apache.storm.starter.clj.word_count test_topo -c topology.blobstore.map='{"key1":{"localname":"blob_file", "uncompress":"false"},"key2":{}}'
+</code></pre>
+<h3 id="blob-creation-process">Blob Creation Process</h3>
+<p>The creation of the blob takes place through the interface “ClientBlobStore”. Appendix B contains the “ClientBlobStore” interface. The concrete implementation of this interface is the “NimbusBlobStore”. In the case of local file system the client makes a call to the nimbus to create the blobs within the local file system. The nimbus uses the local file system implementation to create these blobs. When a user submits a topology, the jar, configuration and code files are uploaded as blobs with the help of blobstore. Also, all the other blobs specified by the topology are mapped to it with the help of topology.blobstore.map configuration.</p>
+<h3 id="blob-download-by-the-supervisor">Blob Download by the Supervisor</h3>
+<p>Finally, the blobs corresponding to a topology are downloaded by the supervisor once it receives the assignments from the nimbus through the same “NimbusBlobStore” thrift client that uploaded the blobs. The supervisor downloads the code, jar and conf blobs by calling the “NimbusBlobStore” client directly while the blobs specified in the topology.blobstore.map are downloaded and mapped locally with the help of the Localizer. The Localizer talks to the “NimbusBlobStore” thrift client to download the blobs and adds the blob compression and local blob name mapping logic to suit the implementation of a topology. Once all the blobs have been downloaded the workers are launched to run the topologies.</p>
+<h2 id="hdfsblobstore">HdfsBlobStore</h2>
+<p><a href="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/hdfs_blobstore.png" data-uk-lightbox><img src="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/hdfs_blobstore.png" alt="HdfsBlobStore"></a></p>
+<p>The HdfsBlobStore functionality has a similar implementation and blob creation and download procedure barring how the replication is handled in the two blobstore implementations. The replication in HDFS blobstore is obvious as HDFS is equipped to handle replication and it requires no state to be stored inside the zookeeper. On the other hand, the local file system blobstore requires the state to be stored on the zookeeper in order for it to work with nimbus HA. Nimbus HA allows the local filesystem to implement the replication feature seamlessly by storing the state in the zookeeper about the running topologies and syncing the blobs on various nimbuses. On the supervisor’s end, the supervisor and localizer talks to HdfsBlobStore through “HdfsClientBlobStore” implementation.</p>
+<h2 id="additional-features-and-documentation">Additional Features and Documentation</h2>
+<pre><code>storm jar /home/y/lib/storm-starter/current/storm-starter-jar-with-dependencies.jar org.apache.storm.starter.clj.word_count test_topo 
+-c topology.blobstore.map='{"key1":{"localname":"blob_file", "uncompress":"false"},"key2":{}}'
+</code></pre>
+<h3 id="compression">Compression</h3>
+<p>The blobstore allows the user to specify the “uncompress” configuration to true or false. This configuration can be specified in the topology.blobstore.map mentioned in the above command. This allows the user to upload a compressed file like a tarball/zip. In local file system blobstore, the compressed blobs are stored on the nimbus node. The localizer code takes the responsibility to uncompress the blob and store it on the supervisor node. Symbolic links to the blobs on the supervisor node are created within the worker before the execution starts.</p>
+<h3 id="local-file-name-mapping">Local File Name Mapping</h3>
+<p>Apart from compression the blobstore helps to give the blob a name that can be used by the workers. The localizer takes the responsibility of mapping the blob to a local name on the supervisor node.</p>
+<h2 id="additional-blobstore-implementation-details">Additional Blobstore Implementation Details</h2>
+<p>Blobstore uses a hashing function to create the blobs based on the key. The blobs are generally stored inside the directory specified by the blobstore.dir configuration. By default, it is stored under “storm.local.dir/nimbus/blobs” for local file system and a similar path on hdfs file system.</p>
+<p>Once a file is submitted, the blobstore reads the configs and creates a metadata for the blob with all the access control details. The metadata is generally used for authorization while accessing the blobs. The blob key and version contribute to the hash code and there by the directory under “storm.local.dir/nimbus/blobs/data” where the data is placed. The blobs are generally placed in a positive number directory like 193,822 etc.</p>
+<p>Once the topology is launched and the relevant blobs have been created, the supervisor downloads blobs related to the storm.conf, storm.ser and storm.code first and all the blobs uploaded by the command line separately using the localizer to uncompress and map them to a local name specified in the topology.blobstore.map configuration. The supervisor periodically updates blobs by checking for the change of version. This allows updating the blobs on the fly and thereby making it a very useful feature.</p>
+<p>For a local file system, the distributed cache on the supervisor node is set to 10240 MB as a soft limit and the clean up code attempts to clean anything over the soft limit every 600 seconds based on LRU policy.</p>
+<p>The HDFS blobstore implementation handles load better by removing the burden on the nimbus to store the blobs, which avoids it becoming a bottleneck. Moreover, it provides seamless replication of blobs. On the other hand, the local file system blobstore is not very efficient in replicating the blobs and is limited by the number of nimbuses. Moreover, the supervisor talks to the HDFS blobstore directly without the involvement of the nimbus and thereby reduces the load and dependency on nimbus.</p>
+<h2 id="highly-available-nimbus">Highly Available Nimbus</h2>
+<h3 id="problem-statement">Problem Statement:</h3>
+<p>Currently the storm master aka nimbus, is a process that runs on a single machine under supervision. In most cases, the nimbus failure is transient and it is restarted by the process that does supervision. However sometimes when disks fail and networks partitions occur, nimbus goes down. Under these circumstances, the topologies run normally but no new topologies can be submitted, no existing topologies can be killed/deactivated/activated and if a supervisor node fails then the reassignments are not performed resulting in performance degradation or topology failures. With this project we intend, to resolve this problem by running nimbus in a primary backup mode to guarantee that even if a nimbus server fails one of the backups will take over.</p>
+<h3 id="requirements-for-highly-available-nimbus">Requirements for Highly Available Nimbus:</h3>
+<ul>
+<li>Increase overall availability of nimbus.</li>
+<li>Allow nimbus hosts to leave and join the cluster at will any time. A newly joined host should auto catch up and join the list of potential leaders automatically.</li>
+<li>No topology resubmissions required in case of nimbus fail overs.</li>
+<li>No active topology should ever be lost.</li>
+</ul>
+<h4 id="leader-election">Leader Election:</h4>
+<p>The nimbus server will use the following interface:</p>
+<pre><code class="language-java">public interface ILeaderElector {
+    /**
+     * queue up for leadership lock. The call returns immediately and the caller                     
+     * must check isLeader() to perform any leadership action.
+     */
+    void addToLeaderLockQueue();
+
+    /**
+     * Removes the caller from the leader lock queue. If the caller is leader
+     * also releases the lock.
+     */
+    void removeFromLeaderLockQueue();
+
+    /**
+     *
+     * @return true if the caller currently has the leader lock.
+     */
+    boolean isLeader();
+
+    /**
+     *
+     * @return the current leader's address , throws exception if noone has has    lock.
+     */
+    InetSocketAddress getLeaderAddress();
+
+    /**
+     * 
+     * @return list of current nimbus addresses, includes leader.
+     */
+    List&lt;InetSocketAddress&gt; getAllNimbusAddresses();
+}
+</code></pre>
+<p>Once a nimbus comes up it calls addToLeaderLockQueue() function. The leader election code selects a leader from the queue. If the topology code, jar or config blobs are missing, it would download the blobs from any other nimbus which is up and running.</p>
+<p>The first implementation will be Zookeeper based. If the zookeeper connection is lost/reset resulting in loss of lock or the spot in queue the implementation will take care of updating the state such that isLeader() will reflect the current status. The leader like actions must finish in less than minimumOf(connectionTimeout, SessionTimeout) to ensure the lock was held by nimbus for the entire duration of the action (Not sure if we want to just state this expectation and ensure that zk configurations are set high enough which will result in higher failover time or we actually want to create some sort of rollback mechanism for all actions, the second option needs a lot of code). If a nimbus that is not leader receives a request that only a leader can perform, it will throw a RunTimeException.</p>
+<h3 id="nimbus-state-store">Nimbus state store:</h3>
+<p>To achieve fail over from primary to backup servers nimbus state/data needs to be replicated across all nimbus hosts or needs to be stored in a distributed storage. Replicating the data correctly involves state management, consistency checks and it is hard to test for correctness. However many storm users do not want to take extra dependency on another replicated storage system like HDFS and still need high availability. The blobstore implementation along with the state storage helps to overcome the failover scenarios in case a leader nimbus goes down.</p>
+<p>To support replication we will allow the user to define a code replication factor which would reflect number of nimbus hosts to which the code must be replicated before starting the topology. With replication comes the issue of consistency. The topology is launched once the code, jar and conf blob files are replicated based on the "topology.min.replication" config. Maintaining state for failover scenarios is important for local file system. The current implementation makes sure one of the available nimbus is elected as a leader in the case of a failure. If the topology specific blobs are missing, the leader nimbus tries to download them as and when they are needed. With this current architecture, we do not have to download all the blobs required for a topology for a nimbus to accept leadership. This helps us in case the blobs are very large and avoid causing any inadvertant delays in electing a leader.</p>
+<p>The state for every blob is relevant for the local blobstore implementation. For HDFS blobstore the replication is taken care by the HDFS. For handling the fail over scenarios for a local blobstore we need to store the state of the leader and non-leader nimbuses within the zookeeper.</p>
+<p>The state is stored under /storm/blobstore/key/nimbusHostPort:SequenceNumber for the blobstore to work to make nimbus highly available. This state is used in the local file system blobstore to support replication. The HDFS blobstore does not have to store the state inside the zookeeper.</p>
+<ul>
+<li> <p>NimbusHostPort: This piece of information generally contains the parsed string holding the hostname and port of the nimbus. It uses the same class “NimbusHostPortInfo” used earlier by the code-distributor interface to store the state and parse the data.</p> </li>
+<li> <p>SequenceNumber: This is the blob sequence number information. The SequenceNumber information is implemented by a KeySequenceNumber class. The sequence numbers are generated for every key. For every update, the sequence numbers are assigned based ona global sequence number stored under /storm/blobstoremaxsequencenumber/key. For more details about how the numbers are generated you can look at the java docs for KeySequenceNumber.</p> </li>
+</ul>
+<p><a href="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/nimbus_ha_blobstore.png" data-uk-lightbox><img src="https://img.cntofu.com/book/storm-doc-zh/doc/zh/images/nimbus_ha_blobstore.png" alt="Nimbus High Availability - BlobStore"></a></p>
+<p>The sequence diagram proposes how the blobstore works and the state storage inside the zookeeper makes the nimbus highly available. Currently, the thread to sync the blobs on a non-leader is within the nimbus. In the future, it will be nice to move the thread around to the blobstore to make the blobstore coordinate the state change and blob download as per the sequence diagram.</p>
+<h2 id="thrift-and-rest-api">Thrift and Rest API</h2>
+<p>In order to avoid workers/supervisors/ui talking to zookeeper for getting master nimbus address we are going to modify the <code>getClusterInfo</code> API so it can also return nimbus information. getClusterInfo currently returns <code>ClusterSummary</code> instance which has a list of <code>supervisorSummary</code> and a list of <code>topologySummary</code> instances. We will add a list of <code>NimbusSummary</code> to the <code>ClusterSummary</code>. See the structures below:</p>
+<pre><code>struct ClusterSummary {
+  1: required list&lt;SupervisorSummary&gt; supervisors;
+  3: required list&lt;TopologySummary&gt; topologies;
+  4: required list&lt;NimbusSummary&gt; nimbuses;
+}
+
+struct NimbusSummary {
+  1: required string host;
+  2: required i32 port;
+  3: required i32 uptime_secs;
+  4: required bool isLeader;
+  5: required string version;
+}
+</code></pre>
+<p>This will be used by StormSubmitter, Nimbus clients, supervisors and ui to discover the current leaders and participating nimbus hosts. Any nimbus host will be able to respond to these requests. The nimbus hosts can read this information once from zookeeper and cache it and keep updating the cache when the watchers are fired to indicate any changes,which should be rare in general case.</p>
+<p>Note: All nimbus hosts have watchers on zookeeper to be notified immediately as soon as a new blobs is available for download, the callback may or may not download the code. Therefore, a background thread is triggered to download the respective blobs to run the topologies. The replication is achieved when the blobs are downloaded onto non-leader nimbuses. So you should expect your topology submission time to be somewhere between 0 to (2 * nimbus.code.sync.freq.secs) for any nimbus.min.replication.count &gt; 1.</p>
+<h2 id="configuration">Configuration</h2>
+<pre><code>blobstore.dir: The directory where all blobs are stored. For local file system it represents the directory on the nimbus
+node and for HDFS file system it represents the hdfs file system path.
+
+supervisor.blobstore.class: This configuration is meant to set the client for  the supervisor  in order to talk to the blobstore. 
+For a local file system blobstore it is set to “org.apache.storm.blobstore.NimbusBlobStore” and for the HDFS blobstore it is set 
+to “org.apache.storm.blobstore.HdfsClientBlobStore”.
+
+supervisor.blobstore.download.thread.count: This configuration spawns multiple threads for from the supervisor in order download 
+blobs concurrently. The default is set to 5
+
+supervisor.blobstore.download.max_retries: This configuration is set to allow the supervisor to retry for the blob download. 
+By default it is set to 3.
+
+supervisor.localizer.cache.target.size.mb: The jvm opts provided to workers launched by this supervisor. All "%ID%" substrings 
+are replaced with an identifier for this worker. Also, "%WORKER-ID%", "%STORM-ID%" and "%WORKER-PORT%" are replaced with 
+appropriate runtime values for this worker. The distributed cache target size in MB. This is a soft limit to the size 
+of the distributed cache contents. It is set to 10240 MB.
+
+supervisor.localizer.cleanup.interval.ms: The distributed cache cleanup interval. Controls how often it scans to attempt to 
+cleanup anything over the cache target size. By default it is set to 600000 milliseconds.
+
+nimbus.blobstore.class:  Sets the blobstore implementation nimbus uses. It is set to "org.apache.storm.blobstore.LocalFsBlobStore"
+
+nimbus.blobstore.expiration.secs: During operations with the blobstore, via master, how long a connection is idle before nimbus 
+considers it dead and drops the session and any associated connections. The default is set to 600.
+
+storm.blobstore.inputstream.buffer.size.bytes: The buffer size it uses for blobstore upload. It is set to 65536 bytes.
+
+client.blobstore.class: The blobstore implementation the storm client uses. The current implementation uses the default 
+config "org.apache.storm.blobstore.NimbusBlobStore".
+
+blobstore.replication.factor: It sets the replication for each blob within the blobstore. The “topology.min.replication.count” 
+ensures the minimum replication the topology specific blobs are set before launching the topology. You might want to set the 
+“topology.min.replication.count &lt;= blobstore.replication”. The default is set to 3.
+
+topology.min.replication.count : Minimum number of nimbus hosts where the code must be replicated before leader nimbus
+can mark the topology as active and create assignments. Default is 1.
+
+topology.max.replication.wait.time.sec: Maximum wait time for the nimbus host replication to achieve the nimbus.min.replication.count.
+Once this time is elapsed nimbus will go ahead and perform topology activation tasks even if required nimbus.min.replication.count is not achieved. 
+The default is 60 seconds, a value of -1 indicates to wait for ever.
+* nimbus.code.sync.freq.secs: Frequency at which the background thread on nimbus which syncs code for locally missing blobs. Default is 2 minutes.
+</code></pre>
+<h2 id="using-the-distributed-cache-api-command-line-interface-cli">Using the Distributed Cache API, Command Line Interface (CLI)</h2>
+<h3 id="creating-blobs">Creating blobs</h3>
+<p>To use the distributed cache feature, the user first has to "introduce" files that need to be cached and bind them to key strings. To achieve this, the user uses the "blobstore create" command of the storm executable, as follows:</p>
+<pre><code>storm blobstore create [-f|--file FILE] [-a|--acl ACL1,ACL2,...] [--replication-factor NUMBER] [keyname]
+</code></pre>
+<p>The contents come from a FILE, if provided by -f or --file option, otherwise from STDIN.<br> The ACLs, which can also be a comma separated list of many ACLs, is of the following format:</p>
+<pre><code>&gt; [u|o]:[username]:[r-|w-|a-|_]
+</code></pre>
+<p>where:</p>
+<ul>
+<li>u = user</li>
+<li>o = other</li>
+<li>username = user for this particular ACL</li>
+<li>r = read access</li>
+<li>w = write access</li>
+<li>a = admin access</li>
+<li>_ = ignored</li>
+</ul>
+<p>The replication factor can be set to a value greater than 1 using --replication-factor.</p>
+<p>Note: The replication right now is configurable for a hdfs blobstore but for a local blobstore the replication always stays at 1. For a hdfs blobstore the default replication is set to 3.</p>
+<h6 id="example">Example:</h6>
+<pre><code>storm blobstore create --file README.txt --acl o::rwa --replication-factor 4 key1
+</code></pre>
+<p>In the above example, the <em>README.txt</em> file is added to the distributed cache. It can be accessed using the key string "<em>key1</em>" for any topology that needs it. The file is set to have read/write/admin access for others, a.k.a world everything and the replication is set to 4.</p>
+<h6 id="example-1">Example:</h6>
+<pre><code>storm blobstore create mytopo:data.tgz -f data.tgz -a u:alice:rwa,u:bob:rw,o::r  
+</code></pre>
+<p>The above example createss a mytopo:data.tgz key using the data stored in data.tgz. User alice would have full access, bob would have read/write access and everyone else would have read access.</p>
+<h3 id="making-dist-cache-files-accessible-to-topologies">Making dist. cache files accessible to topologies</h3>
+<p>Once a blob is created, we can use it for topologies. This is generally achieved by including the key string among the configurations of a topology, with the following format. A shortcut is to add the configuration item on the command line when starting a topology by using the <strong>-c</strong> command:</p>
+<pre><code>-c topology.blobstore.map='{"[KEY]":{"localname":"[VALUE]", "uncompress":"[true|false]"}}'
+</code></pre>
+<p>Note: Please take care of the quotes.</p>
+<p>The cache file would then be accessible to the topology as a local file with the name [VALUE].<br> The localname parameter is optional, if omitted the local cached file will have the same name as [KEY].<br> The uncompress parameter is optional, if omitted the local cached file will not be uncompressed. Note that the key string needs to have the appropriate file-name-like format and extension, so it can be uncompressed correctly.</p>
+<h6 id="example-2">Example:</h6>
+<pre><code>storm jar /home/y/lib/storm-starter/current/storm-starter-jar-with-dependencies.jar org.apache.storm.starter.clj.word_count test_topo -c topology.blobstore.map='{"key1":{"localname":"blob_file", "uncompress":"false"},"key2":{}}'
+</code></pre>
+<p>Note: Please take care of the quotes.</p>
+<p>In the above example, we start the <em>word_count</em> topology (stored in the <em>storm-starter-jar-with-dependencies.jar</em> file), and ask it to have access to the cached file stored with key string = <em>key1</em>. This file would then be accessible to the topology as a local file called <em>blob_file</em>, and the supervisor will not try to uncompress the file. Note that in our example, the file's content originally came from <em>README.txt</em>. We also ask for the file stored with the key string = <em>key2</em> to be accessible to the topology. Since both the optional parameters are omitted, this file will get the local name = <em>key2</em>, and will not be uncompressed.</p>
+<h3 id="updating-a-cached-file">Updating a cached file</h3>
+<p>It is possible for the cached files to be updated while topologies are running. The update happens in an eventual consistency model, where the supervisors poll Nimbus every 30 seconds, and update their local copies. In the current version, it is the user's responsibility to check whether a new file is available.</p>
+<p>To update a cached file, use the following command. Contents come from a FILE or STDIN. Write access is required to be able to update a cached file.</p>
+<pre><code>storm blobstore update [-f|--file NEW_FILE] [KEYSTRING]
+</code></pre>
+<h6 id="example-3">Example:</h6>
+<pre><code>storm blobstore update -f updates.txt key1
+</code></pre>
+<p>In the above example, the topologies will be presented with the contents of the file <em>updates.txt</em> instead of <em>README.txt</em> (from the previous example), even though their access by the topology is still through a file called <em>blob_file</em>.</p>
+<h3 id="removing-a-cached-file">Removing a cached file</h3>
+<p>To remove a file from the distributed cache, use the following command. Removing a file requires write access.</p>
+<pre><code>storm blobstore delete [KEYSTRING]
+</code></pre>
+<h3 id="listing-blobs-currently-in-the-distributed-cache-blobstore">Listing Blobs currently in the distributed cache blobstore</h3>
+<pre><code>storm blobstore list [KEY...]
+</code></pre>
+<p>lists blobs currently in the blobstore</p>
+<h3 id="reading-the-contents-of-a-blob">Reading the contents of a blob</h3>
+<pre><code>storm blobstore cat [-f|--file FILE] KEY
+</code></pre>
+<p>read a blob and then either write it to a file, or STDOUT. Reading a blob requires read access.</p>
+<h3 id="setting-the-access-control-for-a-blob">Setting the access control for a blob</h3>
+<pre><code>set-acl [-s ACL] KEY
+</code></pre>
+<p>ACL is in the form [uo]:[username]:[r-][w-][a-] can be comma separated list (requires admin access).</p>
+<h3 id="update-the-replication-factor-for-a-blob">Update the replication factor for a blob</h3>
+<pre><code>storm blobstore replication --update --replication-factor 5 key1
+</code></pre>
+<h3 id="read-the-replication-factor-of-a-blob">Read the replication factor of a blob</h3>
+<pre><code>storm blobstore replication --read key1
+</code></pre>
+<h3 id="command-line-help">Command line help</h3>
+<pre><code>storm help blobstore
+</code></pre>
+<h2 id="using-the-distributed-cache-api-from-java">Using the Distributed Cache API from Java</h2>
+<p>We start by getting a ClientBlobStore object by calling this function:</p>
+<pre><code class="language-java">Config theconf = new Config();
+theconf.putAll(Utils.readStormConfig());
+ClientBlobStore clientBlobStore = Utils.getClientBlobStore(theconf);
+</code></pre>
+<p>The required Utils package can by imported by:</p>
+<pre><code class="language-java">import org.apache.storm.utils.Utils;
+</code></pre>
+<p>ClientBlobStore and other blob-related classes can be imported by:</p>
+<pre><code class="language-java">import org.apache.storm.blobstore.ClientBlobStore;
+import org.apache.storm.blobstore.AtomicOutputStream;
+import org.apache.storm.blobstore.InputStreamWithMeta;
+import org.apache.storm.blobstore.BlobStoreAclHandler;
+import org.apache.storm.generated.*;
+</code></pre>
+<h3 id="creating-acls-to-be-used-for-blobs">Creating ACLs to be used for blobs</h3>
+<pre><code class="language-java">String stringBlobACL = "u:username:rwa";
+AccessControl blobACL = BlobStoreAclHandler.parseAccessControl(stringBlobACL);
+List&lt;AccessControl&gt; acls = new LinkedList&lt;AccessControl&gt;();
+acls.add(blobACL); // more ACLs can be added here
+SettableBlobMeta settableBlobMeta = new SettableBlobMeta(acls);
+settableBlobMeta.set_replication_factor(4); // Here we can set the replication factor
+</code></pre>
+<p>The settableBlobMeta object is what we need to create a blob in the next step.</p>
+<h3 id="creating-a-blob">Creating a blob</h3>
+<pre><code class="language-java">AtomicOutputStream blobStream = clientBlobStore.createBlob("some_key", settableBlobMeta);
+blobStream.write("Some String or input data".getBytes());
+blobStream.close();
+</code></pre>
+<p>Note that the settableBlobMeta object here comes from the last step, creating ACLs. It is recommended that for very large files, the user writes the bytes in smaller chunks (for example 64 KB, up to 1 MB chunks).</p>
+<h3 id="updating-a-blob">Updating a blob</h3>
+<p>Similar to creating a blob, but we get the AtomicOutputStream in a different way:</p>
+<pre><code class="language-java">String blobKey = "some_key";
+AtomicOutputStream blobStream = clientBlobStore.updateBlob(blobKey);
+</code></pre>
+<p>Pass a byte stream to the returned AtomicOutputStream as before.</p>
+<h3 id="updating-the-acls-of-a-blob">Updating the ACLs of a blob</h3>
+<pre><code class="language-java">String blobKey = "some_key";
+AccessControl updateAcl = BlobStoreAclHandler.parseAccessControl("u:USER:--a");
+List&lt;AccessControl&gt; updateAcls = new LinkedList&lt;AccessControl&gt;();
+updateAcls.add(updateAcl);
+SettableBlobMeta modifiedSettableBlobMeta = new SettableBlobMeta(updateAcls);
+clientBlobStore.setBlobMeta(blobKey, modifiedSettableBlobMeta);
+
+//Now set write only
+updateAcl = BlobStoreAclHandler.parseAccessControl("u:USER:-w-");
+updateAcls = new LinkedList&lt;AccessControl&gt;();
+updateAcls.add(updateAcl);
+modifiedSettableBlobMeta = new SettableBlobMeta(updateAcls);
+clientBlobStore.setBlobMeta(blobKey, modifiedSettableBlobMeta);
+</code></pre>
+<h3 id="updating-and-reading-the-replication-of-a-blob">Updating and Reading the replication of a blob</h3>
+<pre><code class="language-java">String blobKey = "some_key";
+BlobReplication replication = clientBlobStore.updateBlobReplication(blobKey, 5);
+int replication_factor = replication.get_replication();
+</code></pre>
+<p>Note: The replication factor gets updated and reflected only for hdfs blobstore</p>
+<h3 id="reading-a-blob">Reading a blob</h3>
+<pre><code class="language-java">String blobKey = "some_key";
+InputStreamWithMeta blobInputStream = clientBlobStore.getBlob(blobKey);
+BufferedReader r = new BufferedReader(new InputStreamReader(blobInputStream));
+String blobContents =  r.readLine();
+</code></pre>
+<h3 id="deleting-a-blob">Deleting a blob</h3>
+<pre><code class="language-java">String blobKey = "some_key";
+clientBlobStore.deleteBlob(blobKey);
+</code></pre>
+<h3 id="getting-a-list-of-blob-keys-already-in-the-blobstore">Getting a list of blob keys already in the blobstore</h3>
+<pre><code class="language-java">Iterator &lt;String&gt; stringIterator = clientBlobStore.listKeys();
+</code></pre>
+<h2 id="appendix-a">Appendix A</h2>
+<pre><code class="language-java">public abstract void prepare(Map conf, String baseDir);
+
+public abstract AtomicOutputStream createBlob(String key, SettableBlobMeta meta, Subject who) throws AuthorizationException, KeyAlreadyExistsException;
+
+public abstract AtomicOutputStream updateBlob(String key, Subject who) throws AuthorizationException, KeyNotFoundException;
+
+public abstract ReadableBlobMeta getBlobMeta(String key, Subject who) throws AuthorizationException, KeyNotFoundException;
+
+public abstract void setBlobMeta(String key, SettableBlobMeta meta, Subject who) throws AuthorizationException, KeyNotFoundException;
+
+public abstract void deleteBlob(String key, Subject who) throws AuthorizationException, KeyNotFoundException;
+
+public abstract InputStreamWithMeta getBlob(String key, Subject who) throws AuthorizationException, KeyNotFoundException;
+
+public abstract Iterator&lt;String&gt; listKeys(Subject who);
+
+public abstract BlobReplication getBlobReplication(String key, Subject who) throws Exception;
+
+public abstract BlobReplication updateBlobReplication(String key, int replication, Subject who) throws AuthorizationException, KeyNotFoundException, IOException
+</code></pre>
+<h2 id="appendix-b">Appendix B</h2>
+<pre><code class="language-java">public abstract void prepare(Map conf);
+
+protected abstract AtomicOutputStream createBlobToExtend(String key, SettableBlobMeta meta) throws AuthorizationException, KeyAlreadyExistsException;
+
+public abstract AtomicOutputStream updateBlob(String key) throws AuthorizationException, KeyNotFoundException;
+
+public abstract ReadableBlobMeta getBlobMeta(String key) throws AuthorizationException, KeyNotFoundException;
+
+protected abstract void setBlobMetaToExtend(String key, SettableBlobMeta meta) throws AuthorizationException, KeyNotFoundException;
+
+public abstract void deleteBlob(String key) throws AuthorizationException, KeyNotFoundException;
+
+public abstract InputStreamWithMeta getBlob(String key) throws AuthorizationException, KeyNotFoundException;
+
+public abstract Iterator&lt;String&gt; listKeys();
+
+public abstract void watchBlob(String key, IBlobWatcher watcher) throws AuthorizationException;
+
+public abstract void stopWatchingBlob(String key) throws AuthorizationException;
+
+public abstract BlobReplication getBlobReplication(String Key) throws AuthorizationException, KeyNotFoundException;
+
+public abstract BlobReplication updateBlobReplication(String Key, int replication) throws AuthorizationException, KeyNotFoundException
+</code></pre>
+<h2 id="appendix-c">Appendix C</h2>
+<pre><code>service Nimbus {
+...
+string beginCreateBlob(1: string key, 2: SettableBlobMeta meta) throws (1: AuthorizationException aze, 2: KeyAlreadyExistsException kae);
+
+string beginUpdateBlob(1: string key) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+void uploadBlobChunk(1: string session, 2: binary chunk) throws (1: AuthorizationException aze);
+
+void finishBlobUpload(1: string session) throws (1: AuthorizationException aze);
+
+void cancelBlobUpload(1: string session) throws (1: AuthorizationException aze);
+
+ReadableBlobMeta getBlobMeta(1: string key) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+void setBlobMeta(1: string key, 2: SettableBlobMeta meta) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+BeginDownloadResult beginBlobDownload(1: string key) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+binary downloadBlobChunk(1: string session) throws (1: AuthorizationException aze);
+
+void deleteBlob(1: string key) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+ListBlobsResult listBlobs(1: string session);
+
+BlobReplication getBlobReplication(1: string key) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+
+BlobReplication updateBlobReplication(1: string key, 2: i32 replication) throws (1: AuthorizationException aze, 2: KeyNotFoundException knf);
+...
+}
+
+struct BlobReplication {
+1: required i32 replication;
+}
+
+exception AuthorizationException {
+ 1: required string msg;
+}
+
+exception KeyNotFoundException {
+ 1: required string msg;
+}
+
+exception KeyAlreadyExistsException {
+ 1: required string msg;
+}
+
+enum AccessControlType {
+ OTHER = 1,
+ USER = 2
+ //eventually ,GROUP=3
+}
+
+struct AccessControl {
+ 1: required AccessControlType type;
+ 2: optional string name; //Name of user or group in ACL
+ 3: required i32 access; //bitmasks READ=0x1, WRITE=0x2, ADMIN=0x4
+}
+
+struct SettableBlobMeta {
+ 1: required list&lt;AccessControl&gt; acl;
+ 2: optional i32 replication_factor
+}
+
+struct ReadableBlobMeta {
+ 1: required SettableBlobMeta settable;
+ //This is some indication of a version of a BLOB.  The only guarantee is
+ // if the data changed in the blob the version will be different.
+ 2: required i64 version;
+}
+
+struct ListBlobsResult {
+ 1: required list&lt;string&gt; keys;
+ 2: required string session;
+}
+
+struct BeginDownloadResult {
+ //Same version as in ReadableBlobMeta
+ 1: required i64 version;
+ 2: required string session;
+ 3: optional i64 data_size;
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/198/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/198/index.html">大数据入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/113.html">heibaiying</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">98页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/163/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/163/index.html">Git的奇技淫巧</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/92.html">jackfrued</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">77页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 28个">28</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/193/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/193/index.html">Pixi教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/109.html">Zainking</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2020年5月17日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/126/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/126/index.html">前端晚自修</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/125/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/125/index.html">前端早读课</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/55/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/rust_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/55/index.html">Rust 程序设计语言 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/31.html">hltj</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="rust">rust</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">71页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/108/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7785">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 基础" disabled data-book-page-rel-url="" data-book-page-id="7786">Storm 基础</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Javadoc.html" title="Javadoc" data-book-page-rel-url="doc/zh/Javadoc.html" data-book-page-id="7787">Javadoc</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Concepts.html" title="概念" data-book-page-rel-url="doc/zh/Concepts.html" data-book-page-id="7788">概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Storm-Scheduler.html" title="调度器" data-book-page-rel-url="doc/zh/Storm-Scheduler.html" data-book-page-id="7789">调度器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Configuration.html" title="配置" data-book-page-rel-url="doc/zh/Configuration.html" data-book-page-id="7790">配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Guaranteeing-message-processing.html" title="保证消息处理" data-book-page-rel-url="doc/zh/Guaranteeing-message-processing.html" data-book-page-id="7791">保证消息处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Daemon-Fault-Tolerance.html" title="Daemon（守护进程）容错" data-book-page-rel-url="doc/zh/Daemon-Fault-Tolerance.html" data-book-page-id="7792">Daemon（守护进程）容错</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Command-line-client.html" title="命令行 client（客户端）" data-book-page-rel-url="doc/zh/Command-line-client.html" data-book-page-id="7793">命令行 client（客户端）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/STORM-UI-REST-API.html" title="REST API" data-book-page-rel-url="doc/zh/STORM-UI-REST-API.html" data-book-page-id="7794">REST API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Understanding-the-parallelism-of-a-Storm-topology.html" title="理解 Storm topology 的 parallelism（并行度）" data-book-page-rel-url="doc/zh/Understanding-the-parallelism-of-a-Storm-topology.html" data-book-page-id="7795">理解 Storm topology 的 parallelism（并行度）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/FAQ.html" title="FAQ" data-book-page-rel-url="doc/zh/FAQ.html" data-book-page-id="7796">FAQ</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm Trident" disabled data-book-page-rel-url="" data-book-page-id="7797">Storm Trident</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Layers on Top of Storm" disabled data-book-page-rel-url="" data-book-page-id="7798">Layers on Top of Storm</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-tutorial.html" title="Trident 教程" data-book-page-rel-url="doc/zh/Trident-tutorial.html" data-book-page-id="7799">Trident 教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-API-Overview.html" title="Trident API 概述" data-book-page-rel-url="doc/zh/Trident-API-Overview.html" data-book-page-id="7800">Trident API 概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-state.html" title="Trident State（状态）" data-book-page-rel-url="doc/zh/Trident-state.html" data-book-page-id="7801">Trident State（状态）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-spouts.html" title="Trident spouts" data-book-page-rel-url="doc/zh/Trident-spouts.html" data-book-page-id="7802">Trident spouts</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Trident-RAS-API.html" title="Trident RAS API" data-book-page-rel-url="doc/zh/Trident-RAS-API.html" data-book-page-id="7803">Trident RAS API</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm SQL" disabled data-book-page-rel-url="" data-book-page-id="7804">Storm SQL</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql.html" title="Storm SQL 概述" data-book-page-rel-url="doc/zh/storm-sql.html" data-book-page-id="7805">Storm SQL 概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-example.html" title="Storm SQL 示例" data-book-page-rel-url="doc/zh/storm-sql-example.html" data-book-page-id="7806">Storm SQL 示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-reference.html" title="Storm SQL 文献" data-book-page-rel-url="doc/zh/storm-sql-reference.html" data-book-page-id="7807">Storm SQL 文献</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-sql-internal.html" title="Storm SQL 结构" data-book-page-rel-url="doc/zh/storm-sql-internal.html" data-book-page-id="7808">Storm SQL 结构</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Flux" disabled data-book-page-rel-url="" data-book-page-id="7809">Flux</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/flux.html" title="Flux Data Driven Topology Builder" data-book-page-rel-url="doc/zh/flux.html" data-book-page-id="7810">Flux Data Driven Topology Builder</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 安装和部署" disabled data-book-page-rel-url="" data-book-page-id="7811">Storm 安装和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Setting-up-a-Storm-cluster.html" title="安装一个 Storm 集群" data-book-page-rel-url="doc/zh/Setting-up-a-Storm-cluster.html" data-book-page-id="7812">安装一个 Storm 集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Local-mode.html" title="Local mode（本地模式）" data-book-page-rel-url="doc/zh/Local-mode.html" data-book-page-id="7813">Local mode（本地模式）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Troubleshooting.html" title="问题排查" data-book-page-rel-url="doc/zh/Troubleshooting.html" data-book-page-id="7814">问题排查</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Running-topologies-on-a-production-cluster.html" title="在生产 cluster（集群）上运行 topologies（拓扑）" data-book-page-rel-url="doc/zh/Running-topologies-on-a-production-cluster.html" data-book-page-id="7815">在生产 cluster（集群）上运行 topologies（拓扑）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Maven.html" title="构建 Storm with Maven" data-book-page-rel-url="doc/zh/Maven.html" data-book-page-id="7816">构建 Storm with Maven</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/SECURITY.html" title="安装 Secure（安全的）Cluster（集群）" data-book-page-rel-url="doc/zh/SECURITY.html" data-book-page-id="7817">安装 Secure（安全的）Cluster（集群）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/cgroups_in_storm.html" title="CGroup 的实施" data-book-page-rel-url="doc/zh/cgroups_in_storm.html" data-book-page-id="7818">CGroup 的实施</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Pacemaker.html" title="Pacemaker 针对大集群减低在 zookeeper 上的负载" data-book-page-rel-url="doc/zh/Pacemaker.html" data-book-page-id="7819">Pacemaker 针对大集群减低在 zookeeper 上的负载</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Resource_Aware_Scheduler_overview.html" title="Resource Aware Scheduler（资源意识调度器）" data-book-page-rel-url="doc/zh/Resource_Aware_Scheduler_overview.html" data-book-page-id="7820">Resource Aware Scheduler（资源意识调度器）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-metrics-profiling-internal-actions.html" title="Daemon Metrics/Monitoring（守护进程的度量/监控）" data-book-page-rel-url="doc/zh/storm-metrics-profiling-internal-actions.html" data-book-page-id="7821">Daemon Metrics/Monitoring（守护进程的度量/监控）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/windows-users-guide.html" title="Windows 平台的用户指南" data-book-page-rel-url="doc/zh/windows-users-guide.html" data-book-page-id="7822">Windows 平台的用户指南</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 中级" disabled data-book-page-rel-url="" data-book-page-id="7823">Storm 中级</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Serialization.html" title="Serialization（序列化）" data-book-page-rel-url="doc/zh/Serialization.html" data-book-page-id="7824">Serialization（序列化）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Common-patterns.html" title="Common patterns（常见模式）" data-book-page-rel-url="doc/zh/Common-patterns.html" data-book-page-id="7825">Common patterns（常见模式）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Clojure-DSL.html" title="Clojure DSL" data-book-page-rel-url="doc/zh/Clojure-DSL.html" data-book-page-id="7826">Clojure DSL</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Using-non-JVM-languages-with-Storm.html" title="与 Storm 一起使用非 JVM 的语言" data-book-page-rel-url="doc/zh/Using-non-JVM-languages-with-Storm.html" data-book-page-id="7827">与 Storm 一起使用非 JVM 的语言</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Distributed-RPC.html" title="分布式的 RPC" data-book-page-rel-url="doc/zh/Distributed-RPC.html" data-book-page-id="7828">分布式的 RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Transactional-topologies.html" title="Transactional topologies（事务性的拓扑）" data-book-page-rel-url="doc/zh/Transactional-topologies.html" data-book-page-id="7829">Transactional topologies（事务性的拓扑）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Hooks.html" title="Hooks（钩子）" data-book-page-rel-url="doc/zh/Hooks.html" data-book-page-id="7830">Hooks（钩子）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Metrics.html" title="Metrics（度量）" data-book-page-rel-url="doc/zh/Metrics.html" data-book-page-id="7831">Metrics（度量）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/State-checkpointing.html" title="State Checkpointing" data-book-page-rel-url="doc/zh/State-checkpointing.html" data-book-page-id="7832">State Checkpointing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Windowing.html" title="Windowing（窗口操作）" data-book-page-rel-url="doc/zh/Windowing.html" data-book-page-id="7833">Windowing（窗口操作）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Joins.html" title="Joining Streams" data-book-page-rel-url="doc/zh/Joins.html" data-book-page-id="7834">Joining Streams</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/distcache-blobstore.html" title="Blobstore(Distcahce)" data-book-page-rel-url="doc/zh/distcache-blobstore.html" data-book-page-id="7835">Blobstore(Distcahce)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 调试" disabled data-book-page-rel-url="" data-book-page-id="7836">Storm 调试</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/dynamic-log-level-settings.html" title="Dynamic Log Level Settings" data-book-page-rel-url="doc/zh/dynamic-log-level-settings.html" data-book-page-id="7837">Dynamic Log Level Settings</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Logs.html" title="Searching Worker Logs" data-book-page-rel-url="doc/zh/Logs.html" data-book-page-id="7838">Searching Worker Logs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/dynamic-worker-profiling.html" title="Worker Profiling" data-book-page-rel-url="doc/zh/dynamic-worker-profiling.html" data-book-page-id="7839">Worker Profiling</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Eventlogging.html" title="Event Logging" data-book-page-rel-url="doc/zh/Eventlogging.html" data-book-page-id="7840">Event Logging</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 与外部系统, 以及其它库的集成" disabled data-book-page-rel-url="" data-book-page-id="7841">Storm 与外部系统, 以及其它库的集成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kafka.html" title="Apache Kafka 集成" data-book-page-rel-url="doc/zh/storm-kafka.html" data-book-page-id="7842">Apache Kafka 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kafka-client.html" title="新的 Kafka Consumer（消费者）集成" data-book-page-rel-url="doc/zh/storm-kafka-client.html" data-book-page-id="7843">新的 Kafka Consumer（消费者）集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hbase.html" title="Apache HBase 集成" data-book-page-rel-url="doc/zh/storm-hbase.html" data-book-page-id="7844">Apache HBase 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hdfs.html" title="Apache HDFS 集成" data-book-page-rel-url="doc/zh/storm-hdfs.html" data-book-page-id="7845">Apache HDFS 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-hive.html" title="Apache Hive 集成" data-book-page-rel-url="doc/zh/storm-hive.html" data-book-page-id="7846">Apache Hive 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-solr.html" title="Apache Solr 集成" data-book-page-rel-url="doc/zh/storm-solr.html" data-book-page-id="7847">Apache Solr 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-cassandra.html" title="Apache Cassandra 集成" data-book-page-rel-url="doc/zh/storm-cassandra.html" data-book-page-id="7848">Apache Cassandra 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-jdbc.html" title="JDBC 集成" data-book-page-rel-url="doc/zh/storm-jdbc.html" data-book-page-id="7849">JDBC 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-jms.html" title="JMS 集成" data-book-page-rel-url="doc/zh/storm-jms.html" data-book-page-id="7850">JMS 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-redis.html" title="Redis 集成" data-book-page-rel-url="doc/zh/storm-redis.html" data-book-page-id="7851">Redis 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-eventhubs.html" title="Event Hubs 集成" data-book-page-rel-url="doc/zh/storm-eventhubs.html" data-book-page-id="7852">Event Hubs 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-elasticsearch.html" title="Elasticsearch 集成" data-book-page-rel-url="doc/zh/storm-elasticsearch.html" data-book-page-id="7853">Elasticsearch 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-mqtt.html" title="MQTT 集成" data-book-page-rel-url="doc/zh/storm-mqtt.html" data-book-page-id="7854">MQTT 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-mongodb.html" title="Mongodb 集成" data-book-page-rel-url="doc/zh/storm-mongodb.html" data-book-page-id="7855">Mongodb 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-opentsdb.html" title="OpenTSDB 集成" data-book-page-rel-url="doc/zh/storm-opentsdb.html" data-book-page-id="7856">OpenTSDB 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-kinesis.html" title="Kinesis 集成" data-book-page-rel-url="doc/zh/storm-kinesis.html" data-book-page-id="7857">Kinesis 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-druid.html" title="Druid 集成" data-book-page-rel-url="doc/zh/storm-druid.html" data-book-page-id="7858">Druid 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Kestrel-and-Storm.html" title="Kestrel 集成" data-book-page-rel-url="doc/zh/Kestrel-and-Storm.html" data-book-page-id="7859">Kestrel 集成</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Container, Resource Management System Integration" disabled data-book-page-rel-url="" data-book-page-id="7860">Container, Resource Management System Integration</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/storm-yarn.html" title="YARN 集成" data-book-page-rel-url="doc/zh/storm-yarn.html" data-book-page-id="7861">YARN 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/mesos-storm.html" title="Mesos 集成" data-book-page-rel-url="doc/zh/mesos-storm.html" data-book-page-id="7862">Mesos 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/docker-storm.html" title="Docker 集成" data-book-page-rel-url="doc/zh/docker-storm.html" data-book-page-id="7863">Docker 集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/kubernetes-storm.html" title="Kubernetes 集成" data-book-page-rel-url="doc/zh/kubernetes-storm.html" data-book-page-id="7864">Kubernetes 集成</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Storm 高级" disabled data-book-page-rel-url="" data-book-page-id="7865">Storm 高级</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Defining-a-non-jvm-language-dsl-for-storm.html" title="为 Storm 定义非 JVM 语言的 DSL" data-book-page-rel-url="doc/zh/Defining-a-non-jvm-language-dsl-for-storm.html" data-book-page-id="7866">为 Storm 定义非 JVM 语言的 DSL</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Multilang-protocol.html" title="多语言协议（如何为其它语言提供支持）" data-book-page-rel-url="doc/zh/Multilang-protocol.html" data-book-page-id="7867">多语言协议（如何为其它语言提供支持）</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/108/doc/zh/Implementation-docs.html" title="实现文档" data-book-page-rel-url="doc/zh/Implementation-docs.html" data-book-page-id="7868">实现文档</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =108;var bookPageId =7835;var bookPageRelUrl ='doc/zh/distcache-blobstore.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

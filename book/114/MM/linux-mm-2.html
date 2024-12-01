@@ -1,0 +1,912 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>固定映射地址和 ioremap-Linux 内核揭密</title>
+<meta content='固定映射地址和 ioremap,Linux 内核揭密' name='keywords'>
+<meta content='固定映射地址和 ioremap,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/MM/linux-mm-1.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">内存块</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/MM/linux-mm-3.html">
+<span class="">kmemcheck</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="内核内存管理-第二部分">内核内存管理. 第二部分.</h1>
+<h2 id="固定映射地址和输入输出重映射">固定映射地址和输入输出重映射</h2>
+<p>固定映射地址是一组特殊的编译时确定的地址，它们与物理地址不一定具有减 <code>__START_KERNEL_map</code> 的线性映射关系。每一个固定映射的地址都会映射到一个内存页，内核会像指针一样使用它们，但是绝不会修改它们的地址。这是这种地址的主要特点。就像注释所说的那样，“在编译期就获得一个常量地址，只有在引导阶段才会被设定上物理地址。”你在本书的<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-1.html">前面部分</a>可以看到，我们已经设定了 <code>level2_fixmap_pgt</code> ：</p>
+<pre><code class="language-assembly">NEXT_PAGE(level2_fixmap_pgt)
+	.fill	506,8,0
+	.quad	level1_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
+	.fill	5,8,0
+
+NEXT_PAGE(level1_fixmap_pgt)
+	.fill	512,8,0
+</code></pre>
+<p>就像我们看到的， <code>level2_fixmap_pgt</code> 紧挨着 <code>level2_kernel_pgt</code> 保存了内核的 code+data+bss 段。每一个固定映射的地址都由一个整数下标表示，这些整数下标在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/fixmap.h">arch/x86/include/asm/fixmap.h</a> 的 <code>fixed_addresses</code> 枚举类型中定义。比如，它包含了<code>VSYSCALL_PAGE</code> 的入口 - 如果合法的 vsyscall 页模拟机制被开启，或是启用了本地 <a href="http://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">apic</a> 的 <code>FIX_APIC_BASE</code> 选项等等。在虚拟内存中，固定映射区域被放置在模块区域中：</p>
+<pre><code>       +-----------+-----------------+---------------+------------------+
+       |           |                 |               |                  |
+	   |kernel text|      kernel     |               |    vsyscalls     |
+	   | mapping   |       text      |    Modules    |    fix-mapped    |
+       |from phys 0|       data      |               |    addresses     |
+       |           |                 |               |                  |
+       +-----------+-----------------+---------------+------------------+
+__START_KERNEL_map   __START_KERNEL    MODULES_VADDR            0xffffffffffffffff
+</code></pre>
+<p>基虚拟地址和固定映射区域的尺寸使用以下两个宏表示：</p>
+<pre><code class="language-C">#define FIXADDR_SIZE	(__end_of_permanent_fixed_addresses &lt;&lt; PAGE_SHIFT)
+#define FIXADDR_START		(FIXADDR_TOP - FIXADDR_SIZE)
+</code></pre>
+<p>在这里 <code>__end_of_permanent_fixed_addresses</code> 是 <code>fixed_addresses</code> 枚举中的一个元素，如我上文所说：每一个固定映射地址都由一个定义在 <code>fixed_addresses</code> 中的整数下标表示。<code>PAGE_SHIFT</code> 决定了页的大小。比如，我们可以使用 <code>1 &lt;&lt; PAGE_SHIFT</code> 来获取一页的大小。在我们的场景下需要获取固定映射区域的尺寸，而不仅仅是一页的大小，这就是我们使用 <code>__end_of_permanent_fixed_addresses</code> 来获取固定映射区域尺寸的原因。在我的系统中这个值可能略大于 <code>536</code> KB。在你的系统上这个值可能会不同，因为这个值取决于固定映射地址的数目，而这个数目又取决于内核的配置。</p>
+<p>The second <code>FIXADDR_START</code> macro just substracts fix-mapped area size from the last address of the fix-mapped area to get its base virtual address. <code>FIXADDR_TOP</code> is a rounded up address from the base address of the <a href="https://lwn.net/Articles/446528/">vsyscall</a> space: 第二个 <code>FIXADDR_START</code> 宏只是从固定映射区域的末地址减去了固定映射区域的尺寸，这样就可以获得它的基虚拟地址。 <code>FIXADDR_TOP</code> 是一个从 <a href="https://lwn.net/Articles/446528/">vsyscall</a> 空间的基址取整产生的地址：</p>
+<pre><code class="language-C">#define FIXADDR_TOP     (round_up(VSYSCALL_ADDR + PAGE_SIZE, 1&lt;&lt;PMD_SHIFT) - PAGE_SIZE)
+</code></pre>
+<p><code>fixed_addresses</code> 枚举量被 <code>fix_to_virt</code> 函数用做下标用于获取虚拟地址。这个函数的实现很简单：</p>
+<pre><code class="language-C">static __always_inline unsigned long fix_to_virt(const unsigned int idx)
+{
+        BUILD_BUG_ON(idx &gt;= __end_of_fixed_addresses);
+        return __fix_to_virt(idx);
+}
+</code></pre>
+<p>首先它调用 <code>BUILD_BUG_ON</code> 宏检查了给定的 <code>fixed_addresses</code> 枚举量不大于等于 <code>__end_of_fixed_addresses</code>，然后返回了 <code>__fix_to_virt</code> 宏的运算结果：</p>
+<pre><code class="language-C">#define __fix_to_virt(x)        (FIXADDR_TOP - ((x) &lt;&lt; PAGE_SHIFT))
+</code></pre>
+<p>在这里我们用 <code>PAGE_SHIFT</code> 左移了给定的固定映射地址下标，就像我上文所述它决定了页的地址，然后将 <code>FIXADDR_TOP</code> 减去这个值，<code>FIXADDR_TOP</code> 是固定映射区域的最高地址。以下是从虚拟地址获取对应固定映射地址的转换函数：</p>
+<pre><code class="language-C">static inline unsigned long virt_to_fix(const unsigned long vaddr)
+{
+        BUG_ON(vaddr &gt;= FIXADDR_TOP || vaddr &lt; FIXADDR_START);
+        return __virt_to_fix(vaddr);
+}
+</code></pre>
+<p><code>virt_to_fix</code> 以虚拟地址为参数，检查了这个地址是否位于 <code>FIXADDR_START</code> 和 <code>FIXADDR_TOP</code> 之间，然后调用 <code>__virt_to_fix</code> ，这个宏实现如下：</p>
+<pre><code class="language-C">#define __virt_to_fix(x)        ((FIXADDR_TOP - ((x)&amp;PAGE_MASK)) &gt;&gt; PAGE_SHIFT)
+</code></pre>
+<p>一个 PFN 是一块页大小物理内存的下标。一个物理地址的 PFN 可以简单地定义为 (page_phys_addr &gt;&gt; PAGE_SHIFT)；</p>
+<p><code>__virt_to_fix</code> 会清空给定地址的前 12 位，然后用固定映射区域的末地址(<code>FIXADDR_TOP</code>)减去它并右移 <code>PAGE_SHIFT</code> 即 12 位。让我们来解释它的工作原理。就像我已经写的那样，这个宏会使用 <code>x &amp; PAGE_MASK</code> 来清空前 12 位。然后我们用 <code>FIXADDR_TOP</code> 减去它，就会得到 <code>FIXADDR_TOP</code> 的后 12 位。我们知道虚拟地址的前 12 位代表这个页的偏移量，当我们右移 <code>PAGE_SHIFT</code> 后就会得到 <code>Page frame number</code> ，即虚拟地址的所有位，包括最开始的 12 个偏移位。固定映射地址在<a href="http://lxr.free-electrons.com/ident?i=fix_to_virt">内核中多处使用</a>。 <code>IDT</code> 描述符保存在这里，<a href="http://en.wikipedia.org/wiki/Trusted_Execution_Technology">英特尔可信赖执行技术</a> UUID 储存在固定映射区域，以 <code>FIX_TBOOT_BASE</code> 下标开始。另外， <a href="http://en.wikipedia.org/wiki/Xen">Xen</a> 引导映射等也储存在这个区域。我们已经在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">内核初始化的第五部分</a>看到了一部分关于固定映射地址的知识。接下来让我们看看什么是 <code>ioremap</code>，看看它是怎样实现的，与固定映射地址又有什么关系呢？</p>
+<h2 id="输入输出重映射">输入输出重映射</h2>
+<p>内核提供了许多不同的内存管理原语。现在我们将要接触 <code>I/O 内存</code>。每一个设备都通过读写它的寄存器来控制。比如，驱动可以通过向它的寄存器中写来打开或关闭设备，也可以通过读它的寄存器来获取设备状态。除了寄存器之外，许多设备都拥有一块可供驱动读写的缓冲区。如我们所知，现在有两种方法来访问设备的寄存器和数据缓冲区：</p>
+<ul>
+<li>通过 I/O 端口；</li>
+<li>将所有寄存器映射到内存地址空间；</li>
+</ul>
+<p>第一种情况，设备的所有控制寄存器都具有一个输入输出端口号。该设备的驱动可以用 <code>in</code> 和 <code>out</code> 指令来从端口中读写。你可以通过访问 <code>/proc/ioports</code> 来获取设备当前的 I/O 端口号。</p>
+<pre><code>$ cat /proc/ioports
+0000-0cf7 : PCI Bus 0000:00
+  0000-001f : dma1
+  0020-0021 : pic1
+  0040-0043 : timer0
+  0050-0053 : timer1
+  0060-0060 : keyboard
+  0064-0064 : keyboard
+  0070-0077 : rtc0
+  0080-008f : dma page reg
+  00a0-00a1 : pic2
+  00c0-00df : dma2
+  00f0-00ff : fpu
+    00f0-00f0 : PNP0C04:00
+  03c0-03df : vesafb
+  03f8-03ff : serial
+  04d0-04d1 : pnp 00:06
+  0800-087f : pnp 00:01
+  0a00-0a0f : pnp 00:04
+  0a20-0a2f : pnp 00:04
+  0a30-0a3f : pnp 00:04
+0cf8-0cff : PCI conf1
+0d00-ffff : PCI Bus 0000:00
+...
+...
+...
+</code></pre>
+<p><code>/proc/ioports</code> 提供了驱动使用 I/O 端口的内存区域地址。所有的这些内存区域，比如 <code>0000-0cf7</code> ，都是使用 <a href="https://github.com/torvalds/linux/blob/master/include/linux/ioport.h">include/linux/ioport.h</a> 头文件中的 <code>request_region</code> 来声明的。实际上 <code>request_region</code> 是一个宏，它的定义如下：</p>
+<pre><code class="language-C">#define request_region(start,n,name)   __request_region(&amp;ioport_resource, (start), (n), (name), 0)
+</code></pre>
+<p>正如我们所看见的，它有三个参数：</p>
+<ul>
+<li><code>start</code> - 区域的起点;</li>
+<li><code>n</code> - 区域的长度;</li>
+<li><code>name</code> - 区域需求者的名字。</li>
+</ul>
+<p><code>request_region</code> 分配 I/O 端口区域。通常在 <code>request_region</code> 之前会调用 <code>check_region</code> 来检查传入的地址区间是否可用，然后 <code>release_region</code> 会释放这个内存区域。<code>request_region</code> 返回指向 <code>resource</code> 结构体的指针。 <code>resource</code> 结构体是对系统资源的树状子集的抽象。我们已经在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">内核初始化的第五部分</a>见到过它了，它的定义是这样的：</p>
+<pre><code class="language-C">struct resource {
+        resource_size_t start;
+        resource_size_t end;
+        const char *name;
+        unsigned long flags;
+        struct resource *parent, *sibling, *child;
+};
+</code></pre>
+<p>它包含起止地址、名字等等。每一个 <code>resource</code> 结构体包含一个指向 <code>parent</code>、<code>slibling</code> 和 <code>child</code> 资源的指针。它有父节点和子节点，这就意味着每一个资源的子集都有一个根节点。比如，对 I/O 端口来说有一个 <code>ioport_resource</code> 结构体：</p>
+<pre><code class="language-C">struct resource ioport_resource = {
+         .name   = "PCI IO",
+         .start  = 0,
+         .end    = IO_SPACE_LIMIT,
+        .flags  = IORESOURCE_IO,
+};
+EXPORT_SYMBOL(ioport_resource);
+</code></pre>
+<p>或者对 <code>iomem</code> 来说，有一个 <code>iomem_resource</code> 结构体：</p>
+<pre><code class="language-C">struct resource iomem_resource = {
+        .name   = "PCI mem",
+        .start  = 0,
+        .end    = -1,
+        .flags  = IORESOURCE_MEM,
+};
+</code></pre>
+<p>就像我所写的，<code>request_region</code> 用于注册 I/O 端口区域，这个宏用于<a href="http://lxr.free-electrons.com/ident?i=request_region">内核中的许多地方</a>。比如让我们来看看 <a href="https://github.com/torvalds/linux/blob/master/char/rtc.c">drivers/char/rtc.c</a>。这个源文件提供了内核中的<a href="http://en.wikipedia.org/wiki/Real-time_clock">实时时钟</a>接口。与其他内核模块一样， <code>rtc</code> 模块包含一个 <code>module_init</code> 定义：</p>
+<pre><code class="language-C">module_init(rtc_init);
+</code></pre>
+<p>在这里 <code>rtc_init</code> 是 <code>rtc</code> 模块的初始化函数。这个函数也定义在 <code>rtc.c</code> 文件中。在 <code>rtc_init</code> 函数中我们可以看到许多对 <code>rtc_request_region</code> 函数的调用，实际上这是 <code>request_region</code> 的包装：</p>
+<pre><code class="language-C">r = rtc_request_region(RTC_IO_EXTENT);
+</code></pre>
+<p><code>rtc_request_region</code> 中调用了:</p>
+<pre><code class="language-C">r = request_region(RTC_PORT(0), size, "rtc");
+</code></pre>
+<p>在这里 <code>RTC_TO_EXTENT</code> 是一个内存区域的尺寸，在这里是 <code>0x8</code>， <code>"rtc"</code> 是区域的名字，<code>RTC_PORT</code> 是：</p>
+<pre><code class="language-C">#define RTC_PORT(x)     (0x70 + (x))
+</code></pre>
+<p>所以使用 <code>request_region(RTC_PORT(0), size, "rtc")</code> 我们注册了一个内存区域， 以 <code>0x70</code> 开始，大小为 <code>0x8</code>。 让我们看看 <code>/proc/ioports</code>:</p>
+<pre><code>~$ sudo cat /proc/ioports | grep rtc
+0070-0077 : rtc0
+</code></pre>
+<p>看，我们可以获取了它的信息。这就是端口。第二种途径是使用 I/O 内存。就像我上面写的，这是将设备的控制寄存器和内存映射到内存地址空间中。I/O 内存是一组由设备通过总线提供给 CPU 的相邻的地址。所有的 I/O 映射地址都不能由内核直接访问。有一个 <code>ioremap</code> 函数用来将总线上的物理地址转化为内核的虚拟地址，或者说，<code>ioremap</code> 映射了 I/O 物理地址来让他们能够在内核中使用。这个函数有两个参数：</p>
+<ul>
+<li>内存区域的开始；</li>
+<li>内存区域的结束；</li>
+</ul>
+<p>I/O 内存映射 API 提供了用来检查、请求与释放内存区域的函数，就像 I/O 端口 API 一样。这里有三个函数：</p>
+<ul>
+<li><code>request_mem_region</code></li>
+<li><code>release_mem_region</code></li>
+<li><code>check_mem_region</code></li>
+</ul>
+<pre><code>~$ sudo cat /proc/iomem
+...
+...
+...
+be826000-be82cfff : ACPI Non-volatile Storage
+be82d000-bf744fff : System RAM
+bf745000-bfff4fff : reserved
+bfff5000-dc041fff : System RAM
+dc042000-dc0d2fff : reserved
+dc0d3000-dc138fff : System RAM
+dc139000-dc27dfff : ACPI Non-volatile Storage
+dc27e000-deffefff : reserved
+defff000-deffffff : System RAM
+df000000-dfffffff : RAM buffer
+e0000000-feafffff : PCI Bus 0000:00
+  e0000000-efffffff : PCI Bus 0000:01
+    e0000000-efffffff : 0000:01:00.0
+  f7c00000-f7cfffff : PCI Bus 0000:06
+    f7c00000-f7c0ffff : 0000:06:00.0
+    f7c10000-f7c101ff : 0000:06:00.0
+      f7c10000-f7c101ff : ahci
+  f7d00000-f7dfffff : PCI Bus 0000:03
+    f7d00000-f7d3ffff : 0000:03:00.0
+      f7d00000-f7d3ffff : alx
+...
+...
+...
+</code></pre>
+<p>这些地址中的一部分源于对 <code>e820_reserve_resources</code> 函数的调用。我们可以在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c">arch/x86/kernel/setup.c</a> 中找到对这个函数的调用，这个函数本身定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/e820.c">arch/x86/kernel/e820.c</a> 中。这个函数遍历了 <a href="http://en.wikipedia.org/wiki/E820">e820</a> 的映射然后将内存区域插入了根 <code>iomen</code> 结构体中。所有具有以下类型的 <code>e820</code> 内存区域都会被插入到 <code>iomem</code> 结构体中：</p>
+<pre><code class="language-C">static inline const char *e820_type_to_string(int e820_type)
+{
+	switch (e820_type) {
+	case E820_RESERVED_KERN:
+	case E820_RAM:	return "System RAM";
+	case E820_ACPI:	return "ACPI Tables";
+	case E820_NVS:	return "ACPI Non-volatile Storage";
+	case E820_UNUSABLE:	return "Unusable memory";
+	default:	return "reserved";
+	}
+}
+</code></pre>
+<p>我们可以在 <code>/proc/iomem</code> 中看到它们。</p>
+<p>现在让我们尝试着理解 <code>ioremap</code> 是如何工作的。我们已经了解了一部分 <code>ioremap</code> 的知识，我们在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">内核初始化的第五部分</a>见过它。如果你读了那个章节，你就会记得 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/mm/ioremap.c">arch/x86/mm/ioremap.c</a> 文件中对 <code>early_ioremap_init</code> 函数的调用。对 <code>ioremap</code> 的初始化分为两个部分：有一部分在我们正常使用 <code>ioremap</code> 之前，但是要首先进行 <code>vmalloc</code> 的初始化并调用 <code>paging_init</code> 才能进行正常的 <code>ioremap</code> 调用。我们现在还不了解 <code>vmalloc</code> 的知识，先看看第一部分的初始化。首先 <code>early_ioremap_init</code> 会检查固定映射是否与页中部目录对齐：</p>
+<pre><code class="language-C">BUILD_BUG_ON((fix_to_virt(0) + PAGE_SIZE) &amp; ((1 &lt;&lt; PMD_SHIFT) - 1));
+</code></pre>
+<p>更多关于 <code>BUILD_BUG_ON</code> 的内容你可以在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-1.html">内核初始化的第一部分</a>看到。如果给定的表达式为真，<code>BUILD_BUG_ON</code> 宏就会抛出一个编译时错误。在检查后的下一步，我们可以看到对 <code>early_ioremap_setup</code> 函数的调用，这个函数定义在 <a href="https://github.com/torvalds/linux/blob/master/mm/early_ioremap.c">mm/early_ioremap.c</a> 文件中。这个函数代表了对 <code>ioremap</code> 的大体初始化。<code>early_ioremap_setup</code> 函数用初期固定映射的地址填充了 <code>slot_virt</code> 数组。所有初期固定映射地址在内存中都在 <code>__end_of_permanent_fixed_addresses</code> 后面，它们从 <code>FIX_BITMAP_BEGIN</code> 开始，到 <code>FIX_BITMAP_END</code> 结束。实际上初期 <code>ioremap</code> 会使用 <code>512</code> 个临时引导时映射：</p>
+<pre><code>#define NR_FIX_BTMAPS		64
+#define FIX_BTMAPS_SLOTS	8
+#define TOTAL_FIX_BTMAPS	(NR_FIX_BTMAPS * FIX_BTMAPS_SLOTS)
+</code></pre>
+<p><code>early_ioremap_setup</code> 如下：</p>
+<pre><code class="language-C">void __init early_ioremap_setup(void)
+{
+        int i;
+
+        for (i = 0; i &lt; FIX_BTMAPS_SLOTS; i++)
+                if (WARN_ON(prev_map[i]))
+                        break;
+
+        for (i = 0; i &lt; FIX_BTMAPS_SLOTS; i++)
+                slot_virt[i] = __fix_to_virt(FIX_BTMAP_BEGIN - NR_FIX_BTMAPS*i);
+}
+</code></pre>
+<p><code>slot_virt</code> 和其他数组定义在同一个源文件中：</p>
+<pre><code class="language-C">static void __iomem *prev_map[FIX_BTMAPS_SLOTS] __initdata;
+static unsigned long prev_size[FIX_BTMAPS_SLOTS] __initdata;
+static unsigned long slot_virt[FIX_BTMAPS_SLOTS] __initdata;
+</code></pre>
+<p><code>slot_virt</code> 包含了固定映射区域的虚拟地址，<code>prev_map</code> 数组包含了初期 <code>ioremap</code> 区域的地址。注意我在上文中提到的：<code>实际上初期 ioremap 会使用 512 个临时引导时映射</code>，同时你可以看到所有的数组都使用 <code>__initdata</code> 定义，这意味着这些内存都会在内核初始化结束后释放掉。在 <code>early_ioremap_setup</code> 结束后，我们获得了页中部目录，以 <code>early_ioremap_pmd</code> 函数开始的早期 <code>ioremap</code>，<code>early_ioremap_pmd</code> 函数只能获得内存全局目录以及为给定地址计算页中部目录：</p>
+<pre><code class="language-C">static inline pmd_t * __init early_ioremap_pmd(unsigned long addr)
+{
+	pgd_t *base = __va(read_cr3());
+	pgd_t *pgd = &amp;base[pgd_index(addr)];
+	pud_t *pud = pud_offset(pgd, addr);
+	pmd_t *pmd = pmd_offset(pud, addr);
+	return pmd;
+}
+</code></pre>
+<p>之后我们用 0 填充 <code>bm_pte</code> (早期 <code>ioremap</code> 页表入口)，然后调用 <code>pmd_populate_kernel</code> 函数：</p>
+<pre><code class="language-C">pmd = early_ioremap_pmd(fix_to_virt(FIX_BTMAP_BEGIN));
+memset(bm_pte, 0, sizeof(bm_pte));
+pmd_populate_kernel(&amp;init_mm, pmd, bm_pte);
+</code></pre>
+<p><code>pmd_populate_kernel</code> 函数有三个参数:</p>
+<ul>
+<li><code>init_mm</code> - <code>init</code> 进程的内存描述符 (你可以在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">前文</a>中看到)；</li>
+<li><code>pmd</code> - <code>ioremap</code> 固定映射开始处的页中部目录；</li>
+<li><code>bm_pte</code> - 初期 <code>ioremap</code> 页表入口数组定义为：</li>
+</ul>
+<pre><code class="language-C">static pte_t bm_pte[PAGE_SIZE/sizeof(pte_t)] __page_aligned_bss;
+</code></pre>
+<p><code>pmd_popularte_kernel</code> 函数定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/pgalloc.h">arch/x86/include/asm/pgalloc.h</a> 中。它会用给定的页表入口(<code>bm_pte</code>)生成给定页中部目录(<code>pmd</code>):</p>
+<pre><code class="language-C">static inline void pmd_populate_kernel(struct mm_struct *mm,
+                                       pmd_t *pmd, pte_t *pte)
+{
+        paravirt_alloc_pte(mm, __pa(pte) &gt;&gt; PAGE_SHIFT);
+        set_pmd(pmd, __pmd(__pa(pte) | _PAGE_TABLE));
+}
+</code></pre>
+<p><code>set_pmd</code> 声明如下：</p>
+<pre><code class="language-C">#define set_pmd(pmdp, pmd)              native_set_pmd(pmdp, pmd)
+</code></pre>
+<p><code>native_set_pmd</code> 声明如下：</p>
+<pre><code class="language-C">static inline void native_set_pmd(pmd_t *pmdp, pmd_t pmd)
+{
+        *pmdp = pmd;
+}
+</code></pre>
+<p>到这里 初期 <code>ioremap</code> 就可以使用了。在 <code>early_ioremap_init</code> 函数中有许多检查，但是都不重要，总之 <code>ioremap</code> 的初始化结束了。</p>
+<h2 id="初期输入输出重映射的使用">初期输入输出重映射的使用</h2>
+<p>初期 <code>ioremap</code> 初始化完成后，我们就能使用它了。它提供了两个函数：</p>
+<ul>
+<li>early_ioremap</li>
+<li>early_iounmap</li>
+</ul>
+<p>用于从 IO 物理地址 映射/解除映射 到虚拟地址。这俩函数都依赖于 <code>CONFIG_MMU</code> 编译配置选项。<a href="http://en.wikipedia.org/wiki/Memory_management_unit">内存管理单元</a>是内存管理的一种特殊块。这种块的主要用途是将物理地址转换为虚拟地址。技术上看内存管理单元可以从 <code>cr3</code> 控制寄存器中获取高等级页表地址(<code>pgd</code>)。如果 <code>CONFIG_MMU</code> 选项被设为 <code>n</code>，<code>early_ioremap</code> 就会直接返回物理地址，而 <code>early_iounmap</code> 就会什么都不做。另一方面，如果设为 <code>y</code> ，<code>early_ioremap</code> 就会调用 <code>__early_ioremap</code>，它有三个参数：</p>
+<ul>
+<li><code>phys_addr</code> - 要映射到虚拟地址上的 I/O 内存区域的基物理地址；</li>
+<li><code>size</code> - I/O 内存区域的尺寸；</li>
+<li><code>prot</code> - 页表入口位。</li>
+</ul>
+<p>在 <code>__early_ioremap</code> 中我们首先遍历了所有初期 <code>ioremap</code> 固定映射槽并检查 <code>prev_map</code> 数组中第一个空闲元素，然后将这个值存在了 <code>slot</code> 变量中，另外设置了尺寸：</p>
+<pre><code class="language-C">slot = -1;
+for (i = 0; i &lt; FIX_BTMAPS_SLOTS; i++) {
+	if (!prev_map[i]) {
+		slot = i;
+		break;
+	}
+}
+...
+...
+...
+prev_size[slot] = size;
+last_addr = phys_addr + size - 1;
+</code></pre>
+<p>在下一步中我们会看到以下代码：</p>
+<pre><code class="language-C">offset = phys_addr &amp; ~PAGE_MASK;
+phys_addr &amp;= PAGE_MASK;
+size = PAGE_ALIGN(last_addr + 1) - phys_addr;
+</code></pre>
+<p>在这里我们使用了 <code>PAGE_MASK</code> 用于清空除前 12 位之外的整个 <code>phys_addr</code>。<code>PAGE_MASK</code> 宏定义如下：</p>
+<pre><code class="language-C">#define PAGE_MASK       (~(PAGE_SIZE-1))
+</code></pre>
+<p>我们知道页的尺寸是 4096 个字节或用二进制表示为 <code>1000000000000</code> 。<code>PAGE_SIZE - 1</code> 就会是 <code>111111111111</code> ，但是使用 <code>~</code> 运算后我们就会得到 <code>000000000000</code> ，然后使用 <code>~PAGE_MASK</code> 又会返回 <code>111111111111</code> 。在第二行我们做了同样的事情但是只是清空了前 12 个位，然后在第三行获取了这个区域的页对齐尺寸。我们获得了对齐区域，接下来就需要获取新的 <code>ioremap</code> 区域所占用的页的数量然后计算固定映射下标：</p>
+<pre><code class="language-C">nrpages = size &gt;&gt; PAGE_SHIFT;
+idx = FIX_BTMAP_BEGIN - NR_FIX_BTMAPS*slot;
+</code></pre>
+<p>现在我们用给定的物理地址填充了固定映射区域。循环中的每一次迭代，我们都调用一次 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/mm/ioremap.c">arch/x86/mm/ioremap.c</a> 中的 <code>__early_set_fixmap</code> 函数，为给定的物理地址加上页的大小 <code>4096</code>，然后更新下标和页的数量：</p>
+<pre><code class="language-C">while (nrpages &gt; 0) {
+	__early_set_fixmap(idx, phys_addr, prot);
+	phys_addr += PAGE_SIZE;
+	--idx;
+    --nrpages;
+}
+</code></pre>
+<p><code>__early_set_fixmap</code> 函数为给定的物理地址获取了页表入口(保存在 <code>bm_pte</code> 中，见上文)：</p>
+<pre><code class="language-C">pte = early_ioremap_pte(addr);
+</code></pre>
+<p>在 <code>early_ioremap_pte</code> 的下一步中我们用 <code>pgprot_val</code> 宏检查了给定的页标志，依赖这个标志选择调用 <code>set_pte</code> 还是 <code>pte_clear</code> ：</p>
+<pre><code class="language-C">if (pgprot_val(flags))
+		set_pte(pte, pfn_pte(phys &gt;&gt; PAGE_SHIFT, flags));
+	else
+		pte_clear(&amp;init_mm, addr, pte);
+</code></pre>
+<p>As you can see above, we passed <code>FIXMAP_PAGE_IO</code> as flags to the <code>__early_ioremap</code>. <code>FIXMPA_PAGE_IO</code> expands to the: 就像你看到的，我们将 <code>FIXMAP_PAGE_IO</code> 作为标志传入了 <code>__early_ioremap</code>。<code>FIXMPA_PAGE_IO</code> 从以下</p>
+<pre><code class="language-C">(__PAGE_KERNEL_EXEC | _PAGE_NX)
+</code></pre>
+<p>标志拓展而来， 所以我们调用 <code>set_pte</code> 来设置页表入口，就像 <code>set_pmd</code> 一样，只不过用于 <code>PTE</code>(见上文)。我们在循环中设定了所有 <code>PTE</code>，我们可以看到 <code>__flush_tlb_one</code> 的函数调用：</p>
+<pre><code class="language-C">__flush_tlb_one(addr);
+</code></pre>
+<p>这个函数定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/tlbflush.h">arch/x86/include/asm/tlbflush.h</a>中，并通过判断 <code>cpu_has_invlpg</code> 的值来决定调用 <code>__flush_tlb_single</code> 还是 <code>__flush_tlb</code> ：</p>
+<pre><code class="language-C">static inline void __flush_tlb_one(unsigned long addr)
+{
+        if (cpu_has_invlpg)
+                __flush_tlb_single(addr);
+        else
+                __flush_tlb();
+}
+</code></pre>
+<p><code>__flush_tlb_one</code> 函数使 <a href="http://en.wikipedia.org/wiki/Translation_lookaside_buffer">TLB</a> 中的给定地址失效。就像你看到的我们更新了页结构，但是 <code>TLB</code> 还没有改变，这就是我们需要手动做这件事情的原因。有两种方法做这件事。第一种是更新 <code>cr3</code> 寄存器， <code>__flush_tlb</code> 函数就是这么做的：</p>
+<pre><code class="language-C">native_write_cr3(native_read_cr3());
+</code></pre>
+<p>第二种方法是使用 <code>invlpg</code> 命令来使 <code>TLB</code> 入口失效。让我们看看 <code>__flush_tlb_one</code> 的实现。就像我们所看到的，它首先检查了 <code>cpu_has_invlpg</code> ，定义如下：</p>
+<pre><code class="language-C">#if defined(CONFIG_X86_INVLPG) || defined(CONFIG_X86_64)
+# define cpu_has_invlpg         1
+#else
+# define cpu_has_invlpg         (boot_cpu_data.x86 &gt; 3)
+#endif
+</code></pre>
+<p>如果 CPU 支持 <code>invlpg</code> 指令，我们就调用 <code>__flush_tlb_single</code> 宏，它拓展自 <code>__native_flush_tlb_single</code>：</p>
+<pre><code class="language-C">static inline void __native_flush_tlb_single(unsigned long addr)
+{
+        asm volatile("invlpg (%0)" ::"r" (addr) : "memory");
+}
+</code></pre>
+<p><code>__flush_tlb</code> 的调用知识更新了 <code>cr3</code> 寄存器。在这步结束之后 <code>__early_set_fixmap</code> 函数就执行完了，我们又可以回到 <code>__early_ioremap</code> 的实现了。因为我们为给定的地址设定了固定映射区域，我们需要将 I/O 重映射的区域的基虚拟地址用 <code>slot</code> 下标保存在 <code>prev_map</code> 数组中。</p>
+<pre><code class="language-C">prev_map[slot] = (void __iomem *)(offset + slot_virt[slot]);
+</code></pre>
+<p>然后返回它。</p>
+<p>第二个函数是 <code>early_iounmap</code> ，它会解除对一个 I/O 内存区域的映射。这个函数有两个参数：基地址和 I/O 区域的大小，这看起来与 <code>early_ioremap</code> 很像。它同样遍历了固定映射槽并寻找给定地址的槽。这样它就获得了这个固定映射槽的下标，然后通过判断 <code>after_paging_init</code> 的值决定是调用 <code>__late_clear_fixmap</code> 还是 <code>__early_set_fixmap</code> 。当这个值是 0 时会调用 <code>__early_set_fixmap</code>。最终它会将 I/O 内存区域设为 <code>NULL</code>：</p>
+<pre><code class="language-C">prev_map[slot] = NULL;
+</code></pre>
+<p>这就是关于 <code>fixmap</code> 和 <code>ioremap</code> 的全部内容。当然这部分不可能包含所有 <code>ioremap</code> 的特性，仅仅是讲解了初期 <code>ioremap</code>，常规的 <code>ioremap</code> 没有讲。这主要是因为在讲解它之前需要了解更多内容才行。</p>
+<p>就是这样！</p>
+<h2 id="结束语">结束语</h2>
+<p>讲解内核内存管理的第一部分到此结束，如果你有任何的问题或者建议，你可以直接发消息给我<a href="https://twitter.com/0xAX">twitter</a>，也可以给我发<a href="anotherworldofworld@gmail.com">邮件</a>或是直接创建一个 <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>。</p>
+<p><strong>英文不是我的母语。如果你发现我的英文描述有任何问题，请提交一个PR到<a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="相关连接">相关连接：</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">apic</a></li>
+<li><a href="https://lwn.net/Articles/446528/">vsyscall</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Trusted_Execution_Technology">Intel Trusted Execution Technology</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Xen">Xen</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Real-time_clock">Real Time Clock</a></li>
+<li><a href="http://en.wikipedia.org/wiki/E820">e820</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Memory_management_unit">Memory management unit</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Translation_lookaside_buffer">TLB</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Theory/Paging.html">Paging</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/MM/linux-mm-1.html">内核内存管理第一部分</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/181/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/64/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/64/index.html">免费的编程中文书籍索引</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/40.html">justjavac</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">56页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33914个">33914</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/59/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/59/index.html">TensorFlow 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/35.html">jikexueyuanwiki</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8767个">8767</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/146/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/146/index.html">http2讲解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/78.html">bagder</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1463个">1463</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8119;var bookPageRelUrl ='MM/linux-mm-2.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

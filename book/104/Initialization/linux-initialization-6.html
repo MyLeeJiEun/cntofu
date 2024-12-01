@@ -1,0 +1,936 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>进一步初始化指定体系架构-Linux 内核揭密</title>
+<meta content='进一步初始化指定体系架构,Linux 内核揭密' name='keywords'>
+<meta content='进一步初始化指定体系架构,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Initialization/linux-initialization-5.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">体系架构初始化</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Initialization/linux-initialization-7.html">
+<span class="">最后对指定体系架构初始化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="kernel-initialization-part-6">Kernel initialization. Part 6.</h1>
+<h1 id="architecture-specific-initialization-again">Architecture-specific initialization, again...</h1>
+<p>In the previous <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">part</a> we saw architecture-specific (<code>x86_64</code> in our case) initialization stuff from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c">arch/x86/kernel/setup.c</a> and finished on <code>x86_configure_nx</code> function which sets the <code>_PAGE_NX</code> flag depends on support of <a href="http://en.wikipedia.org/wiki/NX_bit">NX bit</a>. As I wrote before <code>setup_arch</code> function and <code>start_kernel</code> are very big, so in this and in the next part we will continue to learn about architecture-specific initialization process. The next function after <code>x86_configure_nx</code> is <code>parse_early_param</code>. This function is defined in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> and as you can understand from its name, this function parses kernel command line and setups different services depends on the given parameters (all kernel command line parameters you can find are in the <a href="https://github.com/torvalds/linux/blob/master/Documentation/kernel-parameters.txt">Documentation/kernel-parameters.txt</a>). You may remember how we setup <code>earlyprintk</code> in the earliest <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Booting/linux-bootstrap-2.html">part</a>. On the early stage we looked for kernel parameters and their value with the <code>cmdline_find_option</code> function and <code>__cmdline_find_option</code>, <code>__cmdline_find_option_bool</code> helpers from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/boot/cmdline.c">arch/x86/boot/cmdline.c</a>. There we're in the generic kernel part which does not depend on architecture and here we use another approach. If you are reading linux kernel source code, you already note calls like this:</p>
+<pre><code class="language-C">early_param("gbpages", parse_direct_gbpages_on);
+</code></pre>
+<p><code>early_param</code> macro takes two parameters:</p>
+<ul>
+<li>command line parameter name;</li>
+<li>function which will be called if given parameter is passed.</li>
+</ul>
+<p>and defined as:</p>
+<pre><code class="language-C">#define early_param(str, fn) \
+        __setup_param(str, fn, fn, 1)
+</code></pre>
+<p>in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/init.h">include/linux/init.h</a>. As you can see <code>early_param</code> macro just makes call of the <code>__setup_param</code> macro:</p>
+<pre><code class="language-C">#define __setup_param(str, unique_id, fn, early)                \
+        static const char __setup_str_##unique_id[] __initconst \
+                __aligned(1) = str; \
+        static struct obs_kernel_param __setup_##unique_id      \
+                __used __section(.init.setup)                   \
+                __attribute__((aligned((sizeof(long)))))        \
+                = { __setup_str_##unique_id, fn, early }
+</code></pre>
+<p>This macro defines <code>__setup_str_*_id</code> variable (where <code>*</code> depends on given function name) and assigns it to the given command line parameter name. In the next line we can see definition of the <code>__setup_*</code> variable which type is <code>obs_kernel_param</code> and its initialization. <code>obs_kernel_param</code> structure defined as:</p>
+<pre><code class="language-C">struct obs_kernel_param {
+        const char *str;
+        int (*setup_func)(char *);
+        int early;
+};
+</code></pre>
+<p>and contains three fields:</p>
+<ul>
+<li>name of the kernel parameter;</li>
+<li>function which setups something depend on parameter;</li>
+<li>field determines is parameter early (1) or not (0).</li>
+</ul>
+<p>Note that <code>__set_param</code> macro defines with <code>__section(.init.setup)</code> attribute. It means that all <code>__setup_str_*</code> will be placed in the <code>.init.setup</code> section, moreover, as we can see in the <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/vmlinux.lds.h">include/asm-generic/vmlinux.lds.h</a>, they will be placed between <code>__setup_start</code> and <code>__setup_end</code>:</p>
+<pre><code>#define INIT_SETUP(initsetup_align)                \
+                . = ALIGN(initsetup_align);        \
+                VMLINUX_SYMBOL(__setup_start) = .; \
+                *(.init.setup)                     \
+                VMLINUX_SYMBOL(__setup_end) = .;
+</code></pre>
+<p>Now we know how parameters are defined, let's back to the <code>parse_early_param</code> implementation:</p>
+<pre><code class="language-C">void __init parse_early_param(void)
+{
+        static int done __initdata;
+        static char tmp_cmdline[COMMAND_LINE_SIZE] __initdata;
+
+        if (done)
+                return;
+
+        /* All fall through to do_early_param. */
+        strlcpy(tmp_cmdline, boot_command_line, COMMAND_LINE_SIZE);
+        parse_early_options(tmp_cmdline);
+        done = 1;
+}
+</code></pre>
+<p>The <code>parse_early_param</code> function defines two static variables. First <code>done</code> check that <code>parse_early_param</code> already called and the second is temporary storage for kernel command line. After this we copy <code>boot_command_line</code> to the temporary command line which we just defined and call the <code>parse_early_options</code> function from the same source code <code>main.c</code> file. <code>parse_early_options</code> calls the <code>parse_args</code> function from the <a href="https://github.com/torvalds/linux/blob/master/">kernel/params.c</a> where <code>parse_args</code> parses given command line and calls <code>do_early_param</code> function. This <a href="https://github.com/torvalds/linux/blob/master/init/main.c#L413">function</a> goes from the <code>__setup_start</code> to <code>__setup_end</code>, and calls the function from the <code>obs_kernel_param</code> if a parameter is early. After this all services which are depend on early command line parameters were setup and the next call after the <code>parse_early_param</code> is <code>x86_report_nx</code>. As I wrote in the beginning of this part, we already set <code>NX-bit</code> with the <code>x86_configure_nx</code>. The next <code>x86_report_nx</code> function from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/mm/setup_nx.c">arch/x86/mm/setup_nx.c</a> just prints information about the <code>NX</code>. Note that we call <code>x86_report_nx</code> not right after the <code>x86_configure_nx</code>, but after the call of the <code>parse_early_param</code>. The answer is simple: we call it after the <code>parse_early_param</code> because the kernel support <code>noexec</code> parameter:</p>
+<pre><code>noexec		[X86]
+			On X86-32 available only on PAE configured kernels.
+			noexec=on: enable non-executable mappings (default)
+			noexec=off: disable non-executable mappings
+</code></pre>
+<p>We can see it in the booting time:</p>
+<p><a href="http://oi62.tinypic.com/swwxhy.jpg" data-uk-lightbox><img src="http://oi62.tinypic.com/swwxhy.jpg" alt="NX"></a></p>
+<p>After this we can see call of the:</p>
+<pre><code class="language-C">	memblock_x86_reserve_range_setup_data();
+</code></pre>
+<p>function. This function is defined in the same <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.c">arch/x86/kernel/setup.c</a> source code file and remaps memory for the <code>setup_data</code> and reserved memory block for the <code>setup_data</code> (more about <code>setup_data</code> you can read in the previous <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">part</a> and about <code>ioremap</code> and <code>memblock</code> you can read in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">Linux kernel memory management</a>).</p>
+<p>In the next step we can see following conditional statement:</p>
+<pre><code class="language-C">	if (acpi_mps_check()) {
+#ifdef CONFIG_X86_LOCAL_APIC
+		disable_apic = 1;
+#endif
+		setup_clear_cpu_cap(X86_FEATURE_APIC);
+	}
+</code></pre>
+<p>The first <code>acpi_mps_check</code> function from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/acpi/boot.c">arch/x86/kernel/acpi/boot.c</a> depends on <code>CONFIG_X86_LOCAL_APIC</code> and <code>CONFIG_x86_MPPARSE</code> configuration options:</p>
+<pre><code class="language-C">int __init acpi_mps_check(void)
+{
+#if defined(CONFIG_X86_LOCAL_APIC) &amp;&amp; !defined(CONFIG_X86_MPPARSE)
+        /* mptable code is not built-in*/
+        if (acpi_disabled || acpi_noirq) {
+                printk(KERN_WARNING "MPS support code is not built-in.\n"
+                       "Using acpi=off or acpi=noirq or pci=noacpi "
+                       "may have problem\n");
+                 return 1;
+        }
+#endif
+        return 0;
+}
+</code></pre>
+<p>It checks the built-in <code>MPS</code> or <a href="http://en.wikipedia.org/wiki/MultiProcessor_Specification">MultiProcessor Specification</a> table. If <code>CONFIG_X86_LOCAL_APIC</code> is set and <code>CONFIG_x86_MPPAARSE</code> is not set, <code>acpi_mps_check</code> prints warning message if the one of the command line options: <code>acpi=off</code>, <code>acpi=noirq</code> or <code>pci=noacpi</code> passed to the kernel. If <code>acpi_mps_check</code> returns <code>1</code> it means that we disable local <a href="http://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">APIC</a> and clear <code>X86_FEATURE_APIC</code> bit in the of the current CPU with the <code>setup_clear_cpu_cap</code> macro. (more about CPU mask you can read in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">CPU masks</a>).</p>
+<h2 id="early-pci-dump">Early PCI dump</h2>
+<p>In the next step we make a dump of the <a href="http://en.wikipedia.org/wiki/Conventional_PCI">PCI</a> devices with the following code:</p>
+<pre><code class="language-C">#ifdef CONFIG_PCI
+	if (pci_early_dump_regs)
+		early_dump_pci_devices();
+#endif
+</code></pre>
+<p><code>pci_early_dump_regs</code> variable defined in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/pci/common.c">arch/x86/pci/common.c</a> and its value depends on the kernel command line parameter: <code>pci=earlydump</code>. We can find definition of this parameter in the <a href="https://github.com/torvalds/linux/blob/master/arch">drivers/pci/pci.c</a>:</p>
+<pre><code class="language-C">early_param("pci", pci_setup);
+</code></pre>
+<p><code>pci_setup</code> function gets the string after the <code>pci=</code> and analyzes it. This function calls <code>pcibios_setup</code> which defined as <code>__weak</code> in the <a href="https://github.com/torvalds/linux/blob/master/arch">drivers/pci/pci.c</a> and every architecture defines the same function which overrides <code>__weak</code> analog. For example <code>x86_64</code> architecture-dependent version is in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/pci/common.c">arch/x86/pci/common.c</a>:</p>
+<pre><code class="language-C">char *__init pcibios_setup(char *str) {
+        ...
+		...
+		...
+		} else if (!strcmp(str, "earlydump")) {
+                pci_early_dump_regs = 1;
+                return NULL;
+        }
+		...
+		...
+		...
+}
+</code></pre>
+<p>So, if <code>CONFIG_PCI</code> option is set and we passed <code>pci=earlydump</code> option to the kernel command line, next function which will be called - <code>early_dump_pci_devices</code> from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/pci/early.c">arch/x86/pci/early.c</a>. This function checks <code>noearly</code> pci parameter with:</p>
+<pre><code class="language-C">if (!early_pci_allowed())
+        return;
+</code></pre>
+<p>and returns if it was passed. Each PCI domain can host up to <code>256</code> buses and each bus hosts up to 32 devices. So, we goes in a loop:</p>
+<pre><code class="language-C">for (bus = 0; bus &lt; 256; bus++) {
+                for (slot = 0; slot &lt; 32; slot++) {
+                        for (func = 0; func &lt; 8; func++) {
+						...
+						...
+						...
+                        }
+                }
+}
+</code></pre>
+<p>and read the <code>pci</code> config with the <code>read_pci_config</code> function.</p>
+<p>That's all. We will not go deep in the <code>pci</code> details, but will see more details in the special <code>Drivers/PCI</code> part.</p>
+<h2 id="finish-with-memory-parsing">Finish with memory parsing</h2>
+<p>After the <code>early_dump_pci_devices</code>, there are a couple of function related with available memory and <a href="http://en.wikipedia.org/wiki/E820">e820</a> which we collected in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Booting/linux-bootstrap-2.html">First steps in the kernel setup</a> part:</p>
+<pre><code class="language-C">	/* update the e820_saved too */
+	e820_reserve_setup_data();
+	finish_e820_parsing();
+	...
+	...
+	...
+	e820_add_kernel_range();
+	trim_bios_range(void);
+	max_pfn = e820_end_of_ram_pfn();
+	early_reserve_e820_mpc_new();
+</code></pre>
+<p>Let's look on it. As you can see the first function is <code>e820_reserve_setup_data</code>. This function does almost the same as <code>memblock_x86_reserve_range_setup_data</code> which we saw above, but it also calls <code>e820_update_range</code> which adds new regions to the <code>e820map</code> with the given type which is <code>E820_RESERVED_KERN</code> in our case. The next function is <code>finish_e820_parsing</code> which sanitizes <code>e820map</code> with the <code>sanitize_e820_map</code> function. Besides this two functions we can see a couple of functions related to the <a href="http://en.wikipedia.org/wiki/E820">e820</a>. You can see it in the listing above. <code>e820_add_kernel_range</code> function takes the physical address of the kernel start and end:</p>
+<pre><code class="language-C">u64 start = __pa_symbol(_text);
+u64 size = __pa_symbol(_end) - start;
+</code></pre>
+<p>checks that <code>.text</code> <code>.data</code> and <code>.bss</code> marked as <code>E820RAM</code> in the <code>e820map</code> and prints the warning message if not. The next function <code>trm_bios_range</code> update first 4096 bytes in <code>e820Map</code> as <code>E820_RESERVED</code> and sanitizes it again with the call of the <code>sanitize_e820_map</code>. After this we get the last page frame number with the call of the <code>e820_end_of_ram_pfn</code> function. Every memory page has an unique number - <code>Page frame number</code> and <code>e820_end_of_ram_pfn</code> function returns the maximum with the call of the <code>e820_end_pfn</code>:</p>
+<pre><code class="language-C">unsigned long __init e820_end_of_ram_pfn(void)
+{
+	return e820_end_pfn(MAX_ARCH_PFN);
+}
+</code></pre>
+<p>where <code>e820_end_pfn</code> takes maximum page frame number on the certain architecture (<code>MAX_ARCH_PFN</code> is <code>0x400000000</code> for <code>x86_64</code>). In the <code>e820_end_pfn</code> we go through the all <code>e820</code> slots and check that <code>e820</code> entry has <code>E820_RAM</code> or <code>E820_PRAM</code> type because we calculate page frame numbers only for these types, gets the base address and end address of the page frame number for the current <code>e820</code> entry and makes some checks for these addresses:</p>
+<pre><code class="language-C">for (i = 0; i &lt; e820.nr_map; i++) {
+		struct e820entry *ei = &amp;e820.map[i];
+		unsigned long start_pfn;
+		unsigned long end_pfn;
+
+		if (ei-&gt;type != E820_RAM &amp;&amp; ei-&gt;type != E820_PRAM)
+			continue;
+
+		start_pfn = ei-&gt;addr &gt;&gt; PAGE_SHIFT;
+		end_pfn = (ei-&gt;addr + ei-&gt;size) &gt;&gt; PAGE_SHIFT;
+
+        if (start_pfn &gt;= limit_pfn)
+			continue;
+		if (end_pfn &gt; limit_pfn) {
+			last_pfn = limit_pfn;
+			break;
+		}
+		if (end_pfn &gt; last_pfn)
+			last_pfn = end_pfn;
+}
+</code></pre>
+<pre><code class="language-C">	if (last_pfn &gt; max_arch_pfn)
+		last_pfn = max_arch_pfn;
+
+	printk(KERN_INFO "e820: last_pfn = %#lx max_arch_pfn = %#lx\n",
+			 last_pfn, max_arch_pfn);
+	return last_pfn;
+</code></pre>
+<p>After this we check that <code>last_pfn</code> which we got in the loop is not greater that maximum page frame number for the certain architecture (<code>x86_64</code> in our case), print information about last page frame number and return it. We can see the <code>last_pfn</code> in the <code>dmesg</code> output:</p>
+<pre><code>...
+[    0.000000] e820: last_pfn = 0x41f000 max_arch_pfn = 0x400000000
+...
+</code></pre>
+<p>After this, as we have calculated the biggest page frame number, we calculate <code>max_low_pfn</code> which is the biggest page frame number in the <code>low memory</code> or bellow first <code>4</code> gigabytes. If installed more than 4 gigabytes of RAM, <code>max_low_pfn</code> will be result of the <code>e820_end_of_low_ram_pfn</code> function which does the same <code>e820_end_of_ram_pfn</code> but with 4 gigabytes limit, in other way <code>max_low_pfn</code> will be the same as <code>max_pfn</code>:</p>
+<pre><code class="language-C">if (max_pfn &gt; (1UL&lt;&lt;(32 - PAGE_SHIFT)))
+	max_low_pfn = e820_end_of_low_ram_pfn();
+else
+	max_low_pfn = max_pfn;
+		
+high_memory = (void *)__va(max_pfn * PAGE_SIZE - 1) + 1;
+</code></pre>
+<p>Next we calculate <code>high_memory</code> (defines the upper bound on direct map memory) with <code>__va</code> macro which returns a virtual address by the given physical memory.</p>
+<h2 id="dmi-scanning">DMI scanning</h2>
+<p>The next step after manipulations with different memory regions and <code>e820</code> slots is collecting information about computer. We will get all information with the <a href="http://en.wikipedia.org/wiki/Desktop_Management_Interface">Desktop Management Interface</a> and following functions:</p>
+<pre><code class="language-C">dmi_scan_machine();
+dmi_memdev_walk();
+</code></pre>
+<p>First is <code>dmi_scan_machine</code> defined in the <a href="https://github.com/torvalds/linux/blob/master/drivers/firmware/dmi_scan.c">drivers/firmware/dmi_scan.c</a>. This function goes through the <a href="http://en.wikipedia.org/wiki/System_Management_BIOS">System Management BIOS</a> structures and extracts information. There are two ways specified to gain access to the <code>SMBIOS</code> table: get the pointer to the <code>SMBIOS</code> table from the <a href="http://en.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">EFI</a>'s configuration table and scanning the physical memory between <code>0xF0000</code> and <code>0x10000</code> addresses. Let's look on the second approach. <code>dmi_scan_machine</code> function remaps memory between <code>0xf0000</code> and <code>0x10000</code> with the <code>dmi_early_remap</code> which just expands to the <code>early_ioremap</code>:</p>
+<pre><code class="language-C">void __init dmi_scan_machine(void)
+{
+	char __iomem *p, *q;
+	char buf[32];
+	...
+	...
+	...
+	p = dmi_early_remap(0xF0000, 0x10000);
+	if (p == NULL)
+			goto error;
+</code></pre>
+<p>and iterates over all <code>DMI</code> header address and find search <code>_SM_</code> string:</p>
+<pre><code class="language-C">memset(buf, 0, 16);
+for (q = p; q &lt; p + 0x10000; q += 16) {
+		memcpy_fromio(buf + 16, q, 16);
+		if (!dmi_smbios3_present(buf) || !dmi_present(buf)) {
+			dmi_available = 1;
+			dmi_early_unmap(p, 0x10000);
+			goto out;
+		}
+		memcpy(buf, buf + 16, 16);
+}
+</code></pre>
+<p><code>_SM_</code> string must be between <code>000F0000h</code> and <code>0x000FFFFF</code>. Here we copy 16 bytes to the <code>buf</code> with <code>memcpy_fromio</code> which is the same <code>memcpy</code> and execute <code>dmi_smbios3_present</code> and <code>dmi_present</code> on the buffer. These functions check that first 4 bytes is <code>_SM_</code> string, get <code>SMBIOS</code> version and gets <code>_DMI_</code> attributes as <code>DMI</code> structure table length, table address and etc... After one of these functions finish, you will see the result of it in the <code>dmesg</code> output:</p>
+<pre><code>[    0.000000] SMBIOS 2.7 present.
+[    0.000000] DMI: Gigabyte Technology Co., Ltd. Z97X-UD5H-BK/Z97X-UD5H-BK, BIOS F6 06/17/2014
+</code></pre>
+<p>In the end of the <code>dmi_scan_machine</code>, we unmap the previously remapped memory:</p>
+<pre><code class="language-C">dmi_early_unmap(p, 0x10000);
+</code></pre>
+<p>The second function is - <code>dmi_memdev_walk</code>. As you can understand it goes over memory devices. Let's look on it:</p>
+<pre><code class="language-C">void __init dmi_memdev_walk(void)
+{
+	if (!dmi_available)
+		return;
+
+	if (dmi_walk_early(count_mem_devices) == 0 &amp;&amp; dmi_memdev_nr) {
+		dmi_memdev = dmi_alloc(sizeof(*dmi_memdev) * dmi_memdev_nr);
+		if (dmi_memdev)
+			dmi_walk_early(save_mem_devices);
+	}
+}
+</code></pre>
+<p>It checks that <code>DMI</code> available (we got it in the previous function - <code>dmi_scan_machine</code>) and collects information about memory devices with <code>dmi_walk_early</code> and <code>dmi_alloc</code> which defined as:</p>
+<pre><code>#ifdef CONFIG_DMI
+RESERVE_BRK(dmi_alloc, 65536);
+#endif
+</code></pre>
+<p><code>RESERVE_BRK</code> defined in the <a href="http://en.wikipedia.org/wiki/Desktop_Management_Interface">arch/x86/include/asm/setup.h</a> and reserves space with given size in the <code>brk</code> section.</p>
+<hr>
+<pre><code>init_hypervisor_platform();
+x86_init.resources.probe_roms();
+insert_resource(&amp;iomem_resource, &amp;code_resource);
+insert_resource(&amp;iomem_resource, &amp;data_resource);
+insert_resource(&amp;iomem_resource, &amp;bss_resource);
+early_gart_iommu_check();
+</code></pre>
+<h2 id="smp-config">SMP config</h2>
+<p>The next step is parsing of the <a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a> configuration. We do it with the call of the <code>find_smp_config</code> function which just calls function:</p>
+<pre><code class="language-C">static inline void find_smp_config(void)
+{
+        x86_init.mpparse.find_smp_config();
+}
+</code></pre>
+<p>inside. <code>x86_init.mpparse.find_smp_config</code> is the <code>default_find_smp_config</code> function from the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/mpparse.c">arch/x86/kernel/mpparse.c</a>. In the <code>default_find_smp_config</code> function we are scanning a couple of memory regions for <code>SMP</code> config and return if they are found:</p>
+<pre><code class="language-C">if (smp_scan_config(0x0, 0x400) ||
+            smp_scan_config(639 * 0x400, 0x400) ||
+            smp_scan_config(0xF0000, 0x10000))
+            return;
+</code></pre>
+<p>First of all <code>smp_scan_config</code> function defines a couple of variables:</p>
+<pre><code class="language-C">unsigned int *bp = phys_to_virt(base);
+struct mpf_intel *mpf;
+</code></pre>
+<p>First is virtual address of the memory region where we will scan <code>SMP</code> config, second is the pointer to the <code>mpf_intel</code> structure. Let's try to understand what is it <code>mpf_intel</code>. All information stores in the multiprocessor configuration data structure. <code>mpf_intel</code> presents this structure and looks:</p>
+<pre><code class="language-C">struct mpf_intel {
+        char signature[4];
+        unsigned int physptr;
+        unsigned char length;
+        unsigned char specification;
+        unsigned char checksum;
+        unsigned char feature1;
+        unsigned char feature2;
+        unsigned char feature3;
+        unsigned char feature4;
+        unsigned char feature5;
+};
+</code></pre>
+<p>As we can read in the documentation - one of the main functions of the system BIOS is to construct the MP floating pointer structure and the MP configuration table. And operating system must have access to this information about the multiprocessor configuration and <code>mpf_intel</code> stores the physical address (look at second parameter) of the multiprocessor configuration table. So, <code>smp_scan_config</code> going in a loop through the given memory range and tries to find <code>MP floating pointer structure</code> there. It checks that current byte points to the <code>SMP</code> signature, checks checksum, checks if <code>mpf-&gt;specification</code> is 1 or 4(it must be <code>1</code> or <code>4</code> by specification) in the loop:</p>
+<pre><code class="language-C">while (length &gt; 0) {
+if ((*bp == SMP_MAGIC_IDENT) &amp;&amp;
+    (mpf-&gt;length == 1) &amp;&amp;
+    !mpf_checksum((unsigned char *)bp, 16) &amp;&amp;
+    ((mpf-&gt;specification == 1)
+    || (mpf-&gt;specification == 4))) {
+
+        mem = virt_to_phys(mpf);
+        memblock_reserve(mem, sizeof(*mpf));
+        if (mpf-&gt;physptr)
+            smp_reserve_memory(mpf);
+	}
+}
+</code></pre>
+<p>reserves given memory block if search is successful with <code>memblock_reserve</code> and reserves physical address of the multiprocessor configuration table. You can find documentation about this in the - <a href="http://www.intel.com/design/pentium/datashts/24201606.pdf">MultiProcessor Specification</a>. You can read More details in the special part about <code>SMP</code>.</p>
+<h2 id="additional-early-memory-initialization-routines">Additional early memory initialization routines</h2>
+<p>In the next step of the <code>setup_arch</code> we can see the call of the <code>early_alloc_pgt_buf</code> function which allocates the page table buffer for early stage. The page table buffer will be placed in the <code>brk</code> area. Let's look on its implementation:</p>
+<pre><code class="language-C">void  __init early_alloc_pgt_buf(void)
+{
+        unsigned long tables = INIT_PGT_BUF_SIZE;
+        phys_addr_t base;
+
+        base = __pa(extend_brk(tables, PAGE_SIZE));
+
+        pgt_buf_start = base &gt;&gt; PAGE_SHIFT;
+        pgt_buf_end = pgt_buf_start;
+        pgt_buf_top = pgt_buf_start + (tables &gt;&gt; PAGE_SHIFT);
+}
+</code></pre>
+<p>First of all it get the size of the page table buffer, it will be <code>INIT_PGT_BUF_SIZE</code> which is <code>(6 * PAGE_SIZE)</code> in the current linux kernel 4.0. As we got the size of the page table buffer, we call <code>extend_brk</code> function with two parameters: size and align. As you can understand from its name, this function extends the <code>brk</code> area. As we can see in the linux kernel linker script <code>brk</code> is in memory right after the <a href="http://en.wikipedia.org/wiki/.bss">BSS</a>:</p>
+<pre><code class="language-C">	. = ALIGN(PAGE_SIZE);
+	.brk : AT(ADDR(.brk) - LOAD_OFFSET) {
+		__brk_base = .;
+		. += 64 * 1024;		/* 64k alignment slop space */
+		*(.brk_reservation)	/* areas brk users have reserved */
+		__brk_limit = .;
+	}
+</code></pre>
+<p>Or we can find it with <code>readelf</code> util:</p>
+<p><a href="http://oi61.tinypic.com/71lkeu.jpg" data-uk-lightbox><img src="http://oi61.tinypic.com/71lkeu.jpg" alt="brk area"></a></p>
+<p>After that we got physical address of the new <code>brk</code> with the <code>__pa</code> macro, we calculate the base address and the end of the page table buffer. In the next step as we got page table buffer, we reserve memory block for the brk area with the <code>reserve_brk</code> function:</p>
+<pre><code class="language-C">static void __init reserve_brk(void)
+{
+	if (_brk_end &gt; _brk_start)
+		memblock_reserve(__pa_symbol(_brk_start),
+				 _brk_end - _brk_start);
+
+	_brk_start = 0;
+}
+</code></pre>
+<p>Note that in the end of the <code>reserve_brk</code>, we set <code>brk_start</code> to zero, because after this we will not allocate it anymore. The next step after reserving memory block for the <code>brk</code>, we need to unmap out-of-range memory areas in the kernel mapping with the <code>cleanup_highmap</code> function. Remember that kernel mapping is <code>__START_KERNEL_map</code> and <code>_end - _text</code> or <code>level2_kernel_pgt</code> maps the kernel <code>_text</code>, <code>data</code> and <code>bss</code>. In the start of the <code>clean_high_map</code> we define these parameters:</p>
+<pre><code class="language-C">unsigned long vaddr = __START_KERNEL_map;
+unsigned long end = roundup((unsigned long)_end, PMD_SIZE) - 1;
+pmd_t *pmd = level2_kernel_pgt;
+pmd_t *last_pmd = pmd + PTRS_PER_PMD;
+</code></pre>
+<p>Now, as we defined start and end of the kernel mapping, we go in the loop through the all kernel page middle directory entries and clean entries which are not between <code>_text</code> and <code>end</code>:</p>
+<pre><code class="language-C">for (; pmd &lt; last_pmd; pmd++, vaddr += PMD_SIZE) {
+        if (pmd_none(*pmd))
+            continue;
+        if (vaddr &lt; (unsigned long) _text || vaddr &gt; end)
+            set_pmd(pmd, __pmd(0));
+}
+</code></pre>
+<p>After this we set the limit for the <code>memblock</code> allocation with the <code>memblock_set_current_limit</code> function (read more about <code>memblock</code> you can in the <a href="https://github.com/MintCN/linux-insides-zh/blob/master/mm/linux-mm-2.html">Linux kernel memory management Part 2</a>), it will be <code>ISA_END_ADDRESS</code> or <code>0x100000</code> and fill the <code>memblock</code> information according to <code>e820</code> with the call of the <code>memblock_x86_fill</code> function. You can see the result of this function in the kernel initialization time:</p>
+<pre><code>MEMBLOCK configuration:
+ memory size = 0x1fff7ec00 reserved size = 0x1e30000
+ memory.cnt  = 0x3
+ memory[0x0]	[0x00000000001000-0x0000000009efff], 0x9e000 bytes flags: 0x0
+ memory[0x1]	[0x00000000100000-0x000000bffdffff], 0xbfee0000 bytes flags: 0x0
+ memory[0x2]	[0x00000100000000-0x0000023fffffff], 0x140000000 bytes flags: 0x0
+ reserved.cnt  = 0x3
+ reserved[0x0]	[0x0000000009f000-0x000000000fffff], 0x61000 bytes flags: 0x0
+ reserved[0x1]	[0x00000001000000-0x00000001a57fff], 0xa58000 bytes flags: 0x0
+ reserved[0x2]	[0x0000007ec89000-0x0000007fffffff], 0x1377000 bytes flags: 0x0
+</code></pre>
+<p>The rest functions after the <code>memblock_x86_fill</code> are: <code>early_reserve_e820_mpc_new</code> allocates additional slots in the <code>e820map</code> for MultiProcessor Specification table, <code>reserve_real_mode</code> - reserves low memory from <code>0x0</code> to 1 megabyte for the trampoline to the real mode (for rebooting, etc.), <code>trim_platform_memory_ranges</code> - trims certain memory regions started from <code>0x20050000</code>, <code>0x20110000</code>, etc. these regions must be excluded because <a href="http://en.wikipedia.org/wiki/Sandy_Bridge">Sandy Bridge</a> has problems with these regions, <code>trim_low_memory_range</code> reserves the first 4 kilobyte page in <code>memblock</code>, <code>init_mem_mapping</code> function reconstructs direct memory mapping and setups the direct mapping of the physical memory at <code>PAGE_OFFSET</code>, <code>early_trap_pf_init</code> setups <code>#PF</code> handler (we will look on it in the chapter about interrupts) and <code>setup_real_mode</code> function setups trampoline to the <a href="http://en.wikipedia.org/wiki/Real_mode">real mode</a> code.</p>
+<p>That's all. You can note that this part will not cover all functions which are in the <code>setup_arch</code> (like <code>early_gart_iommu_check</code>, <a href="http://en.wikipedia.org/wiki/Memory_type_range_register">mtrr</a> initialization, etc.). As I already wrote many times, <code>setup_arch</code> is big, and linux kernel is big. That's why I can't cover every line in the linux kernel. I don't think that we missed something important, but you can say something like: each line of code is important. Yes, it's true, but I missed them anyway, because I think that it is not realistic to cover full linux kernel. Anyway we will often return to the idea that we have already seen, and if something is unfamiliar, we will cover this theme.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>It is the end of the sixth part about linux kernel initialization process. In this part we continued to dive in the <code>setup_arch</code> function again and it was long part, but we are not finished with it. Yes, <code>setup_arch</code> is big, hope that next part will be the last part about this function.</p>
+<p>If you have any questions or suggestions write me a comment or ping me at <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/0xAX/linux-insides">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/MultiProcessor_Specification">MultiProcessor Specification</a></li>
+<li><a href="http://en.wikipedia.org/wiki/NX_bit">NX bit</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/Documentation/kernel-parameters.txt">Documentation/kernel-parameters.txt</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">APIC</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/Concepts/cpumask.html">CPU masks</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">Linux kernel memory management</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Conventional_PCI">PCI</a></li>
+<li><a href="http://en.wikipedia.org/wiki/E820">e820</a></li>
+<li><a href="http://en.wikipedia.org/wiki/System_Management_BIOS">System Management BIOS</a></li>
+<li><a href="http://en.wikipedia.org/wiki/System_Management_BIOS">System Management BIOS</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">EFI</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a></li>
+<li><a href="http://www.intel.com/design/pentium/datashts/24201606.pdf">MultiProcessor Specification</a></li>
+<li><a href="http://en.wikipedia.org/wiki/.bss">BSS</a></li>
+<li><a href="http://www.dmtf.org/sites/default/files/standards/documents/DSP0134v2.5Final.pdf">SMBIOS specification</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-5.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/181/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/129/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/129/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10个">10</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/188/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7471;var bookPageRelUrl ='Initialization/linux-initialization-6.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

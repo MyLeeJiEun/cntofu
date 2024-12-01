@@ -1,0 +1,489 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>主从数据同步-im-service 简介</title>
+<meta content='主从数据同步,im-service 简介' name='keywords'>
+<meta content='主从数据同步,im-service 简介' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/159/im-service/ims/rpc.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">存储服务RPC</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/159/im-service/ims/message_type.html">
+<span class="">消息类型</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/159/index.html">im-service 简介</a>
+<a target="_blank" rel="nofollow" href="https://github.com/yu000hong/book-open-source" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="主从数据同步">主从数据同步</h1>
+<h3 id="master">Master</h3>
+<p><strong>数据结构</strong></p>
+<pre><code class="language-go">type Master struct {
+&nbsp;&nbsp;&nbsp;&nbsp;ewt       chan *EMessage
+
+&nbsp;&nbsp;&nbsp;&nbsp;mutex     sync.Mutex
+&nbsp;&nbsp;&nbsp;&nbsp;clients   map[*SyncClient]struct{}
+}
+</code></pre>
+<p>Master表示当前服务的角色为主服务器，Master维护了其对应的从服务器与当前Master的连接列表clients。</p>
+<p>mutex互斥锁的目的就是同步访问这些clients。</p>
+<p><strong>主要工作</strong></p>
+<ol>
+<li>维护一个大小为1000的消息队列</li>
+<li>每当ewt通道接收到消息时，将消息放入消息队列</li>
+<li>如果消息队列已满，那么调用SendBatch()方法将消息同步到从服务器</li>
+<li>如果达到一个周期（60秒），那么也会调用SendBatch()方法进行数据同步</li>
+</ol>
+<p><strong>ewt通道</strong></p>
+<p>Master会监听这个通道，每当有消息存入文件后，同时会将该消息发往Mater的ewt通道。</p>
+<h3 id="slaver">Slaver</h3>
+<p><strong>数据结构</strong></p>
+<pre><code class="language-go">type Slaver struct {
+&nbsp;&nbsp;&nbsp;&nbsp;addr string
+}
+</code></pre>
+<p>Slaver表示当前服务的角色为从服务器，里面addr字段表示其对应的主服务器的网络地址。</p>
+<p>只有配置了<code>master_address</code>参数，才会启动Slaver从服务器，去与主服务器Master进行数据同步操作。</p>
+<p><strong>主要工作</strong></p>
+<ol>
+<li>给Master发送MSG_STORAGE_SYNC_BEGIN命令（带上本地nextMessageId）</li>
+<li>不断接收Master发送来的同步命令：MSG_STORAGE_SYNC_MESSAGE 或 MSG_STORAGE_SYNC_MESSAGE_BATCH</li>
+<li>根据Master的同步命令将数据同步到本地存储</li>
+</ol>
+<p>注：从代码看，Master只会批量的与Slaver进行数据同步，也即只会发送MSG_STORAGE_SYNC_MESSAGE_BATCH命令。</p>
+<p>代码：</p>
+<pre><code class="language-go">msgid := storage.NextMessageID()
+cursor := &amp;SyncCursor{msgid}
+log.Info("cursor msgid:", msgid)
+
+msg := &amp;Message{cmd:MSG_STORAGE_SYNC_BEGIN, body:cursor}
+seq += 1
+msg.seq = seq
+SendMessage(conn, msg)
+
+for {
+	msg := ReceiveStorageSyncMessage(conn)
+	if msg == nil {
+		return
+	}
+
+	if msg.cmd == MSG_STORAGE_SYNC_MESSAGE {
+		emsg := msg.body.(*EMessage)
+		storage.SaveSyncMessage(emsg)
+	} else if msg.cmd == MSG_STORAGE_SYNC_MESSAGE_BATCH {
+		mb := msg.body.(*MessageBatch)
+		storage.SaveSyncMessageBatch(mb)
+	} else {
+		log.Error("unknown message cmd:", Command(msg.cmd))
+	}
+}
+</code></pre>
+<h3 id="syncclient">SyncClient</h3>
+<p><strong>数据结构</strong></p>
+<pre><code class="language-go">type SyncClient struct {
+&nbsp;&nbsp;&nbsp;&nbsp;conn      *net.TCPConn
+&nbsp;&nbsp;&nbsp;&nbsp;ewt       chan *Message
+}
+</code></pre>
+<p>conn为对应从服务器的连接</p>
+<p>ewt通道用于主服务器与SyncClient的通信，SyncClient从ewt通道接收到消息时，会直接发送到对应的从服务器达到数据同步的目的。</p>
+<p>Master主服务器上，与每个从服务器Slaver建立连接之后，都会生成一个与之对应的SyncClient实例，这个实例其实就是维护了主服务器与从服务器的连接关系。Master主服务器上维护了一个从服务器连接集合clients。</p>
+<p><strong>主要工作</strong></p>
+<ol>
+<li>验证从服务器（如果conn连接没有发送数据过来，或者发送的命令不是MSG_STORAGE_SYNC_BEGIN，表明不是合法Slaver，丢弃该连接）</li>
+<li>根据从服务器传上来的nextMessageId，将主服务器上基于此id的最新消息同步回从服务器（需要从存储文件中获取对应消息）</li>
+<li>监听ewt通道，如果收到从Master传来的消息，将其同步到从服务器</li>
+</ol>
+<p>问题：在从服务器连接上主服务器进行数据同步的过程中，监听ewt通道之前，如果有消息进来，这些消息感觉会丢失哦？！</p>
+<p>我们可以配置多层级主从复制架构！</p>
+<p>Slaver与Master间的通讯协议：</p>
+<ol>
+<li>Slaver发送MSG_STORAGE_SYNC_BEGIN（根据当前的nextMessageID）</li>
+<li>Master根据Slaver发送的nextMessageID去本地加载最新的消息列表</li>
+<li>根据nextMessageID去文件中读取消息，每5000条数据形成一个batch，发送到Slaver［MSG_STORAGE_SYNC_MESSAGE_BATCH］</li>
+<li>将Slaver对应的连接SyncClient加入到Master的clients集合里</li>
+<li>通过SyncClient.ewt通道来实时同步新消息</li>
+<li>storage_file.go文件里的saveMessage()方法每写入一条消息就会发送一条EMessage到Master.ewt通道，Master会将消息放入消息队列，当消息队列已满（1000条）或者超过一定时限（60秒）时，就会遍历Master.clients，并通过client.ewt通道发送消息。</li>
+<li>当Slaver连接断开时，会从Master.clients集合中移除。</li>
+</ol>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/137/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/137/index.html">Growth: 全栈增长工程师指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 6161个">6161</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/105/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/105/index.html">程序员的自我修养</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/64.html">leohxj</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">136页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 130个">130</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/17/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/17/index.html">Go语言博客实践</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/12.html">achun</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 298个">298</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/168/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/103/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/103/index.html">http2讲解中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 254个">254</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/159/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="10724">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/README.html" title="im-service" data-book-page-rel-url="im-service/README.html" data-book-page-id="10725">im-service</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/ims.html" title="IMS存储服务器" data-book-page-rel-url="im-service/ims/ims.html" data-book-page-id="10726">IMS存储服务器</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/configuration.html" title="配置文件" data-book-page-rel-url="im-service/ims/configuration.html" data-book-page-id="10727">配置文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/index.html" title="索引文件" data-book-page-rel-url="im-service/ims/index.html" data-book-page-id="10728">索引文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/storage_file.html" title="消息文件" data-book-page-rel-url="im-service/ims/storage_file.html" data-book-page-id="10729">消息文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/boot.html" title="启动过程" data-book-page-rel-url="im-service/ims/boot.html" data-book-page-id="10730">启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/rpc.html" title="存储服务RPC" data-book-page-rel-url="im-service/ims/rpc.html" data-book-page-id="10731">存储服务RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/master-slaver-sync.html" title="主从数据同步" data-book-page-rel-url="im-service/ims/master-slaver-sync.html" data-book-page-id="10732">主从数据同步</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/message_type.html" title="消息类型" data-book-page-rel-url="im-service/ims/message_type.html" data-book-page-id="10733">消息类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/peer_storage.html" title="单聊消息" data-book-page-rel-url="im-service/ims/peer_storage.html" data-book-page-id="10734">单聊消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/group_storage.html" title="群组消息" data-book-page-rel-url="im-service/ims/group_storage.html" data-book-page-id="10735">群组消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/ims/question.html" title="一些问题" data-book-page-rel-url="im-service/ims/question.html" data-book-page-id="10736">一些问题</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/imr/imr.html" title="IMR路由服务器" data-book-page-rel-url="im-service/imr/imr.html" data-book-page-id="10737">IMR路由服务器</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/imr/imr_config.html" title="配置文件" data-book-page-rel-url="im-service/imr/imr_config.html" data-book-page-id="10738">配置文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/imr/push.html" title="消息推送" data-book-page-rel-url="im-service/imr/push.html" data-book-page-id="10739">消息推送</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/imr/imr_client.html" title="IM客户端" data-book-page-rel-url="im-service/imr/imr_client.html" data-book-page-id="10740">IM客户端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/im.html" title="IM终端服务器" data-book-page-rel-url="im-service/im/im.html" data-book-page-id="10741">IM终端服务器</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/configuration.html" title="配置文件" data-book-page-rel-url="im-service/im/configuration.html" data-book-page-id="10742">配置文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/redis.html" title="Redis使用情况" data-book-page-rel-url="im-service/im/redis.html" data-book-page-id="10743">Redis使用情况</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/mysql.html" title="MySQL使用情况" data-book-page-rel-url="im-service/im/mysql.html" data-book-page-id="10744">MySQL使用情况</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/group_manager.html" title="群组管理" data-book-page-rel-url="im-service/im/group_manager.html" data-book-page-id="10745">群组管理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/route.html" title="消息路由" data-book-page-rel-url="im-service/im/route.html" data-book-page-id="10746">消息路由</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/room_client.html" title="聊天室消息" data-book-page-rel-url="im-service/im/room_client.html" data-book-page-id="10747">聊天室消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/customer_client.html" title="客服消息" data-book-page-rel-url="im-service/im/customer_client.html" data-book-page-id="10748">客服消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/group_client.html" title="群聊消息" data-book-page-rel-url="im-service/im/group_client.html" data-book-page-id="10749">群聊消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/peer_client.html" title="单聊消息" data-book-page-rel-url="im-service/im/peer_client.html" data-book-page-id="10750">单聊消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/client.html" title="客户端连接" data-book-page-rel-url="im-service/im/client.html" data-book-page-id="10751">客户端连接</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/im/question.html" title="一些问题" data-book-page-rel-url="im-service/im/question.html" data-book-page-id="10752">一些问题</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/vocabularies.html" title="一些词汇" data-book-page-rel-url="im-service/vocabularies.html" data-book-page-id="10753">一些词汇</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/improvements.html" title="一些改进" data-book-page-rel-url="im-service/improvements.html" data-book-page-id="10754">一些改进</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/questions.html" title="一些问题" data-book-page-rel-url="im-service/questions.html" data-book-page-id="10755">一些问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/bugs.html" title="一些BUG" data-book-page-rel-url="im-service/bugs.html" data-book-page-id="10756">一些BUG</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/protocols.html" title="通信协议" data-book-page-rel-url="im-service/protocols.html" data-book-page-id="10757">通信协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/app_client_sync.html" title="终端消息同步" data-book-page-rel-url="im-service/app_client_sync.html" data-book-page-id="10758">终端消息同步</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/159/im-service/version_compatibility.html" title="版本兼容" data-book-page-rel-url="im-service/version_compatibility.html" data-book-page-id="10759">版本兼容</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =159;var bookPageId =10732;var bookPageRelUrl ='im-service/ims/master-slaver-sync.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

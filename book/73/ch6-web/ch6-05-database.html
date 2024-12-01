@@ -1,0 +1,639 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>6.5. Database和数据库打交道-Go语言高级编程</title>
+<meta content='6.5. Database和数据库打交道,Go语言高级编程' name='keywords'>
+<meta content='6.5. Database和数据库打交道,Go语言高级编程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/73/ch6-web/ch6-04-validator.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">6.4. Valida..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/73/ch6-web/ch6-08-layout-of-web-project.html">
+<span class="">6.8. Layout..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/73/index.html">Go语言高级编程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/chai2010/advanced-go-programming-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="64-database-和数据库打交道">6.4. Database 和数据库打交道</h1>
+<p>本节将对 db/sql 官方标准库作一些简单分析，并介绍一些应用比较广泛的开源 orm 和 sql builder。并从企业级应用开发和公司架构的角度来分析哪种技术栈对于现代的企业级应用更为合适。</p>
+<h2 id="从-databasesql-讲起">从 database/sql 讲起</h2>
+<p>golang 官方提供了 <code>database/sql</code> 包来给用户进行和数据库打交道的工作，实际上 <code>database/sql</code> 库就只是提供了一套操作 db 的接口和规范，例如抽象好的 sql 预处理(prepare)，连接池管理，数据绑定，事务，错误处理等等。官方并没有提供具体某种数据库实现的协议支持。</p>
+<p>和具体的数据库，例如 MySQL 打交道，还需要再引入 MySQL 的驱动，像下面这样：</p>
+<pre><code class="language-go">import "database/sql"
+import _ "github.com/go-sql-driver/mysql"
+
+db, err := sql.Open("mysql", "user:password@/dbname")
+</code></pre>
+<pre><code class="language-go">import _ "github.com/go-sql-driver/mysql"
+</code></pre>
+<p>这一句 import，实际上是调用了 mysql 包的 init 函数，做的事情也很简单：</p>
+<pre><code class="language-go">func init() {
+    sql.Register("mysql", &amp;MySQLDriver{})
+}
+</code></pre>
+<p>在 sql 包的 全局 map 里把 mysql 这个名字的 driver 注册上。实际上 Driver 在 sql 包中是一个 interface：</p>
+<pre><code class="language-go">type Driver interface {
+    Open(name string) (Conn, error)
+}
+</code></pre>
+<p>调用 sql.Open() 返回的 db 对象实际上就是这里的 Conn。</p>
+<pre><code class="language-go">type Conn interface {
+    Prepare(query string) (Stmt, error)
+    Close() error
+    Begin() (Tx, error)
+}
+</code></pre>
+<p>也是一个接口。实际上如果你仔细地查看 database/sql/driver/driver.go 的代码会发现，这个文件里所有的成员全都是 interface，对这些类型进行操作，实际上还是会调用具体的 driver 里的方法。</p>
+<p>从用户的角度来讲，在使用 database/sql 包的过程中，你能够使用的也就是这些 interface 里提供的函数。来看一个使用 database/sql 和 go-sql-driver/mysql 的完整的例子：</p>
+<pre><code class="language-go">package main
+
+import (
+    "database/sql"
+    _ "github.com/go-sql-driver/mysql"
+)
+
+func main() {
+    // db 是一个 sql.DB 类型的对象
+    // 该对象线程安全，且内部已包含了一个连接池
+    // 连接池的选项可以在 sql.Open 中设置，这里为了简单省略了
+    db, err := sql.Open("mysql",
+        "user:password@tcp(127.0.0.1:3306)/hello")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
+
+    var (
+        id int
+        name string
+    )
+    rows, err := db.Query("select id, name from users where id = ?", 1)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    defer rows.Close()
+
+    // 必须要把 rows 里的内容读完，否则连接永远不会释放
+    for rows.Next() {
+        err := rows.Scan(&amp;id, &amp;name)
+        if err != nil {
+            log.Fatal(err)
+        }
+        log.Println(id, name)
+    }
+
+    err = rows.Err()
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+</code></pre>
+<p>如果读者想了解官方这个 database/sql 库更加详细的用法的话，可以参考：</p>
+<blockquote>
+<p>http://go-database-sql.org/</p>
+</blockquote>
+<p>包括该库的功能介绍、用法、注意事项和反直觉的一些实现方式(例如同一个 goroutine 内对 sql.DB 的查询，可能在多个连接上)都有涉及，本章中不再赘述。</p>
+<p>聪明如你的话，在上面这段简短的程序中可能已经嗅出了一些不好的味道。官方的 db 库提供的功能这么简单，我们每次去数据库里读取内容岂不是都要去写这么一套差不多的代码？或者如果我们的对象是 struct，把 sql.Rows 绑定到对象的工作就会变得更加得重复而无聊。</p>
+<p>是的，所以社区才会有各种各样的 sql builder 和 orm 百花齐放。</p>
+<h2 id="提高生产效率的-orm-和-sql-builder">提高生产效率的 orm 和 sql builder</h2>
+<p>在 web 开发领域常常提到的 orm 是什么？我们先看看万能的维基百科：</p>
+<pre><code>对象关系映射（英语：Object Relational Mapping，简称ORM，或O/RM，或O/R mapping），
+是一种程序设计技术，用于实现面向对象编程语言里不同类型系统的数据之间的转换。
+从效果上说，它其实是创建了一个可在编程语言里使用的“虚拟对象数据库”。
+</code></pre>
+<p>最为常见的 orm 实际上做的是从 db -&gt; 程序的 class / struct 这样的映射。所以你手边的程序可能是从 mysql 的表 -&gt; 你的程序内 class。我们可以先来看看其它的程序语言里的 orm 写起来是怎么样的感觉：</p>
+<pre><code class="language-python">&gt;&gt;&gt; from blog.models import Blog
+&gt;&gt;&gt; b = Blog(name='Beatles Blog', tagline='All the latest Beatles news.')
+&gt;&gt;&gt; b.save()
+</code></pre>
+<p>完全没有数据库的痕迹，没错。orm 的目的就是屏蔽掉 db 层，实际上很多语言的 orm 只要把你的 class/struct 定义好，再用特定的语法将结构体之间的一对一或者一对多关系表达出来。那么任务就完成了。然后你就可以对这些映射好了数据库表的对象进行各种操作，例如 save，create，retrieve，delete。至于 orm 背着你背地里做了什么阴险的勾当，你是不一定清楚的。使用 orm 的时候，我们往往比较容易有一种忘记了数据库的直观感受。举个例子，我们有个一需求，是向用户展示最新的商品列表，我们再假设，我们的商品和商家是一对一的关联关系，我们就很容易写出像下面这样的代码：</p>
+<pre><code class="language-python"># 伪代码
+shopList := []
+for product in productList {
+    shopList = append(shopList, product.GetShop)
+}
+</code></pre>
+<p>当然了，我们不能批判这样写代码的程序员是偷懒的程序员。因为 orm 一类的工具在出发点上就是屏蔽 sql，让我们对数据库的操作更接近于人类的思维方式。这样很多只接触过 orm 而且又是刚入行的程序员就很容易写出上面这样的代码。</p>
+<p>这样的代码将对数据库的读请求放大了 N 倍。也就是说，如果你的商品列表有 15 个 sku，那么每次用户打开这个页面，至少需要执行 1(查询商品列表) + 15(查询相关的商铺信息) 次查询。这里 N 是 16。如果你的列表页很大，比如说有 600 个条目，那么你就至少要执行 1 + 600 次查询。如果说你的数据库能够承受的最大的简单查询是12w qps，而上述这样的查询正好是你最常用的查询的话，实际上你能对外提供的服务能力是多少呢？是 200 qps！互联网系统的忌讳之一，就是这种无端的读放大。</p>
+<p>当然，你也可以说这不是 orm 的问题，如果你手写 sql 你还是可能会写出差不多的程序，那么再来看两个 demo：</p>
+<pre><code class="language-go">o := orm.NewOrm()
+num, err := o.QueryTable("cardgroup").Filter("Cards__Card__Name", cardName).All(&amp;cardgroups)
+</code></pre>
+<p>很多 orm 都提供了这种 Filter 类型的查询方式，beego 也不例外。不过实际上在这段 orm 背后隐藏了非常难以察觉的细节，那就是生成的 sql 语句会自动 limit 1000。</p>
+<p>也许喜欢 beego 的读者读到这里会反驳了，你是没有认真阅读 beego 的文档就瞎写。是的，尽管 beego 在文档里说明了 All 查询在不显式地指定 Limit 的话会自动 limit 1000，但对于很多没有阅读过文档或者看过 beego 源码的人，这依然是一个非常难以察觉的“魔鬼”细节。喜欢强类型语言的人一般都不喜欢语言隐式地去做什么事情，例如各种语言在赋值操作时进行的隐式类型转换然后又在转换中丢失了精度的勾当，一定让你非常的头疼。所以一个程序库背地里做的事情还是越少越好，如果一定要做，那也一定要在显眼的地方做。比如上面的例子，去掉这种默认的自作聪明的行为，或者要求用户强制传入 limit 参数都是更好的选择。</p>
+<p>除了 limit 的问题，我们再看一遍这个 beego orm 的查询：</p>
+<pre><code class="language-go">num, err := o.QueryTable("cardgroup").Filter("Cards__Card__Name", cardName).All(&amp;cardgroups) 
+</code></pre>
+<p>你可以看得出来这个 Filter 是有表 join 的操作么？当然了，对 beego orm 有过深入使用经验的用户还是会觉得这是在吹毛求疵。但这样的分析想证明的是，orm 想从设计上隐去太多的细节。而方便的代价是其背后的运行完全失控。这样的项目在经过几任维护人员之后，将变得面目全非，难以维护。</p>
+<p>当然，我们不能否认 orm 的进步意义，orm 的设计初衷是为了让数据的操作和存储的具体实现所剥离。但是上了规模的公司的人们渐渐达成了一个共识，由于隐藏重要的细节，orm 可能是失败的设计。其所隐藏的重要细节对于上了规模的系统开发来说至关重要。</p>
+<p>相比 orm 来说，sql builer 在 sql 和项目可维护性之间取得了比较好的平衡。首先 sql builer 不像 orm 那样屏蔽了过多的细节，其次从开发的角度来讲，sql builder 简单进行封装后也可以非常高效地完成开发，举个例子：</p>
+<pre><code class="language-go">where := map[string]interface{} {
+    "order_id &gt; ?" : 0,
+    "customer_id != ?" : 0,
+}
+limit := []int{0,100}
+orderBy := []string{"id asc", "create_time desc"}
+
+orders := orderModel.GetList(where, limit, orderBy)
+</code></pre>
+<p>写 sql builder 的相关代码，或者读懂都不费劲。把这些代码脑内转换为 sql 也不会太费劲。所以通过代码就可以对这个查询是否命中数据库索引，是否走了覆盖索引，是否能够用上联合索引进行分析了。</p>
+<p>说白了 sql builder 是 sql 在代码里的一种特殊方言，如果你们没有 dba 并且研发有自己分析和优化 sql 的能力，或者你们公司的 dba 对于学习这样一些 sql 的方言没有异议。那么使用 sql builder 是一个比较好的选择，不会导致什么问题。</p>
+<p>另外在一些本来也不需要 dba 介入的场景内，使用 sql builder 也是可以的，例如你要做一套运维系统，且将 mysql 当作了系统中的一个组件，系统的 qps 不高，查询不复杂等等。</p>
+<p>一旦你做的是高并发的 OLTP 在线系统，且想在人员充足分工明确的前提下最大程度控制系统的风险，使用 sql builder 就不合适了。</p>
+<h2 id="脆弱的-db">脆弱的 db</h2>
+<p>无论是 orm 还是 sql builder 都有一个致命的缺点，就是没有办法进行系统上线的事前 sql 审核。虽然很多 orm 和 sql builder 也提供了运行期打印 sql 的功能，但只在查询的时候才能进行输出。而 sql builder 和 orm 本身提供的功能太过灵活。使得你不可能通过测试枚举出所有可能在线上执行的 sql。例如你可能用 sql builder 写出下面这样的代码：</p>
+<pre><code class="language-go">where := map[string]interface{} {
+    "product_id = ?" : 10,
+    "user_id = ?" : 1232 ,
+}
+
+if order_id != 0 {
+    where["order_id = ?"] = order_id
+}
+
+res, err := historyModel.GetList(where, limit, orderBy)
+</code></pre>
+<p>你的系统里有类似上述样例的大量 if 的话，就难以通过 test case 来覆盖到所有可能的 sql 组合了。</p>
+<p>这样的系统只要发布，就已经孕育了初期的巨大风险。</p>
+<p>对于现在 7 * 24 服务的互联网公司来说，服务不可用是非常重大的问题。存储层的技术栈虽经历了多年的发展，在整个系统中依然是最为脆弱的一环。系统宕机对于 24 小时对外提供服务的公司来说，意味着直接的经济损失。个中风险不可忽视。</p>
+<p>从行业分工的角度来讲，现今的互联网公司都有专职的 dba。大多数 dba 并不一定有写代码的能力，去阅读 sql builder 的相关“拼 sql”代码多多少少还是会有一点障碍。从 dba 角度出发，还是希望能够有专门的事前 sql 审核机制，并能让其低成本地获取到系统的所有 sql 内容，而不是去阅读业务研发编写的 sql builder 的相关代码。</p>
+<p>所以现如今，大型的互联网公司核心线上业务都会在代码中把 sql 放在显眼的位置提供给 dba review，以此来控制系统在数据层的风险。结合 golang 举一个例子：</p>
+<pre><code class="language-go">const (
+    getAllByProductIDAndCustomerID = `select * from p_orders where product_id in (:product_id) and customer_id=:customer_id`
+)
+
+// GetAllByProductIDAndCustomerID
+// @param driver_id
+// @param rate_date
+// @return []Order, error
+func GetAllByProductIDsAndCustomerID(ctx context.Context, productIDs []uint64, customerID uint64) ([]Order, error) {
+    var orderList []Order
+
+    params := map[string]interface{}{
+        "product_id" : productIDs,
+        "customer_id": customerID,
+    }
+
+    // getAllByProductIdsAndCustomerID 是 const 类型的 sql 字符串
+    sql, args, err := sqlutil.Named(getAllByProductIDsAndCustomerID, params)
+    if err != nil {
+        return nil, err
+    }
+
+    err = dao.QueryList(ctx, sqldbInstance, sql, args, &amp;orderList)
+    if err != nil {
+        return nil, err
+    }
+
+    return orderList, err
+}
+</code></pre>
+<p>像这样的代码，在上线之前把 dao 层的变更集的 const 部分直接拿给 dba 来进行审核，就比较方便了。代码中的 sqlutil.Named 是类似于 sqlx 中的 Named 函数，同时支持 where 表达式中的比较操作符和 in。</p>
+<p>这里为了说明简便，函数写得稍微复杂一些，仔细思考一下的话查询的导出函数还可以进一步进行简化。请读者朋友们自行尝试。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/3/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/15/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/15/index.html">Go语言标准库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/11.html">polaris1119</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3356个">3356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/164/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/164/index.html">Go 开发者路线图</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/93.html">Alikhll</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4583个">4583</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/88/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/88/index.html">Spring Data JPA 参考指南 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/56.html">ityouknow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 92个">92</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/70/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/70/index.html">C++ 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1422个">1422</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/118/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/influxdb_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/118/index.html">Influxdb 简明手册 教程 入门 文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="influxdb">influxdb</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/73/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/readme.html" title="第一章 语言基础" data-book-page-rel-url="ch1-basic/readme.html" data-book-page-id="5589">第一章 语言基础</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-01-genesis.html" title="1.1. Go语言创世纪" data-book-page-rel-url="ch1-basic/ch1-01-genesis.html" data-book-page-id="5590">1.1. Go语言创世纪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-02-hello-revolution.html" title="1.2. Hello, World 的革命" data-book-page-rel-url="ch1-basic/ch1-02-hello-revolution.html" data-book-page-id="5591">1.2. Hello, World 的革命</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-03-array-string-and-slice.html" title="1.3. 数组、字符串和切片" data-book-page-rel-url="ch1-basic/ch1-03-array-string-and-slice.html" data-book-page-id="5592">1.3. 数组、字符串和切片</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-04-func-method-interface.html" title="1.4. 函数、方法和接口" data-book-page-rel-url="ch1-basic/ch1-04-func-method-interface.html" data-book-page-id="5593">1.4. 函数、方法和接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-05-mem.html" title="1.5. 面向并发的内存模型" data-book-page-rel-url="ch1-basic/ch1-05-mem.html" data-book-page-id="5594">1.5. 面向并发的内存模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-06-goroutine.html" title="1.6. 常见的并发模式" data-book-page-rel-url="ch1-basic/ch1-06-goroutine.html" data-book-page-id="5595">1.6. 常见的并发模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-07-error-and-panic.html" title="1.7. 错误和异常" data-book-page-rel-url="ch1-basic/ch1-07-error-and-panic.html" data-book-page-id="5596">1.7. 错误和异常</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch1-basic/ch1-08-ide.html" title="1.8. 配置开发环境" data-book-page-rel-url="ch1-basic/ch1-08-ide.html" data-book-page-id="5597">1.8. 配置开发环境</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/readme.html" title="第二章 CGO编程" data-book-page-rel-url="ch2-cgo/readme.html" data-book-page-id="5598">第二章 CGO编程</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-01-hello-cgo.html" title="2.1. 快速入门" data-book-page-rel-url="ch2-cgo/ch2-01-hello-cgo.html" data-book-page-id="5599">2.1. 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-02-basic.html" title="2.2. CGO基础" data-book-page-rel-url="ch2-cgo/ch2-02-basic.html" data-book-page-id="5600">2.2. CGO基础</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-03-cgo-types.html" title="2.3. 类型转换" data-book-page-rel-url="ch2-cgo/ch2-03-cgo-types.html" data-book-page-id="5601">2.3. 类型转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-04-func.html" title="2.4. 函数调用" data-book-page-rel-url="ch2-cgo/ch2-04-func.html" data-book-page-id="5602">2.4. 函数调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-05-internal.html" title="2.5. 内部机制" data-book-page-rel-url="ch2-cgo/ch2-05-internal.html" data-book-page-id="5603">2.5. 内部机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-06-qsort.html" title="2.6. 实战: 封装qsort" data-book-page-rel-url="ch2-cgo/ch2-06-qsort.html" data-book-page-id="5604">2.6. 实战: 封装qsort</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-07-memory.html" title="2.7. CGO内存模型" data-book-page-rel-url="ch2-cgo/ch2-07-memory.html" data-book-page-id="5605">2.7. CGO内存模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-08-class.html" title="2.8. C++类包装" data-book-page-rel-url="ch2-cgo/ch2-08-class.html" data-book-page-id="5606">2.8. C++类包装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-09-static-shared-lib.html" title="2.9. 静态库和动态库" data-book-page-rel-url="ch2-cgo/ch2-09-static-shared-lib.html" data-book-page-id="5607">2.9. 静态库和动态库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-10-py-module.html" title="2.10. Go实现Python模块" data-book-page-rel-url="ch2-cgo/ch2-10-py-module.html" data-book-page-id="5608">2.10. Go实现Python模块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-11-link.html" title="2.11. 编译和链接参数" data-book-page-rel-url="ch2-cgo/ch2-11-link.html" data-book-page-id="5609">2.11. 编译和链接参数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch2-cgo/ch2-12-faq.html" title="2.12. 补充说明" data-book-page-rel-url="ch2-cgo/ch2-12-faq.html" data-book-page-id="5610">2.12. 补充说明</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/readme.html" title="第三章 汇编语言" data-book-page-rel-url="ch3-asm/readme.html" data-book-page-id="5611">第三章 汇编语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-01-basic.html" title="3.1. 快速入门" data-book-page-rel-url="ch3-asm/ch3-01-basic.html" data-book-page-id="5612">3.1. 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-02-arch.html" title="3.2. 计算机结构" data-book-page-rel-url="ch3-asm/ch3-02-arch.html" data-book-page-id="5613">3.2. 计算机结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-03-const-and-var.html" title="3.3. 常量和全局变量" data-book-page-rel-url="ch3-asm/ch3-03-const-and-var.html" data-book-page-id="5614">3.3. 常量和全局变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-04-func.html" title="3.4. 函数" data-book-page-rel-url="ch3-asm/ch3-04-func.html" data-book-page-id="5615">3.4. 函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-05-control-flow.html" title="3.5. 控制流" data-book-page-rel-url="ch3-asm/ch3-05-control-flow.html" data-book-page-id="5616">3.5. 控制流</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-06-func-again.html" title="3.6. 再论函数" data-book-page-rel-url="ch3-asm/ch3-06-func-again.html" data-book-page-id="5617">3.6. 再论函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-07-core-type.html" title="3.7. Go核心对象结构(TODO)" data-book-page-rel-url="ch3-asm/ch3-07-core-type.html" data-book-page-id="5618">3.7. Go核心对象结构(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-08-runtime-func.html" title="3.8. runtime内置函数(TODO)" data-book-page-rel-url="ch3-asm/ch3-08-runtime-func.html" data-book-page-id="5619">3.8. runtime内置函数(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch3-asm/ch3-09-faq.html" title="3.9. 补充说明(TODO)" data-book-page-rel-url="ch3-asm/ch3-09-faq.html" data-book-page-id="5620">3.9. 补充说明(TODO)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch4-rpc/readme.html" title="第四章 RPC和Protobuf(TODO)" data-book-page-rel-url="ch4-rpc/readme.html" data-book-page-id="5621">第四章 RPC和Protobuf(TODO)</a>
+<ul>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1. RPC入门(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-01-rpc-intro.html" data-book-page-id="5622">4.1. RPC入门(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2. Protobuf简介(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-02-pb-intro.html" data-book-page-id="5623">4.2. Protobuf简介(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3. protorpc(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-03-protorpc.html" data-book-page-id="5624">4.3. protorpc(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4. grpc(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-04-grpc.html" data-book-page-id="5625">4.4. grpc(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.5. 反向rpc(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-05-reverse-rpc.html" data-book-page-id="5626">4.5. 反向rpc(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.6. Protobuf扩展(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-06-pb-option.html" data-book-page-id="5627">4.6. Protobuf扩展(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.7. 基于pb的rpc定制(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-07-pb-rpc.html" data-book-page-id="5628">4.7. 基于pb的rpc定制(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.8. 补充说明(TODO)" disabled data-book-page-rel-url="ch4-rpc/ch4-08-faq.html" data-book-page-id="5629">4.8. 补充说明(TODO)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch5-wtf/readme.html" title="第五章 这是一个坑(TODO)" data-book-page-rel-url="ch5-wtf/readme.html" data-book-page-id="5630">第五章 这是一个坑(TODO)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/readme.html" title="第六章 Go和Web" data-book-page-rel-url="ch6-web/readme.html" data-book-page-id="5631">第六章 Go和Web</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-01-introduction.html" title="6.1. Web开发简介" data-book-page-rel-url="ch6-web/ch6-01-introduction.html" data-book-page-id="5632">6.1. Web开发简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-02-router.html" title="6.2. Router请求路由" data-book-page-rel-url="ch6-web/ch6-02-router.html" data-book-page-id="5633">6.2. Router请求路由</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-03-middleware.html" title="6.3. Middleware中间件" data-book-page-rel-url="ch6-web/ch6-03-middleware.html" data-book-page-id="5634">6.3. Middleware中间件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-04-validator.html" title="6.4. Validator请求校验" data-book-page-rel-url="ch6-web/ch6-04-validator.html" data-book-page-id="5635">6.4. Validator请求校验</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-05-database.html" title="6.5. Database和数据库打交道" data-book-page-rel-url="ch6-web/ch6-05-database.html" data-book-page-id="5636">6.5. Database和数据库打交道</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-08-layout-of-web-project.html" title="6.8. Layout大型web项目分层" data-book-page-rel-url="ch6-web/ch6-08-layout-of-web-project.html" data-book-page-id="5637">6.8. Layout大型web项目分层</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch6-web/ch6-12-load-balance.html" title="6.12. Load-balance负载均衡" data-book-page-rel-url="ch6-web/ch6-12-load-balance.html" data-book-page-id="5638">6.12. Load-balance负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch7-ast/readme.html" title="第七章 Go和ast" data-book-page-rel-url="ch7-ast/readme.html" data-book-page-id="5639">第七章 Go和ast</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/ch8-tools/readme.html" title="第八章 Go和那些生产力工具" data-book-page-rel-url="ch8-tools/readme.html" data-book-page-id="5640">第八章 Go和那些生产力工具</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/appendix/readme.html" title="附录" data-book-page-rel-url="appendix/readme.html" data-book-page-id="5641">附录</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/73/appendix/appendix-a-trap.html" title="附录A: Go语言常见坑" data-book-page-rel-url="appendix/appendix-a-trap.html" data-book-page-id="5642">附录A: Go语言常见坑</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/appendix/appendix-b-ref.html" title="附录B: 参考资料" data-book-page-rel-url="appendix/appendix-b-ref.html" data-book-page-id="5643">附录B: 参考资料</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/73/appendix/appendix-c-author.html" title="附录C: 作者简介" data-book-page-rel-url="appendix/appendix-c-author.html" data-book-page-id="5644">附录C: 作者简介</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =73;var bookPageId =5636;var bookPageRelUrl ='ch6-web/ch6-05-database.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

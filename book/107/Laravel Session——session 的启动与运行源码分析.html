@@ -1,0 +1,1097 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Session——session 的启动与运行源码分析-Laravel 源码详解</title>
+<meta content='Laravel Session——session 的启动与运行源码分析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Session——session 的启动与运行源码分析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Dat..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html">
+<span class="">Laravel Eve..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="laravel-sessionsession-的启动与运行源码分析">Laravel Session——session 的启动与运行源码分析</h1>
+<h2 id="前言">前言</h2>
+<p>在网页开发中， <code>session</code> 具有重要的作用，它可以在多个请求中存储用户的信息，用于识别用户的身份信息。<code>laravel</code> 为用户提供了可读性强的 API 处理各种自带的 Session 后台驱动程序。支持诸如比较热门的 Memcached、Redis 和开箱即用的数据库等常见的后台驱动程序。本文将会在本篇文章中讲述最常见的由 <code>File</code> 与 <code>redis</code> 驱动的 <code>session</code> 源码。</p>
+<h2 id="session-服务的注册">session 服务的注册</h2>
+<p>与其他功能一样，<code>session</code> 由自己的服务提供者在 <code>container</code> 内进行注册：</p>
+<pre><code class="language-php">
+class SessionServiceProvider extends ServiceProvider 
+{
+    public function register()
+    {
+        $this-&gt;registerSessionManager();
+
+        $this-&gt;registerSessionDriver();
+
+        $this-&gt;app-&gt;singleton(StartSession::class);
+    }
+    
+    protected function registerSessionManager()
+    {
+        $this-&gt;app-&gt;singleton('session', function ($app) {
+            return new SessionManager($app);
+        });
+    }
+    
+    protected function registerSessionDriver()
+    {
+        $this-&gt;app-&gt;singleton('session.store', function ($app) {
+            return $app-&gt;make('session')-&gt;driver();
+        });
+    }
+
+}
+</code></pre>
+<p>可以看到 <code>SessionManager</code> 是整个 <code>session</code> 服务的接口类，一切对 <code>session</code> 的操作都是由这个类实现。<code>session.store</code> 是 <code>session</code> 服务的存储驱动。</p>
+<h2 id="session-服务的启动">session 服务的启动</h2>
+<p><code>session</code> 服务是以中间件的形式启动的，其中间件是 <code>Illuminate\Session\Middleware\StartSession</code>:</p>
+<pre><code class="language-php">public function handle($request, Closure $next)
+{
+    $this-&gt;sessionHandled = true;
+
+    if ($this-&gt;sessionConfigured()) {
+        $request-&gt;setLaravelSession(
+            $session = $this-&gt;startSession($request)
+        );
+
+        $this-&gt;collectGarbage($session);
+    }
+
+    $response = $next($request);
+
+    if ($this-&gt;sessionConfigured()) {
+        $this-&gt;storeCurrentUrl($request, $session);
+
+        $this-&gt;addCookieToResponse($response, $session);
+    }
+
+    return $response;
+}
+
+public function terminate($request, $response)
+{
+    if ($this-&gt;sessionHandled &amp;&amp; $this-&gt;sessionConfigured() &amp;&amp; ! $this-&gt;usingCookieSessions()) {
+        $this-&gt;manager-&gt;driver()-&gt;save();
+    }
+}
+</code></pre>
+<p><code>session</code> 服务的中间件在 <code>http</code> 会话前与会话后都有处理。</p>
+<p>在会话前，</p>
+<ul>
+<li><code>laravel</code> 试图从 <code>cookies</code> 中获取 <code>sessionId</code>；</li>
+<li>利用 <code>sessionId</code> 读取服务器中的 <code>session</code> 数据；</li>
+<li>将 <code>session</code> 对象存入 <code>request</code> 中；</li>
+<li><code>session</code> 垃圾回收</li>
+</ul>
+<p>在会话后，</p>
+<ul>
+<li>存储当前的 <code>url</code> 作为 <code>session</code> 的 <code>PreviousUrl</code></li>
+<li>将当前的 <code>session</code> 存入浏览器 <code>cookies</code> 中</li>
+<li>保存当前的 <code>session</code> 数据到存储器驱动</li>
+</ul>
+<h3 id="startsession">startSession</h3>
+<p><code>startSession</code> 函数进行了 <code>session</code> 的启动工作：</p>
+<pre><code class="language-php">public function __construct(SessionManager $manager)
+{
+    $this-&gt;manager = $manager;
+}
+    
+protected function startSession(Request $request)
+{
+    return tap($this-&gt;getSession($request), function ($session) use ($request) {
+        $session-&gt;setRequestOnHandler($request);
+
+        $session-&gt;start();
+    });
+}
+
+public function getSession(Request $request)
+{
+    return tap($this-&gt;manager-&gt;driver(), function ($session) use ($request) {
+        $session-&gt;setId($request-&gt;cookies-&gt;get($session-&gt;getName()));
+    });
+}
+</code></pre>
+<h4 id="session-的门面类-sessionmanager">session 的门面类 sessionManager</h4>
+<p>代码很简洁，<code>session</code> 服务启动的逻辑被包含在了 <code>sessionManager</code> 中，<code>sessionManager</code> 是 <code>session</code> 服务的门面类，负责 <code>session</code> 服务的驱动加载与数据操作。</p>
+<p>首先我们先看看 <code>SessionManager</code>:</p>
+<pre><code class="language-php">namespace Illuminate\Session;
+
+use Illuminate\Support\Manager;
+
+class SessionManager extends Manager 
+{
+
+}
+
+</code></pre>
+<p><code>SessionManager</code> 继承 <code>Manager</code> 类：</p>
+<pre><code class="language-php">namespace Illuminate\Support;
+
+abstract class Manager
+{
+    public function driver($driver = null)
+    {
+        $driver = $driver ?: $this-&gt;getDefaultDriver();
+
+        if (! isset($this-&gt;drivers[$driver])) {
+            $this-&gt;drivers[$driver] = $this-&gt;createDriver($driver);
+        }
+
+        return $this-&gt;drivers[$driver];
+    }
+}
+
+</code></pre>
+<p>当我们调用 <code>driver</code> 函数的时候，程序就开始为 <code>session</code> 服务加载驱动，例如对数据库或者 <code>redis</code> 驱动，进行 <code>连接</code> 操作。</p>
+<pre><code class="language-php">public function getDefaultDriver()
+{
+    return $this-&gt;app['config']['session.driver'];
+}
+
+protected function createDriver($driver)
+{
+    $method = 'create'.Str::studly($driver).'Driver';
+
+    if (isset($this-&gt;customCreators[$driver])) {
+        return $this-&gt;callCustomCreator($driver);
+    } elseif (method_exists($this, $method)) {
+        return $this-&gt;$method();
+    }
+
+    throw new InvalidArgumentException("Driver [$driver] not supported.");
+}
+</code></pre>
+<h4 id="session-驱动持久化类-sessionhandler">session 驱动持久化类 SessionHandler</h4>
+<p><code>FileSessionHandler</code> 这个类就是驱动，它继承 <code>SessionHandlerInterface</code> 基类，任何对 <code>session</code> 的读取、添加、删除、更新等等操作最后都要通过这个驱动类进行持久化。</p>
+<ul>
+<li><code>file</code> 驱动：</li>
+</ul>
+<p><code>file</code> 驱动的核心是 <code>Filesystem</code>，该类是 Ioc 容器创建的：</p>
+<pre><code class="language-php">protected function createFileDriver()
+{
+    return $this-&gt;createNativeDriver();
+}
+
+protected function createNativeDriver()
+{
+    $lifetime = $this-&gt;app['config']['session.lifetime'];
+
+    return $this-&gt;buildSession(new FileSessionHandler(
+        $this-&gt;app['files'], $this-&gt;app['config']['session.files'], $lifetime
+    ));
+}
+
+namespace Illuminate\Session;
+
+class FileSessionHandler implements SessionHandlerInterface
+{
+    public function __construct(Filesystem $files, $path, $minutes)
+    {
+        $this-&gt;path = $path;
+        $this-&gt;files = $files;
+        $this-&gt;minutes = $minutes;
+    }
+}
+
+</code></pre>
+<ul>
+<li>redis 驱动</li>
+</ul>
+<p><code>redis</code> 驱动并不是直接创建 <code>redis</code>，而是利用了 <code>laravel</code> 的缓存 <code>cache</code> 系统创建 <code>redis</code> 驱动，然后对 <code>redis</code> 驱动进行连接操作：</p>
+<pre><code class="language-php">protected function createRedisDriver()
+{
+    $handler = $this-&gt;createCacheHandler('redis');
+
+    $handler-&gt;getCache()-&gt;getStore()-&gt;setConnection(
+        $this-&gt;app['config']['session.connection']
+    );
+
+    return $this-&gt;buildSession($handler);
+}
+
+
+protected function createCacheHandler($driver)
+{
+    $store = $this-&gt;app['config']-&gt;get('session.store') ?: $driver;
+
+    return new CacheBasedSessionHandler(
+        clone $this-&gt;app['cache']-&gt;store($store),
+        $this-&gt;app['config']['session.lifetime']
+    );
+}
+
+class CacheBasedSessionHandler implements SessionHandlerInterface
+{
+    public function __construct(CacheContract $cache, $minutes)
+    {
+        $this-&gt;cache = $cache;
+        $this-&gt;minutes = $minutes;
+    }
+}
+</code></pre>
+<h4 id="session-数据操作类">session 数据操作类</h4>
+<p><code>buildSession</code> 函数将会返回 <code>Store</code> 类，这个 <code>Store</code> 类实际上 <code>session</code> 服务数据操作的实质类，任何对 <code>session</code> 数据的操作实际上调用的都是 <code>Store</code> 类：</p>
+<pre><code class="language-php">protected function buildSession($handler)
+{
+    if ($this-&gt;app['config']['session.encrypt']) {
+        return $this-&gt;buildEncryptedSession($handler);
+    } else {
+        return new Store($this-&gt;app['config']['session.cookie'], $handler);
+    }
+}
+
+protected function buildEncryptedSession($handler)
+{
+    return new EncryptedStore(
+        $this-&gt;app['config']['session.cookie'], $handler, $this-&gt;app['encrypter']
+    );
+}
+
+public function __call($method, $parameters)
+{
+    return $this-&gt;driver()-&gt;$method(...$parameters);
+}
+</code></pre>
+<p>如果需要对 <code>session</code> 进行加密，那么就会创建一个 <code>EncryptedStore</code> 类，该类继承 <code>Store</code> 类。</p>
+<h4 id="setid">setId</h4>
+<p><code>session</code> 驱动建立之后，就要进行 <code>sessionId</code> 的设置，如果 <code>cookie</code> 中存在 <code>sessionId</code>，我们就会从中获取，否则我们就需要重新生成新的 <code>sessionId</code></p>
+<pre><code class="language-php">public function setId($id)
+{
+    $this-&gt;id = $this-&gt;isValidId($id) ? $id : $this-&gt;generateSessionId();
+}
+
+public function isValidId($id)
+{
+    return is_string($id) &amp;&amp; ctype_alnum($id) &amp;&amp; strlen($id) === 40;
+}
+
+protected function generateSessionId()
+{
+    return Str::random(40);
+}
+
+</code></pre>
+<h4 id="session--start">session--start</h4>
+<p>一切准备就绪后，我们就要启动 <code>session</code>，如果当前请求存在未过期 <code>session</code>，那么就要利用 <code>session</code> 驱动将数据读取出来：</p>
+<pre><code class="language-php">public function start()
+{
+    $this-&gt;loadSession();
+
+    if (! $this-&gt;has('_token')) {
+        $this-&gt;regenerateToken();
+    }
+
+    return $this-&gt;started = true;
+}
+
+protected function loadSession()
+{
+    $this-&gt;attributes = array_merge($this-&gt;attributes, $this-&gt;readFromHandler());
+}
+</code></pre>
+<p><code>readFromHandler</code> 函数就是读取 <code>session</code> 的过程：</p>
+<pre><code class="language-php">protected function readFromHandler()
+{
+    if ($data = $this-&gt;handler-&gt;read($this-&gt;getId())) {
+        $data = @unserialize($this-&gt;prepareForUnserialize($data));
+
+        if ($data !== false &amp;&amp; ! is_null($data) &amp;&amp; is_array($data)) {
+            return $data;
+        }
+    }
+
+    return [];
+}
+</code></pre>
+<ul>
+<li>未加密 session 数据的加载</li>
+</ul>
+<p>对于未加密的 <code>session</code> 来说，<code>prepareForUnserialize</code> 直接返回了数据：</p>
+<pre><code class="language-php">protected function prepareForUnserialize($data)
+{
+    return $data;
+}
+</code></pre>
+<ul>
+<li>加密 session 数据</li>
+</ul>
+<pre><code class="language-php">protected function prepareForUnserialize($data)
+{
+    try {
+        return $this-&gt;encrypter-&gt;decrypt($data);
+    } catch (DecryptException $e) {
+        return serialize([]);
+    }
+}
+</code></pre>
+<ul>
+<li>file 驱动</li>
+</ul>
+<pre><code class="language-php">public function read($sessionId)
+{
+    if ($this-&gt;files-&gt;exists($path = $this-&gt;path.'/'.$sessionId)) {
+        if (filemtime($path) &gt;= Carbon::now()-&gt;subMinutes($this-&gt;minutes)-&gt;getTimestamp()) {
+            return $this-&gt;files-&gt;get($path, true);
+        }
+    }
+
+    return '';
+}
+</code></pre>
+<ul>
+<li>redis 驱动</li>
+</ul>
+<pre><code class="language-php">public function read($sessionId)
+{
+    return $this-&gt;cache-&gt;get($sessionId, '');
+}
+</code></pre>
+<h3 id="session-垃圾回收">session 垃圾回收</h3>
+<p><code>session</code> 的垃圾回收用于随机性地删除旧 <code>session</code> 数据。由于某些驱动，例如 <code>FileSessionHandler</code>， 程序不会定期删除那些已经过时的 <code>session</code> 文件，那么 <code>session</code> 文件一定会越来越多，所以我们就需要一种垃圾回收机制：</p>
+<pre><code class="language-php">protected function collectGarbage(Session $session)
+{
+    $config = $this-&gt;manager-&gt;getSessionConfig();
+
+    if ($this-&gt;configHitsLottery($config)) {
+        $session-&gt;getHandler()-&gt;gc($this-&gt;getSessionLifetimeInSeconds());
+    }
+}
+
+protected function configHitsLottery(array $config)
+{
+    return random_int(1, $config['lottery'][1]) &lt;= $config['lottery'][0];
+}
+</code></pre>
+<p><code>configHitsLottery</code> 函数就是判断当前是否被随机要进行垃圾回收任务。这种随机性概率由 <code>lottery</code> 来设置。</p>
+<p><code>FileSessionHandler</code> 的垃圾回收：</p>
+<pre><code class="language-php">public function gc($lifetime)
+{
+    $files = Finder::create()
+                -&gt;in($this-&gt;path)
+                -&gt;files()
+                -&gt;ignoreDotFiles(true)
+                -&gt;date('&lt;= now - '.$lifetime.' seconds');
+
+    foreach ($files as $file) {
+        $this-&gt;files-&gt;delete($file-&gt;getRealPath());
+    }
+}
+
+</code></pre>
+<h3 id="存储前一页">存储前一页</h3>
+<p>很多时候我们都需要从 <code>session</code> 中获取前一页的地址，例如用户授权失败就会返回上一页等等情景。</p>
+<pre><code class="language-php">protected function storeCurrentUrl(Request $request, $session)
+{
+    if ($request-&gt;method() === 'GET' &amp;&amp; $request-&gt;route() &amp;&amp; ! $request-&gt;ajax()) {
+        $session-&gt;setPreviousUrl($request-&gt;fullUrl());
+    }
+}
+
+public function setPreviousUrl($url)
+{
+    $this-&gt;put('_previous.url', $url);
+}
+
+</code></pre>
+<h3 id="中间件的结束">中间件的结束</h3>
+<p>当请求结束时，会调用中间件的 <code>terminate</code> 函数，这里程序会将新的 <code>session</code> 数据持久化到各个驱动器中：</p>
+<pre><code class="language-php">public function terminate($request, $response)
+{
+    if ($this-&gt;sessionHandled &amp;&amp; $this-&gt;sessionConfigured() &amp;&amp; ! $this-&gt;usingCookieSessions()) {
+        $this-&gt;manager-&gt;driver()-&gt;save();
+    }
+}
+
+</code></pre>
+<p><code>session</code> 的保存：</p>
+<pre><code class="language-php">public function save()
+{
+    $this-&gt;ageFlashData();
+
+    $this-&gt;handler-&gt;write($this-&gt;getId(), $this-&gt;prepareForStorage(
+        serialize($this-&gt;attributes)
+    ));
+
+    $this-&gt;started = false;
+}
+</code></pre>
+<p><code>session</code> 的保存会删除需要 <code>flash</code> 的闪存数据，也就是只想用于下一次请求的数据：</p>
+<pre><code class="language-php">public function ageFlashData()
+{
+    $this-&gt;forget($this-&gt;get('_flash.old', []));
+
+    $this-&gt;put('_flash.old', $this-&gt;get('_flash.new', []));
+
+    $this-&gt;put('_flash.new', []);
+}
+</code></pre>
+<p>对于不加密的数据，保存前的 <code>prepareForStorage</code> 不会对数据进行任何操作：</p>
+<pre><code class="language-php">protected function prepareForStorage($data)
+{
+    return $data;
+}
+</code></pre>
+<p>对于加密的数据，则需要事先加密：</p>
+<pre><code class="language-php">protected function prepareForStorage($data)
+{
+    return $this-&gt;encrypter-&gt;encrypt($data);
+}
+</code></pre>
+<h2 id="session-数据操作">session 数据操作</h2>
+<h3 id="get-函数">get 函数</h3>
+<p>当我们想要获取 <code>session</code> 中的数据时，我们经常使用 <code>get</code> 方法</p>
+<pre><code class="language-php">public function show(Request $request, $id)
+{
+    $value = $request-&gt;session()-&gt;get('key');
+
+    //
+}
+</code></pre>
+<p><code>get</code> 方法首先会调用 <code>sessionManager</code> 的魔术方法：</p>
+<pre><code class="language-php">public function __call($method, $parameters)
+{
+    return $this-&gt;driver()-&gt;$method(...$parameters);
+}
+</code></pre>
+<p><code>driver</code> 函数会返回 <code>Store</code> 对象，调用 <code>get</code> 方法</p>
+<pre><code class="language-php">public function get($key, $default = null)
+{
+    return Arr::get($this-&gt;attributes, $key, $default);
+}
+</code></pre>
+<p>我们从上一节知道，在 <code>startSession</code> 中间件启动后，<code>session</code> 数据已经加载到了 <code>store</code> 对象中，因此获取数据很简单：</p>
+<pre><code class="language-php">public function get($key, $default = null)
+{
+    return Arr::get($this-&gt;attributes, $key, $default);
+}
+</code></pre>
+<h3 id="all-函数">all 函数</h3>
+<p><code>all</code> 函数可以取出所有的 <code>session</code> 数据</p>
+<pre><code class="language-php">public function all()
+{
+    return $this-&gt;attributes;
+}
+</code></pre>
+<h3 id="has-函数">has 函数</h3>
+<p>要确定 Session 中是否存在某个值，可以使用 <code>has</code> 方法。如果该值存在且不为 <code>null</code>，那么 <code>has</code> 方法会返回 <code>true</code>：</p>
+<pre><code class="language-php">public function has($key)
+{
+    return ! collect(is_array($key) ? $key : func_get_args())-&gt;contains(function ($key) {
+        return is_null($this-&gt;get($key));
+    });
+}
+</code></pre>
+<h3 id="exists-函数">exists 函数</h3>
+<p>要确定 <code>Session</code> 中是否存在某个值，即使其值为 <code>null</code>，也可以使用 <code>exists</code> 方法。如果值存在，则 <code>exists</code> 方法返回 <code>true</code></p>
+<pre><code class="language-php">public function exists($key)
+{
+    return ! collect(is_array($key) ? $key : func_get_args())-&gt;contains(function ($key) {
+        return ! Arr::exists($this-&gt;attributes, $key);
+    });
+}
+</code></pre>
+<h3 id="put-方法">put 方法</h3>
+<p>要存储数据到 <code>Session</code>，可以使用 <code>put</code> 方法</p>
+<pre><code class="language-php">public function put($key, $value = null)
+{
+    if (! is_array($key)) {
+        $key = [$key =&gt; $value];
+    }
+
+    foreach ($key as $arrayKey =&gt; $arrayValue) {
+        Arr::set($this-&gt;attributes, $arrayKey, $arrayValue);
+    }
+}
+</code></pre>
+<h3 id="push-方法">push 方法</h3>
+<p><code>push</code> 方法可以将一个新的值添加到 <code>Session</code> 数组内。</p>
+<pre><code class="language-php">public function push($key, $value)
+{
+    $array = $this-&gt;get($key, []);
+
+    $array[] = $value;
+
+    $this-&gt;put($key, $array);
+}
+</code></pre>
+<h3 id="remember-方法">remember 方法</h3>
+<p><code>remember</code> 方法用于有即取，无即存的情况：</p>
+<pre><code class="language-php">public function remember($key, Closure $callback)
+{
+    if (! is_null($value = $this-&gt;get($key))) {
+        return $value;
+    }
+
+    return tap($callback(), function ($value) use ($key) {
+        $this-&gt;put($key, $value);
+    });
+}
+
+</code></pre>
+<h3 id="increment-方法">increment 方法</h3>
+<p><code>increment</code> 方法用于增加某 <code>session</code> 数据的值：</p>
+<pre><code class="language-php">public function increment($key, $amount = 1)
+{
+    $this-&gt;put($key, $value = $this-&gt;get($key, 0) + $amount);
+
+    return $value;
+}
+</code></pre>
+<h3 id="decrement-方法">decrement 方法</h3>
+<pre><code class="language-php">public function decrement($key, $amount = 1)
+{
+    return $this-&gt;increment($key, $amount * -1);
+}
+
+</code></pre>
+<h3 id="pull-方法">pull 方法</h3>
+<p><code>pull</code> 方法可以只用一条语句就从 <code>Session</code> 检索并且删除一个项目：</p>
+<pre><code class="language-php">public function pull($key, $default = null)
+{
+    return Arr::pull($this-&gt;attributes, $key, $default);
+}
+</code></pre>
+<h3 id="flash-闪存数据">flash 闪存数据</h3>
+<p>有时候你仅想在下一个请求之前在 <code>Session</code> 中存入数据，你可以使用 <code>flash</code> 方法。使用这个方法保存在 <code>session</code> 中的数据，只会保留到下个 <code>HTTP</code> 请求到来之前，然后就会被删除。闪存数据主要用于短期的状态消息</p>
+<pre><code class="language-php">public function flash($key, $value)
+{
+    $this-&gt;put($key, $value);
+
+    $this-&gt;push('_flash.new', $key);
+
+    $this-&gt;removeFromOldFlashData([$key]);
+}
+
+protected function removeFromOldFlashData(array $keys)
+{
+    $this-&gt;put('_flash.old', array_diff($this-&gt;get('_flash.old', []), $keys));
+}
+</code></pre>
+<p>闪存数据的实现很简单，<code>session</code> 中会维护两个数组：<code>_flash.new</code>、<code>_flash.old</code> ,每次 <code>session</code> 结束前，都会删除 <code>_flash.old</code> 中的存储的 <code>key</code> 对应存储在 <code>session</code> 的 <code>value</code>。</p>
+<h3 id="now-方法">now 方法</h3>
+<p><code>now</code> 方法用于存储只有本次请求采用的数据</p>
+<pre><code class="language-php"> public function now($key, $value)
+{
+    $this-&gt;put($key, $value);
+
+    $this-&gt;push('_flash.old', $key);
+}
+</code></pre>
+<h3 id="reflash-方法">reflash 方法</h3>
+<p>如果需要保留闪存数据给更多请求，可以使用 reflash 方法，这将会将所有的闪存数据保留给其他请求。</p>
+<pre><code class="language-php">public function reflash()
+{
+    $this-&gt;mergeNewFlashes($this-&gt;get('_flash.old', []));
+
+    $this-&gt;put('_flash.old', []);
+}
+</code></pre>
+<p>这样，<code>_flash.old</code> 中的数据就会被合并到 <code>_flash.new</code> 中。</p>
+<h3 id="keep-方法">keep 方法</h3>
+<p>只想保留特定的闪存数据给更多请求，则可以使用 keep 方法:</p>
+<pre><code class="language-php">public function keep($keys = null)
+{
+    $this-&gt;mergeNewFlashes($keys = is_array($keys) ? $keys : func_get_args());
+
+    $this-&gt;removeFromOldFlashData($keys);
+}
+</code></pre>
+<h3 id="forget-方法">forget 方法</h3>
+<p>forget 方法可以从 Session 内删除一条数据。</p>
+<pre><code class="language-php">public function forget($keys)
+{
+    Arr::forget($this-&gt;attributes, $keys);
+}
+</code></pre>
+<h3 id="flush-方法">flush 方法</h3>
+<p>如果你想删除 Session 内所有数据，可以使用 flush 方法：</p>
+<pre><code class="language-ohp">public function flush()
+{
+    $this-&gt;attributes = [];
+}
+</code></pre>
+<h3 id="重新生成-session-id">重新生成 Session ID</h3>
+<p>重新生成 <code>Session ID</code>，通常是为了防止恶意用户利用 <code>session fixation</code> 对应用进行攻击。如果使用了内置函数 <code>LoginController</code>，Laravel 会自动重新生成身份验证中 <code>Session ID</code>。否则，你需要手动使用 <code>regenerate</code> 方法重新生成 <code>Session ID</code>。</p>
+<pre><code class="language-php">public function regenerate($destroy = false)
+{
+    return $this-&gt;migrate($destroy);
+}
+
+public function migrate($destroy = false)
+{
+    if ($destroy) {
+        $this-&gt;handler-&gt;destroy($this-&gt;getId());
+    }
+
+    $this-&gt;setExists(false);
+
+    $this-&gt;setId($this-&gt;generateSessionId());
+
+    return true;
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/158/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/158/index.html">java语法整理</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/90.html">niliv</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">42页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/179/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/179/index.html">30秒学会常用Python代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/99.html">kriadmin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2716个">2716</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/73/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/73/index.html">Go语言高级编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/44.html">chai2010</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2423个">2423</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/206/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/66/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/66/index.html">Java 8:新特性教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/42.html">shekhargulati</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1241个">1241</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/124/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nginx_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/124/index.html">Nginx学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/66.html">tyloafer</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7774;var bookPageRelUrl ='Laravel%20Session——session%20的启动与运行源码分析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

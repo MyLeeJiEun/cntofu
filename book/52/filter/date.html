@@ -1,0 +1,642 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>时间处理(Date)-Logstash最佳实践</title>
+<meta content='时间处理(Date),Logstash最佳实践' name='keywords'>
+<meta content='时间处理(Date),Logstash最佳实践' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/52/filter/grok.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Grok 正则捕获</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/52/filter/mutate.html">
+<span class="">数据修改(Mutate)</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/52/index.html">Logstash最佳实践</a>
+<a target="_blank" rel="nofollow" href="https://github.com/chenryn/logstash-best-practice-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="时间处理date">时间处理(Date)</h1>
+<p>之前章节已经提过，<em>filters/date</em> 插件可以用来转换你的日志记录中的时间字符串，变成 <code>LogStash::Timestamp</code> 对象，然后转存到 <code>@timestamp</code> 字段里。</p>
+<p><strong>注意：因为在稍后的 outputs/elasticsearch 中常用的 <code>%{+YYYY.MM.dd}</code> 这种写法必须读取 <code>@timestamp</code> 数据，所以一定不要直接删掉这个字段保留自己的字段，而是应该用 filters/date 转换后删除自己的字段！</strong></p>
+<p>这在导入旧数据的时候固然非常有用，而在实时数据处理的时候同样有效，因为一般情况下数据流程中我们都会有缓冲区，导致最终的实际处理时间跟事件产生时间略有偏差。</p>
+<p><em>小贴士：个人强烈建议打开 Nginx 的 access_log 配置项的 buffer 参数，对极限响应性能有极大提升！</em></p>
+<h2 id="配置示例">配置示例</h2>
+<p><em>filters/date</em> 插件支持五种时间格式：</p>
+<h3 id="iso8601">ISO8601</h3>
+<p>类似 "2011-04-19T03:44:01.103Z" 这样的格式。具体Z后面可以有 "08:00"也可以没有，".103"这个也可以没有。常用场景里来说，Nginx 的 <em>log_format</em> 配置里就可以使用 <code>$time_iso8601</code> 变量来记录请求时间成这种格式。</p>
+<h3 id="unix">UNIX</h3>
+<p>UNIX 时间戳格式，记录的是从 1970 年起始至今的总秒数。Squid 的默认日志格式中就使用了这种格式。</p>
+<h3 id="unix-ms">UNIX_MS</h3>
+<p>这个时间戳则是从 1970 年起始至今的总毫秒数。据我所知，JavaScript 里经常使用这个时间格式。</p>
+<h3 id="tai64n">TAI64N</h3>
+<p>TAI64N 格式比较少见，是这个样子的：<code>@4000000052f88ea32489532c</code>。我目前只知道常见应用中， qmail 会用这个格式。</p>
+<h3 id="joda-time-库">Joda-Time 库</h3>
+<p>Logstash 内部使用了 Java 的 Joda 时间库来作时间处理。所以我们可以使用 Joda 库所支持的时间格式来作具体定义。Joda 时间格式定义见下表：</p>
+<h4 id="时间格式">时间格式</h4>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+<th>Presentation</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G</td>
+<td>era</td>
+<td>text</td>
+<td>AD</td>
+</tr>
+<tr>
+<td>C</td>
+<td>century of era (&gt;=0)</td>
+<td>number</td>
+<td>20</td>
+</tr>
+<tr>
+<td>Y</td>
+<td>year of era (&gt;=0)</td>
+<td>year</td>
+<td>1996</td>
+</tr>
+<tr>
+<td>x</td>
+<td>weekyear</td>
+<td>year</td>
+<td>1996</td>
+</tr>
+<tr>
+<td>w</td>
+<td>week of weekyear</td>
+<td>number</td>
+<td>27</td>
+</tr>
+<tr>
+<td>e</td>
+<td>day of week</td>
+<td>number</td>
+<td>2</td>
+</tr>
+<tr>
+<td>E</td>
+<td>day of week</td>
+<td>text</td>
+<td>Tuesday; Tue</td>
+</tr>
+<tr>
+<td>y</td>
+<td>year</td>
+<td>year</td>
+<td>1996</td>
+</tr>
+<tr>
+<td>D</td>
+<td>day of year</td>
+<td>number</td>
+<td>189</td>
+</tr>
+<tr>
+<td>M</td>
+<td>month of year</td>
+<td>month</td>
+<td>July; Jul; 07</td>
+</tr>
+<tr>
+<td>d</td>
+<td>day of month</td>
+<td>number</td>
+<td>10</td>
+</tr>
+<tr>
+<td>a</td>
+<td>halfday of day</td>
+<td>text</td>
+<td>PM</td>
+</tr>
+<tr>
+<td>K</td>
+<td>hour of halfday (0~11)</td>
+<td>number</td>
+<td>0</td>
+</tr>
+<tr>
+<td>h</td>
+<td>clockhour of halfday (1~12)</td>
+<td>number</td>
+<td>12</td>
+</tr>
+<tr>
+<td>H</td>
+<td>hour of day (0~23)</td>
+<td>number</td>
+<td>0</td>
+</tr>
+<tr>
+<td>k</td>
+<td>clockhour of day (1~24)</td>
+<td>number</td>
+<td>24</td>
+</tr>
+<tr>
+<td>m</td>
+<td>minute of hour</td>
+<td>number</td>
+<td>30</td>
+</tr>
+<tr>
+<td>s</td>
+<td>second of minute</td>
+<td>number</td>
+<td>55</td>
+</tr>
+<tr>
+<td>S</td>
+<td>fraction of second</td>
+<td>number</td>
+<td>978</td>
+</tr>
+<tr>
+<td>z</td>
+<td>time zone</td>
+<td>text</td>
+<td>Pacific Standard Time; PST</td>
+</tr>
+<tr>
+<td>Z</td>
+<td>time zone offset/id</td>
+<td>zone</td>
+<td>-0800; -08:00; America/Los_Angeles</td>
+</tr>
+<tr>
+<td>'</td>
+<td>escape for text</td>
+<td colspan="2">delimiter</td>
+</tr>
+<tr>
+<td>''</td>
+<td>single quote</td>
+<td>literal</td>
+<td>'</td>
+</tr>
+</tbody>
+</table>
+<p><a href="http://joda-time.sourceforge.net/apidocs/org/joda/time/format/DateTimeFormat.html">http://joda-time.sourceforge.net/apidocs/org/joda/time/format/DateTimeFormat.html</a></p>
+<p>下面我们写一个 Joda 时间格式的配置作为示例：</p>
+<pre><code>filter {
+    grok {
+        match =&gt; ["message", "%{HTTPDATE:logdate}"]
+    }
+    date {
+        match =&gt; ["logdate", "dd/MMM/yyyy:HH:mm:ss Z"]
+    }
+}
+</code></pre>
+<p><strong>注意：时区偏移量只需要用一个字母 <code>Z</code> 即可。</strong></p>
+<h2 id="时区问题的解释">时区问题的解释</h2>
+<p>很多中国用户经常提一个问题：为什么 <a href="https://github.com/timestamp"><strong>@timestamp</strong></a> 比我们早了 8 个小时？怎么修改成北京时间？</p>
+<p>其实，Elasticsearch 内部，对时间类型字段，是<strong>统一采用 UTC 时间，存成 long 长整形数据的</strong>！对日志统一采用 UTC 时间存储，是国际安全/运维界的一个通识——欧美公司的服务器普遍广泛分布在多个时区里——不像中国，地域横跨五个时区却只用北京时间。</p>
+<p>对于页面查看，ELK 的解决方案是在 Kibana 上，读取浏览器的当前时区，然后在页面上转换时间内容的<strong>显示</strong>。</p>
+<p>所以，建议大家接受这种设定。否则，即便你用 <code>.getLocalTime</code> 修改，也还要面临在 Kibana 上反过去修改，以及 Elasticsearch 原有的 <code>["now-1h" TO "now"]</code> 这种方便的搜索语句无法正常使用的尴尬。</p>
+<p>以上，请读者自行斟酌。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/111/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/kubernetes_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/111/index.html">和我一步步部署 kubernetes 集群</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="kubernetes">kubernetes</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/77/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/openstack_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/77/index.html">深入理解 Neutron -- OpenStack 网络实现</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="openstack">openstack</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 136个">136</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/74/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/74/index.html">Python进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/46.html">东滨社</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">73页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2664个">2664</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/118/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/influxdb_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/118/index.html">Influxdb 简明手册 教程 入门 文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="influxdb">influxdb</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/134/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/github_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/134/index.html">GitHub 漫游指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="github">github</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3472个">3472</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/52/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="4835">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/README.html" title="基础知识" data-book-page-rel-url="get_start/README.html" data-book-page-id="4836">基础知识</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/get_start/introduction.html" title="介绍" data-book-page-rel-url="get_start/introduction.html" data-book-page-id="4837">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/install.html" title="安装" data-book-page-rel-url="get_start/install.html" data-book-page-id="4838">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/hello_world.html" title="Hello World" data-book-page-rel-url="get_start/hello_world.html" data-book-page-id="4839">Hello World</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/daemon.html" title="长期运行" data-book-page-rel-url="get_start/daemon.html" data-book-page-id="4840">长期运行</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/get_start/full_config.html" title="配置语法" data-book-page-rel-url="get_start/full_config.html" data-book-page-id="4841">配置语法</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/README.html" title="输入插件(Input)" data-book-page-rel-url="input/README.html" data-book-page-id="4842">输入插件(Input)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/input/stdin.html" title="标准输入(Stdin)" data-book-page-rel-url="input/stdin.html" data-book-page-id="4843">标准输入(Stdin)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/file.html" title="读取文件(File)" data-book-page-rel-url="input/file.html" data-book-page-id="4844">读取文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/tcp.html" title="读取网络数据(TCP)" data-book-page-rel-url="input/tcp.html" data-book-page-id="4845">读取网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/generator.html" title="生成测试数据(Generator)" data-book-page-rel-url="input/generator.html" data-book-page-id="4846">生成测试数据(Generator)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/syslog.html" title="读取 Syslog 数据" data-book-page-rel-url="input/syslog.html" data-book-page-id="4847">读取 Syslog 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/redis.html" title="读取 Redis 数据" data-book-page-rel-url="input/redis.html" data-book-page-id="4848">读取 Redis 数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/input/collectd.html" title="读取 Collectd 数据" data-book-page-rel-url="input/collectd.html" data-book-page-id="4849">读取 Collectd 数据</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/README.html" title="编码插件(Codec)" data-book-page-rel-url="codec/README.html" data-book-page-id="4850">编码插件(Codec)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/codec/json.html" title="采用 JSON 编码" data-book-page-rel-url="codec/json.html" data-book-page-id="4851">采用 JSON 编码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/codec/multiline.html" title="合并多行数据(Multiline)" data-book-page-rel-url="codec/multiline.html" data-book-page-id="4852">合并多行数据(Multiline)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/README.html" title="过滤器插件(Filter)" data-book-page-rel-url="filter/README.html" data-book-page-id="4853">过滤器插件(Filter)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/filter/grok.html" title="Grok 正则捕获" data-book-page-rel-url="filter/grok.html" data-book-page-id="4854">Grok 正则捕获</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/date.html" title="时间处理(Date)" data-book-page-rel-url="filter/date.html" data-book-page-id="4855">时间处理(Date)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/mutate.html" title="数据修改(Mutate)" data-book-page-rel-url="filter/mutate.html" data-book-page-id="4856">数据修改(Mutate)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/geoip.html" title="GeoIP 查询归类" data-book-page-rel-url="filter/geoip.html" data-book-page-id="4857">GeoIP 查询归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/json.html" title="JSON 编解码" data-book-page-rel-url="filter/json.html" data-book-page-id="4858">JSON 编解码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/split.html" title="split 拆分事件" data-book-page-rel-url="filter/split.html" data-book-page-id="4859">split 拆分事件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/useragent.html" title="UserAgent 匹配归类" data-book-page-rel-url="filter/useragent.html" data-book-page-id="4860">UserAgent 匹配归类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/kv.html" title="Key-Value 切分" data-book-page-rel-url="filter/kv.html" data-book-page-id="4861">Key-Value 切分</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/ruby.html" title="随心所欲的 Ruby 处理" data-book-page-rel-url="filter/ruby.html" data-book-page-id="4862">随心所欲的 Ruby 处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/filter/metrics.html" title="数值统计(Metrics)" data-book-page-rel-url="filter/metrics.html" data-book-page-id="4863">数值统计(Metrics)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/README.html" title="输出插件(Output)" data-book-page-rel-url="output/README.html" data-book-page-id="4864">输出插件(Output)</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/output/stdout.html" title="标准输出(Stdout)" data-book-page-rel-url="output/stdout.html" data-book-page-id="4865">标准输出(Stdout)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/file.html" title="保存成文件(File)" data-book-page-rel-url="output/file.html" data-book-page-id="4866">保存成文件(File)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/elasticsearch.html" title="保存进 Elasticsearch" data-book-page-rel-url="output/elasticsearch.html" data-book-page-id="4867">保存进 Elasticsearch</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/redis.html" title="输出到 Redis" data-book-page-rel-url="output/redis.html" data-book-page-id="4868">输出到 Redis</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/tcp.html" title="输出网络数据(TCP)" data-book-page-rel-url="output/tcp.html" data-book-page-id="4869">输出网络数据(TCP)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/statsd.html" title="输出到 Statsd" data-book-page-rel-url="output/statsd.html" data-book-page-id="4870">输出到 Statsd</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/nagios.html" title="报警到 Nagios" data-book-page-rel-url="output/nagios.html" data-book-page-id="4871">报警到 Nagios</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/email.html" title="发送邮件(Email)" data-book-page-rel-url="output/email.html" data-book-page-id="4872">发送邮件(Email)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/output/exec.html" title="调用命令执行(Exec)" data-book-page-rel-url="output/exec.html" data-book-page-id="4873">调用命令执行(Exec)</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/README.html" title="尚未进入官方库的常用插件" data-book-page-rel-url="contrib_plugins/README.html" data-book-page-id="4874">尚未进入官方库的常用插件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/kafka.html" title="Kafka" data-book-page-rel-url="contrib_plugins/kafka.html" data-book-page-id="4875">Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/hdfs.html" title="HDFS" data-book-page-rel-url="contrib_plugins/hdfs.html" data-book-page-id="4876">HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/contrib_plugins/scribe.html" title="Scribe" data-book-page-rel-url="contrib_plugins/scribe.html" data-book-page-id="4877">Scribe</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/README.html" title="深入了解" data-book-page-rel-url="dive_into/README.html" data-book-page-id="4878">深入了解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/write_your_own.html" title="自己写一个插件" data-book-page-rel-url="dive_into/write_your_own.html" data-book-page-id="4879">自己写一个插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/dive_into/why_jvm_and_howto_run_with_mri.html" title="为什么用 JRuby? 能用 MRI 运行么?" data-book-page-rel-url="dive_into/why_jvm_and_howto_run_with_mri.html" data-book-page-id="4880">为什么用 JRuby? 能用 MRI 运行么?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/README.html" title="周边项目" data-book-page-rel-url="ecosystem/README.html" data-book-page-id="4881">周边项目</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/rsyslog.html" title="Rsyslog" data-book-page-rel-url="ecosystem/rsyslog.html" data-book-page-id="4882">Rsyslog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/logstash_forwarder.html" title="logstash-forwarder" data-book-page-rel-url="ecosystem/logstash_forwarder.html" data-book-page-id="4883">logstash-forwarder</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/nxlog.html" title="nxlog" data-book-page-rel-url="ecosystem/nxlog.html" data-book-page-id="4884">nxlog</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/heka.html" title="heka" data-book-page-rel-url="ecosystem/heka.html" data-book-page-id="4885">heka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/message_passing.html" title="Message::Passing" data-book-page-rel-url="ecosystem/message_passing.html" data-book-page-id="4886">Message::Passing</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/52/ecosystem/fluent.html" title="fluent" data-book-page-rel-url="ecosystem/fluent.html" data-book-page-id="4887">fluent</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =52;var bookPageId =4855;var bookPageRelUrl ='filter/date.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

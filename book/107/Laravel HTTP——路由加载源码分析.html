@@ -1,0 +1,1255 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel HTTP——路由加载源码分析-Laravel 源码详解</title>
+<meta content='Laravel HTTP——路由加载源码分析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel HTTP——路由加载源码分析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20HTTP——路由.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel HTT..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html">
+<span class="">Laravel HTT..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="前言">前言</h1>
+<p>作为 <code>laravel</code> 极其重要的一部分，<code>route</code> 功能贯穿着整个网络请求，是 <code>request</code> 生命周期的主干。本文主要讲述 <code>route</code> 服务的注册与启动、路由的属性注册。本篇内容相对简单，更多的是框架添加路由的整体设计流程。</p>
+<h1 id="route-服务的注册">route 服务的注册</h1>
+<p><code>laravel</code> 在接受到请求后，先进行了服务容器与 <code>http</code> 核心的初始化，再进行了请求 <code>request</code> 的构造与分发。</p>
+<p><code>route</code> 服务的注册—— <code>RoutingServiceProvider</code> 发生在服务容器 <code>container</code> 的初始化上;</p>
+<p><code>route</code> 服务的启动与加载—— <code>RouteServiceProvider</code> 发生在 <code>request</code> 的分发上。</p>
+<h2 id="route-服务的注册routingserviceprovider">route 服务的注册——RoutingServiceProvider</h2>
+<p>所有需要 <code>laravel</code> 服务的请求都会加载入口文件 <code>index.php</code>:</p>
+<pre><code class="language-php">require __DIR__.'/../bootstrap/autoload.php';
+
+$app = require_once __DIR__.'/../bootstrap/app.php';
+</code></pre>
+<p>第一句我们在之前的博客提过，是实现 <code>PSR0</code> 、<code>PSR4</code>标准自动加载的功能模块，第二句就是今天说的 <code>container</code> 的初始化：</p>
+<pre><code class="language-php">$app = new Illuminate\Foundation\Application(
+    realpath(__DIR__.'/../')
+);
+</code></pre>
+<p><code>Application</code> :</p>
+<pre><code class="language-php">namespace Illuminate\Foundation;
+
+class Application extends Container implements ApplicationContract, HttpKernelInterface
+{
+    public function __construct($basePath = null)
+    {
+        if ($basePath) {
+            $this-&gt;setBasePath($basePath);
+        }
+
+        $this-&gt;registerBaseBindings();
+
+        $this-&gt;registerBaseServiceProviders();
+
+        $this-&gt;registerCoreContainerAliases();
+    }
+}
+</code></pre>
+<p>路由服务的注册就在 <code>registerBaseServiceProviders()</code> 这个函数中：</p>
+<pre><code class="language-php">protected function registerBaseServiceProviders()
+{
+    $this-&gt;register(new EventServiceProvider($this));
+
+    $this-&gt;register(new LogServiceProvider($this));
+
+    $this-&gt;register(new RoutingServiceProvider($this));
+}
+</code></pre>
+<p><code>RoutingServiceProvider</code> :</p>
+<pre><code class="language-php">namespace Illuminate\Routing;
+
+class RoutingServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        $this-&gt;registerRouter();
+
+        ...
+    }
+    
+    protected function registerRouter()
+    {
+        $this-&gt;app-&gt;singleton('router', function ($app) {
+            return new Router($app['events'], $app);
+        });
+    }
+    
+    ...
+    
+}
+</code></pre>
+<p>可以看到，<code>RoutingServiceProvider</code> 做的事情比较简单，就是向服务容易中注册 <code>router</code>。</p>
+<h2 id="route-服务的启动与加载routeserviceprovider"><code>route</code> 服务的启动与加载——RouteServiceProvider</h2>
+<p><code>laravel</code> 在初始化 <code>Application</code> 后，就要进行 <code>http/Kernel</code> 的构造：</p>
+<pre><code class="language-php">$kernel = $app-&gt;make(Illuminate\Contracts\Http\Kernel::class);
+
+$response = $kernel-&gt;handle(
+    $request = Illuminate\Http\Request::capture()
+);
+</code></pre>
+<p>初始化结束后，就会调用 <code>handle</code> 函数，这个函数用于 <code>laravel</code> 各个功能服务的注册启动，还有 <code>request</code> 的分发：</p>
+<pre><code class="language-php">public function handle($request)
+{
+    try {
+        $request-&gt;enableHttpMethodParameterOverride();
+
+        $response = $this-&gt;sendRequestThroughRouter($request);
+    } 
+    
+    return $response;
+}
+
+protected function sendRequestThroughRouter($request)
+{
+    $this-&gt;app-&gt;instance('request', $request);
+
+    Facade::clearResolvedInstance('request');
+
+    $this-&gt;bootstrap();//各种服务的注册与启动
+
+    return (new Pipeline($this-&gt;app))//请求的分发
+                -&gt;send($request)
+                -&gt;through($this-&gt;app-&gt;shouldSkipMiddleware() ? [] : $this-&gt;middleware)
+                -&gt;then($this-&gt;dispatchToRouter());
+    }
+</code></pre>
+<p>路由服务的启动与加载就在其中一个函数中 <code>bootstrap</code>，这个函数用于各种服务的注册与启动，比较复杂，我们有机会在以后单独来说。</p>
+<p>总之，这个函数会调用 <code>RouteServiceProvider</code> 这个类的两个函数： 注册——<code>register</code>、启动——<code>boot</code>。</p>
+<p>由于 <code>route</code> 的注册工作由之前 <code>RoutingServiceProvider</code> 完成，所以 <code>RouteServiceProvider</code> 的 <code>register</code> 是空的，这里它只负责路由的启动与加载工作，我们主要看 <code>boot</code>：</p>
+<pre><code class="language-php">namespace Illuminate\Foundation\Support\Providers;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        //
+    }
+    
+    public function boot()
+    {
+        $this-&gt;setRootControllerNamespace();
+
+        if ($this-&gt;app-&gt;routesAreCached()) {
+            $this-&gt;loadCachedRoutes();
+        } else {
+            $this-&gt;loadRoutes();
+
+            $this-&gt;app-&gt;booted(function () {
+                $this-&gt;app['router']-&gt;getRoutes()-&gt;refreshNameLookups();
+                $this-&gt;app['router']-&gt;getRoutes()-&gt;refreshActionLookups();
+            });
+        }
+    }
+    
+    protected function loadCachedRoutes()
+    {
+        $this-&gt;app-&gt;booted(function () {
+            require $this-&gt;app-&gt;getCachedRoutesPath();
+        });
+    }
+
+    protected function loadRoutes()
+    {
+        if (method_exists($this, 'map')) {
+            $this-&gt;app-&gt;call([$this, 'map']);
+        }
+    }
+}
+
+class Application extends Container implements ApplicationContract, HttpKernelInterface
+{
+    public function routesAreCached()
+    {
+        return $this['files']-&gt;exists($this-&gt;getCachedRoutesPath());
+    }
+
+    public function getCachedRoutesPath()
+    {
+        return $this-&gt;bootstrapPath().'/cache/routes.php';
+    }
+}
+</code></pre>
+<p>从 <code>boot</code> 中可以看出，<code>laravel</code> 首先去寻找路由的缓存文件，没有缓存文件再去进行加载路由。缓存文件一般在 <code>bootstrap/cache/routes.php</code> 文件中。</p>
+<p>加载路由主要调用 <code>map</code> 函数，这个函数一般在 <code>App\Providers\RouteServiceProvider</code> 这个类中，这个类继承上面的 <code>Illuminate\Foundation\Support\Providers\RouteServiceProvider</code>:</p>
+<pre><code class="language-php">use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function map()
+    {
+        $this-&gt;mapApiRoutes();
+
+        $this-&gt;mapWebRoutes();
+
+        //
+    }
+    
+    protected function mapWebRoutes()
+    {
+        Route::middleware('web')
+             -&gt;namespace($this-&gt;namespace)
+             -&gt;group(base_path('routes/web.php'));
+    }
+    
+    protected function mapApiRoutes()
+    {
+        Route::prefix('api')
+             -&gt;middleware('api')
+             -&gt;namespace($this-&gt;namespace)
+             -&gt;group(base_path('routes/api.php'));
+    }
+}
+    
+</code></pre>
+<p><code>laravle</code> 将路由分为两个大组：<code>api</code>、<code>web</code>。这两个部分的路由分别写在两个文件中：<code>routes/web.php</code>、<code>routes/api.php</code>。</p>
+<h2 id="路由的加载">路由的加载</h2>
+<p>所谓的路由加载，就是将定义路由时添加的属性，例如 'name'、'domain'、'scheme' 等等保存起来，以待后用。</p>
+<ul>
+<li><code>laravel</code> 定义路由的属性的方法很灵活，可以定义在路由群组前，例如：</li>
+</ul>
+<pre><code class="language-php">Route::domain('route.domain.name')
+     -&gt;group(function() {
+			Route::get('foo','controller@method');
+     })
+</code></pre>
+<ul>
+<li>可以定义在路由群组中，例如：</li>
+</ul>
+<pre><code class="language-php">Route::group('domain' =&gt; 'group.domain.name',function() {
+    		Route::get('foo','controller@method');
+    })
+
+</code></pre>
+<ul>
+<li>可以定义在 <code>method</code> 的前面，例如：</li>
+</ul>
+<pre><code class="language-php">Route::domain('route.domain.name')
+     -&gt;get('foo','controller@method');
+</code></pre>
+<ul>
+<li>可以定义在 <code>method</code> 中，例如：</li>
+</ul>
+<pre><code class="language-php">Route::get('foo',['domain' =&gt; 'route.domain.name','use' =&gt; 'controller@method']);
+</code></pre>
+<ul>
+<li>还可以定义在 <code>method</code> 后，例如：</li>
+</ul>
+<pre><code class="language-php"> Route::get('{one}', 'use' =&gt; 'controller@method')
+      -&gt;where('one', '(.+)');
+</code></pre>
+<p>事实上，路由的加载功能主要有三个类负责： <code>Illuminate\Routing\Router</code>、<code>Illuminate\Routing\Route</code>、<code>Illuminate\Routing\RouteRegistrar</code>。</p>
+<p><code>Router</code> 在整个路由功能中都是起着中枢的作用， <code>RouteRegistrar</code> 主要负责位于 <code>group</code>、<code>method</code> 这些函数之前的属性注册，例如上面的第一种和第三种，<code>route</code> 主要负责位于 <code>group</code>、<code>method</code> 这些函数之后的属性注册，例如第五种。</p>
+<h1 id="routeregistrar-路由加载">RouteRegistrar 路由加载</h1>
+<h2 id="属性注册">属性注册</h2>
+<p>当我们想要在 <code>Route</code> 后面直接利用 <code>domain()</code>、<code>name()</code> 等函数来为路由注册属性的时候，我们实际调用的是 <code>router</code> 的魔术方法 <code>__call()</code>:</p>
+<pre><code class="language-php">namespace Illuminate\Routing;
+
+class Router implements RegistrarContract, BindingRegistrar
+{
+    public function __call($method, $parameters)
+    {
+        if (static::hasMacro($method)) {
+            return $this-&gt;macroCall($method, $parameters);
+        }
+
+        return (new RouteRegistrar($this))-&gt;attribute($method, $parameters[0]);
+    }
+}
+</code></pre>
+<p>在类 <code>RouteRegistrar</code> 中：</p>
+<pre><code class="language-php">class RouteRegistrar
+{
+    protected $allowedAttributes = [
+    	'as', 'domain', 'middleware', 'name', 'namespace', 'prefix',
+    ];
+    
+    public function attribute($key, $value)
+    {
+        if (! in_array($key, $this-&gt;allowedAttributes)) {
+            throw new InvalidArgumentException("Attribute [{$key}] does not exist.");
+        }
+
+        $this-&gt;attributes[array_get($this-&gt;aliases, $key, $key)] = $value;
+
+        return $this;
+    }
+}
+</code></pre>
+<h2 id="添加路由">添加路由</h2>
+<p>注册属性之后，创建路由的时候，可以仅仅提供 <code>uri</code>，可以提供 <code>uri</code> 与 闭包，可以提供 <code>uri</code> 与 控制器，可以提供 <code>uri</code> 与数组：</p>
+<pre><code class="language-php">Route::as('Foo')
+     -&gt;namespace('Namespace\\Example\\')
+     -&gt;get('foo/bar');//仅仅 uri
+     
+Route::as('Foo')
+     -&gt;namespace('Namespace\\Example\\')
+     -&gt;get('foo/bar', function () {
+       }); //uri 与闭包
+    
+Route::as('Foo')
+     -&gt;namespace('Namespace\\Example\\')
+     -&gt;get('foo/bar', 'controller@method');//uri 与控制器     
+     
+Route::as('Foo')
+     -&gt;namespace('Namespace\\Example\\')
+     -&gt;get('foo/bar', ['as'=&gt; 'foo','use' =&gt;'controller@method']);//uri 与数组 
+</code></pre>
+<p>利用 <code>get</code>、<code>post</code> 等方法创建新的路由时，会调用类 <code>RouteRegistrar</code> 中的魔术方法 <code>__call()</code>：</p>
+<pre><code class="language-php">class RouteRegistrar
+{
+    protected $passthru = [
+        'get', 'post', 'put', 'patch', 'delete', 'options', 'any',
+    ];
+    
+    public function __call($method, $parameters)
+    {
+        if (in_array($method, $this-&gt;passthru)) {
+            return $this-&gt;registerRoute($method, ...$parameters);
+        }
+
+        if (in_array($method, $this-&gt;allowedAttributes)) {
+            return $this-&gt;attribute($method, $parameters[0]);
+        }
+
+        throw new BadMethodCallException("Method [{$method}] does not exist.");
+    }
+    
+    protected function registerRoute($method, $uri, $action = null)
+    {
+        if (! is_array($action)) {
+            $action = array_merge($this-&gt;attributes, $action ? ['uses' =&gt; $action] : []);
+        }
+
+        return $this-&gt;router-&gt;{$method}($uri, $this-&gt;compileAction($action));
+    }
+    
+    protected function compileAction($action)
+    {
+        if (is_null($action)) {
+            return $this-&gt;attributes;
+        }
+
+        if (is_string($action) || $action instanceof Closure) {
+            $action = ['uses' =&gt; $action];
+        }
+
+        return array_merge($this-&gt;attributes, $action);
+    }
+}
+</code></pre>
+<p>也就是说，<code>RouteRegistrar</code> 在这里会为闭包或控制器等所有非数组的 <code>action</code> 添加 <code>use</code> 键，然后才会去 <code>router</code> 中创建路由。</p>
+<h2 id="添加路由群组">添加路由群组</h2>
+<p>注册属性之后，还可以创建路由群组，但是这时路由群组不允许添加属性 <code>action</code>：</p>
+<pre><code class="language-php">class RouteRegistrar
+{
+    public function group($callback)
+    {
+        $this-&gt;router-&gt;group($this-&gt;attributes, $callback);
+    }
+}
+
+</code></pre>
+<h1 id="router-路由群组加载">Router 路由群组加载</h1>
+<p>路由群组的功能可以不断叠加递归，因此每次调用 <code>group</code> ，都要用新路由群组的属性与旧路由群组属性合并，以待新的路由去继承。 <code>group</code> 参数可以是闭包函数，也可以是包含定义路由的文件路径。</p>
+<pre><code class="language-php">public function group(array $attributes, $routes)
+{
+    $this-&gt;updateGroupStack($attributes);
+
+    $this-&gt;loadRoutes($routes);
+
+    array_pop($this-&gt;groupStack);
+}
+
+protected function updateGroupStack(array $attributes)
+{
+    if (! empty($this-&gt;groupStack)) {
+        $attributes = RouteGroup::merge($attributes, end($this-&gt;groupStack));
+    }
+
+    $this-&gt;groupStack[] = $attributes;
+}
+
+protected function loadRoutes($routes)
+{
+    if ($routes instanceof Closure) {
+        $routes($this);
+    } else {
+        $router = $this;
+
+        require $routes;
+    }
+}
+</code></pre>
+<p>关于路由群组属性的合并,</p>
+<ul>
+<li><code>prefix</code>、<code>as</code>、<code>namespace</code> 这几个属性会连接在一起，例如 <code>prefix1/prefix2/prefix3</code>，</li>
+<li><code>where</code> 属性数组相同的会被替换，不同的会被合并。</li>
+<li><code>domain</code> 属性会被替换。</li>
+<li>其他属性，例如 <code>middleware</code> 数组会直接被合并，即使存在相同的元素。</li>
+</ul>
+<pre><code class="language-php">class RouteGroup
+{
+    public static function merge($new, $old)
+    {
+        if (isset($new['domain'])) {
+            unset($old['domain']);
+        }
+
+        $new = array_merge(static::formatAs($new, $old), [
+            'namespace' =&gt; static::formatNamespace($new, $old),
+            'prefix' =&gt; static::formatPrefix($new, $old),
+            'where' =&gt; static::formatWhere($new, $old),
+        ]);
+
+        return array_merge_recursive(Arr::except(
+            $old, ['namespace', 'prefix', 'where', 'as']
+        ), $new);
+    }
+}
+
+</code></pre>
+<h1 id="router-路由加载">Router 路由加载</h1>
+<p>添加路由需要很多步骤，需要将路由本身的属性和路由群组的属性相结合。</p>
+<pre><code class="language-php">public function get($uri, $action = null)
+{
+    return $this-&gt;addRoute(['GET', 'HEAD'], $uri, $action);
+}
+
+protected function addRoute($methods, $uri, $action)
+{
+    return $this-&gt;routes-&gt;add($this-&gt;createRoute($methods, $uri, $action));
+}
+
+protected function createRoute($methods, $uri, $action)
+{
+      
+    if ($this-&gt;actionReferencesController($action)) {
+        $action = $this-&gt;convertToControllerAction($action);
+    }
+
+    $route = $this-&gt;newRoute(
+        $methods, $this-&gt;prefix($uri), $action
+    );
+
+    if ($this-&gt;hasGroupStack()) {
+        $this-&gt;mergeGroupAttributesIntoRoute($route);
+    }
+
+    $this-&gt;addWhereClausesToRoute($route);
+
+    return $route;
+}
+</code></pre>
+<p>从上面来看，添加一个新的路由需要：</p>
+<ul>
+<li>给路由的控制器添加 <code>group</code> 的 <code>namespace</code></li>
+<li>给路由的 <code>uri</code> 添加 <code>group</code> 的 <code>prefix</code> 前缀</li>
+<li>创建新的路由</li>
+<li>更新路由的属性信息</li>
+<li>为路由添加 <code>router</code>-<code>pattern</code> 正则约束</li>
+<li>路由添加到 <code>RouteCollection</code> 中</li>
+</ul>
+<h2 id="控制器-namespace">控制器 namespace</h2>
+<p>路由控制器的命名空间一般不用特别指定，默认值是 <code>\App\Http\Controllers</code>，每次创建新的路由，都要将默认的命名空间添加到控制器中去：</p>
+<pre><code class="language-php">protected function actionReferencesController($action)
+{
+    if (! $action instanceof Closure) {
+        return is_string($action) || (isset($action['uses']) &amp;&amp; is_string($action['uses']));
+    }
+
+    return false;
+}
+
+protected function convertToControllerAction($action)
+{
+    if (is_string($action)) {
+        $action = ['uses' =&gt; $action];
+    }
+
+    if (! empty($this-&gt;groupStack)) {
+        $action['uses'] = $this-&gt;prependGroupNamespace($action['uses']);
+    }
+
+    $action['controller'] = $action['uses'];
+
+    return $action;
+}
+
+protected function prependGroupNamespace($class)
+{
+    $group = end($this-&gt;groupStack);
+
+    return isset($group['namespace']) &amp;&amp; strpos($class, '\\') !== 0
+            ? $group['namespace'].'\\'.$class : $class;
+}
+</code></pre>
+<h2 id="uri-前缀">uri 前缀</h2>
+<p>在创建新的路由前，需要将路由群组的 <code>prefix</code> 添加到路由的 <code>uri</code> 中：</p>
+<pre><code class="language-php">protected function prefix($uri)
+{
+    return trim(trim($this-&gt;getLastGroupPrefix(), '/').'/'.trim($uri, '/'), '/') ?: '/';
+}
+
+public function getLastGroupPrefix()
+{
+    if (! empty($this-&gt;groupStack)) {
+        $last = end($this-&gt;groupStack);
+
+        return isset($last['prefix']) ? $last['prefix'] : '';
+    }
+
+    return '';
+}
+</code></pre>
+<h2 id="创建新的路由">创建新的路由</h2>
+<p>路由的创建需要 <code>Route</code> 类：</p>
+<pre><code class="language-php">protected function newRoute($methods, $uri, $action)
+{
+    return (new Route($methods, $uri, $action))
+                -&gt;setRouter($this)
+                -&gt;setContainer($this-&gt;container);
+}
+</code></pre>
+<p>关于 <code>Router</code> 类添加新的路由我们在下一部分详细说。</p>
+<h2 id="更新路由属性信息">更新路由属性信息</h2>
+<p>创建新的路由之后，需要将路由本身的属性 <code>action</code> 与路由群组的属性结合在一起：</p>
+<pre><code class="language-php">public function hasGroupStack()
+{
+    return ! empty($this-&gt;groupStack);
+}
+
+protected function mergeGroupAttributesIntoRoute($route)
+{
+    $route-&gt;setAction($this-&gt;mergeWithLastGroup($route-&gt;getAction()));
+}
+</code></pre>
+<h2 id="添加全局正则约束到路由">添加全局正则约束到路由</h2>
+<p>上一篇文章我们说过，我们可以为路由通过 <code>pattern</code> 方法添加全局的参数正则约束，所有每次添加新的路由都要将这个全局正则约束添加到路由中：</p>
+<pre><code class="language-php">public function pattern($key, $pattern)
+{
+    $this-&gt;patterns[$key] = $pattern;
+}
+    
+protected function addWhereClausesToRoute($route)
+{
+    $route-&gt;where(array_merge(
+        $this-&gt;patterns, isset($route-&gt;getAction()['where']) ? $route-&gt;getAction()['where'] : []
+    ));
+
+    return $route;
+}
+</code></pre>
+<h1 id="route-路由加载">Route 路由加载</h1>
+<p>前面说过，路由的创建是由 <code>Route</code> 这个类完成的：</p>
+<pre><code class="language-php"> public function __construct($methods, $uri, $action)
+{
+    $this-&gt;uri = $uri;
+    $this-&gt;methods = (array) $methods;
+    $this-&gt;action = $this-&gt;parseAction($action);
+
+    if (in_array('GET', $this-&gt;methods) &amp;&amp; ! in_array('HEAD', $this-&gt;methods)) {
+        $this-&gt;methods[] = 'HEAD';
+    }
+
+    if (isset($this-&gt;action['prefix'])) {
+        $this-&gt;prefix($this-&gt;action['prefix']);
+    }
+}
+</code></pre>
+<p>由此可以看出，路由的创建主要是路由的各个属性的初始化，其中值得注意的有两个： <code>action</code> 与 <code>prefix</code></p>
+<h2 id="action-解析">action 解析</h2>
+<pre><code class="language-php">protected function parseAction($action)
+{
+    return RouteAction::parse($this-&gt;uri, $action);
+}
+</code></pre>
+<p>我们可以看出，添加新的路由时， <code>action</code> 属性需要利用 <code>RouteAction</code> 类：</p>
+<pre><code class="language-php">class RouteAction
+{
+    public static function parse($uri, $action)
+    {
+        if (is_null($action)) {
+            return static::missingAction($uri);
+        }
+
+        if (is_callable($action)) {
+            return ['uses' =&gt; $action];
+        }
+
+        elseif (! isset($action['uses'])) {
+            $action['uses'] = static::findCallable($action);
+        }
+
+        if (is_string($action['uses']) &amp;&amp; ! Str::contains($action['uses'], '@')) {
+            $action['uses'] = static::makeInvokable($action['uses']);
+        }
+
+        return $action;
+    }
+    
+    protected static function findCallable(array $action)
+    {
+        return Arr::first($action, function ($value, $key) {
+            return is_callable($value) &amp;&amp; is_numeric($key);
+        });
+    }
+    
+    protected static function makeInvokable($action)
+    {
+        if (! method_exists($action, '__invoke')) {
+            throw new UnexpectedValueException("Invalid route action: [{$action}].");
+        }
+
+        return $action.'@__invoke';
+    }
+}
+
+</code></pre>
+<p>前面的博客我们说过，创建路由的时候，除了为路由分配控制器之外，还可以为路由分配闭包函数，还有类函数，例如之前说的单动作控制器：</p>
+<pre><code class="language-php">
+
+$router-&gt;get('foo/bar2', [‘domain’ =&gt; 'www.example.com', 'Illuminate\Tests\Routing\ActionStub']);
+
+class ActionStub
+{
+    public function __invoke()
+    {
+        return 'hello';
+    }
+}
+</code></pre>
+<p>因此，解析 <code>action</code> 主要做两件事：</p>
+<ul>
+<li> <p>为闭包函数添加 <code>use</code> 键。对于此时没有 <code>use</code> 键的路由，由于之前在 <code>Router</code> 中已经为控制器添加 <code>use</code> 键，因此这时没有 <code>use</code> 键的，必然是闭包函数，在这里直接或者在 <code>action</code> 中寻找闭包函数后，为闭包函数添加 <code>use</code> 键。</p> </li>
+<li> <p>单动作控制器添加 <code>__invoke</code>。对于单动作控制器来说，此时已经和控制器一样拥有 'use' 键，但是并没有 <code>@</code> 符号，此时就会调用 <code>makeInvokable</code> 函数来将 <code>__invoke</code> 添加到后面。</p> </li>
+</ul>
+<h2 id="prefix-前缀">prefix 前缀</h2>
+<p>路由自身也有 <code>prefix</code> 属性，而且这个属性要加在其他 <code>prefix</code> 的最前面,作为路由的 <code>uri</code>：</p>
+<pre><code class="language-php">public function prefix($prefix)
+{
+    $uri = rtrim($prefix, '/').'/'.ltrim($this-&gt;uri, '/');
+
+    $this-&gt;uri = trim($uri, '/');
+
+    return $this;
+}
+</code></pre>
+<h1 id="route-路由属性加载">Route 路由属性加载</h1>
+<p>除了 <code>RouteRegistrar</code> 之外，<code>Route</code> 也可以为路由添加属性：</p>
+<h2 id="prefix-前缀-1">prefix 前缀</h2>
+<pre><code class="language-php">public function prefix($prefix)
+{
+    $uri = rtrim($prefix, '/').'/'.ltrim($this-&gt;uri, '/');
+
+    $this-&gt;uri = trim($uri, '/');
+
+    return $this;
+}
+</code></pre>
+<h2 id="where-正则约束">where 正则约束</h2>
+<pre><code class="language-php">public function where($name, $expression = null)
+{
+    foreach ($this-&gt;parseWhere($name, $expression) as $name =&gt; $expression) {
+        $this-&gt;wheres[$name] = $expression;
+    }
+ 	
+ 	return $this;
+}     
+
+protected function parseWhere($name, $expression)
+{
+    return is_array($name) ? $name : [$name =&gt; $expression];
+}
+</code></pre>
+<h2 id="middleware-中间件">middleware 中间件</h2>
+<pre><code class="language-php">public function middleware($middleware = null)
+{
+    if (is_null($middleware)) {
+        return (array) Arr::get($this-&gt;action, 'middleware', []);
+    }
+
+    if (is_string($middleware)) {
+        $middleware = func_get_args();
+    }
+
+    $this-&gt;action['middleware'] = array_merge(
+        (array) Arr::get($this-&gt;action, 'middleware', []), $middleware
+    );
+
+    return $this;
+}
+</code></pre>
+<h2 id="uses-控制器">uses 控制器</h2>
+<pre><code class="language-php">public function uses($action)
+{
+    $action = is_string($action) ? $this-&gt;addGroupNamespaceToStringUses($action) : $action;
+
+    return $this-&gt;setAction(array_merge($this-&gt;action, $this-&gt;parseAction([
+        'uses' =&gt; $action,
+        'controller' =&gt; $action,
+    ])));
+}
+</code></pre>
+<h2 id="name-命名">name 命名</h2>
+<pre><code class="language-php">public function name($name)
+{
+    $this-&gt;action['as'] = isset($this-&gt;action['as']) ? $this-&gt;action['as'].$name : $name;
+
+    return $this;
+}
+</code></pre>
+<h1 id="routecollection-添加路由">RouteCollection 添加路由</h1>
+<p>在上面的部分，我们看到添加路由的代码：</p>
+<pre><code class="language-php">protected function addRoute($methods, $uri, $action)
+{
+    return $this-&gt;routes-&gt;add($this-&gt;createRoute($methods, $uri, $action));
+}
+</code></pre>
+<p>新创建的路由会加入到 <code>RouteCollection</code> 中，会更新类中的 <code>routes</code>、<code>allRoutes</code>、<code>nameList</code>、<code>actionList</code>。</p>
+<pre><code class="language-php">public function add(Route $route)
+{
+    $this-&gt;addToCollections($route);
+
+    $this-&gt;addLookups($route);
+
+    return $route;
+}
+
+protected function addToCollections($route)
+{
+    $domainAndUri = $route-&gt;domain().$route-&gt;uri();
+
+    foreach ($route-&gt;methods() as $method) {
+        $this-&gt;routes[$method][$domainAndUri] = $route;
+    }
+
+    $this-&gt;allRoutes[$method.$domainAndUri] = $route;
+}
+
+protected function addLookups($route)
+{   
+    $action = $route-&gt;getAction();
+
+    if (isset($action['as'])) {
+        $this-&gt;nameList[$action['as']] = $route;
+    }
+
+   if (isset($action['controller'])) {
+        $this-&gt;addToActionList($action, $route);
+    }
+}
+
+protected function addToActionList($action, $route)
+{
+    $this-&gt;actionList[trim($action['controller'], '\\')] = $route;
+}
+</code></pre>
+<p>我们在上面路由的注册启动章节说道，路由的启动是 <code>namespace Illuminate\Foundation\Support\Providers\RouteServiceProvider</code> 完成的，调用的是 <code>boot</code> 函数：</p>
+<pre><code class="language-php">public function boot()
+{
+    $this-&gt;setRootControllerNamespace();
+
+    if ($this-&gt;app-&gt;routesAreCached()) {
+        $this-&gt;loadCachedRoutes();
+    } else {
+        $this-&gt;loadRoutes();
+
+        $this-&gt;app-&gt;booted(function () {
+            $this-&gt;app['router']-&gt;getRoutes()-&gt;refreshNameLookups();
+        });
+    }
+}
+</code></pre>
+<p>在最后一句，程序将会在所有服务都启动后运行 <code>refreshNameLookups</code> 函数，把所有的 <code>name</code> 属性加载到 <code>RouteCollection</code> 中:</p>
+<pre><code class="language-php">public function refreshNameLookups()
+{
+    $this-&gt;nameList = [];
+
+    foreach ($this-&gt;allRoutes as $route) {
+        if ($route-&gt;getName()) {
+            $this-&gt;nameList[$route-&gt;getName()] = $route;
+        }
+    }
+}
+</code></pre>
+<p>测试样例如下：</p>
+<pre><code class="language-php">public function testRouteCollectionCanRefreshNameLookups()
+{
+    $routeIndex = new Route('GET', 'foo/index', [
+        'uses' =&gt; 'FooController@index',
+    ]);
+
+    $this-&gt;assertNull($routeIndex-&gt;getName());
+
+    $this-&gt;routeCollection-&gt;add($routeIndex)-&gt;name('route_name');
+
+    $this-&gt;assertNull($this-&gt;routeCollection-&gt;getByName('route_name'));
+
+    $this-&gt;routeCollection-&gt;refreshNameLookups();
+    $this-&gt;assertEquals($routeIndex, $this-&gt;routeCollection-&gt;getByName('route_name'));
+}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/190/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nginx_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/190/index.html">Nginx 管理员手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">307页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8424个">8424</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/120/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/172/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/172/index.html">Seaborn 0.9 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">76页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 32个">32</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/7/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/7/index.html">Netty 4.x 用户指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1131个">1131</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/2/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/typescript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/2/index.html">TypeScript使用手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/2.html">zhongsp</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="typescript">typescript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1879个">1879</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/101/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/chrome_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/101/index.html">Chromium中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="chrome">chrome</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7744;var bookPageRelUrl ='Laravel%20HTTP——路由加载源码分析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

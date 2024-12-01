@@ -1,0 +1,823 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Linux 内核的通知链-Linux 内核揭密</title>
+<meta content='Linux 内核的通知链,Linux 内核揭密' name='keywords'>
+<meta content='Linux 内核的通知链,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Concepts/initcall.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">initcall 机制</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/DataStructures/README.html">
+<span class="">Linux 内核中的数..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="notification-chains-in-linux-kernel">Notification Chains in Linux Kernel</h1>
+<h2 id="introduction">Introduction</h2>
+<p>The Linux kernel is huge piece of <a href="https://en.wikipedia.org/wiki/C_(programming_language)">C</a> code which consists from many different subsystems. Each subsystem has its own purpose which is independent of other subsystems. But often one subsystem wants to know something from other subsystem(s). There is special mechanism in the Linux kernel which allows to solve this problem partly. The name of this mechanism is - <code>notification chains</code> and its main purpose to provide a way for different subsystems to subscribe on asynchronous events from other subsystems. Note that this mechanism is only for communication inside kernel, but there are other mechanisms for communication between kernel and userspace.</p>
+<p>Before we will consider <code>notification chains</code> <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> and implementation of this API, let's look at <code>Notification chains</code> mechanism from theoretical side as we did it in other parts of this book. Everything which is related to <code>notification chains</code> mechanism is located in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> header file and <a href="https://github.com/torvalds/linux/blob/master/kernel/notifier.c">kernel/notifier.c</a> source code file. So let's open them and start to dive.</p>
+<h2 id="notification-chains-related-data-structures">Notification Chains related data structures</h2>
+<p>Let's start to consider <code>notification chains</code> mechanism from related data structures. As I wrote above, main data structures should be located in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> header file, so the Linux kernel provides generic API which does not depend on certain architecture. In general, the <code>notification chains</code> mechanism represents a list (that's why it named <code>chains</code>) of <a href="https://en.wikipedia.org/wiki/Callback_(computer_programming)">callback</a> functions which are will be executed when an event will be occurred.</p>
+<p>All of these callback functions are represented as <code>notifier_fn_t</code> type in the Linux kernel:</p>
+<pre><code class="language-C">typedef	int (*notifier_fn_t)(struct notifier_block *nb, unsigned long action, void *data);
+</code></pre>
+<p>So we may see that it takes three following arguments:</p>
+<ul>
+<li><code>nb</code> - is linked list of function pointers (will see it now);</li>
+<li><code>action</code> - is type of an event. A notification chain may support multiple events, so we need this parameter to distinguish an event from other events;</li>
+<li><code>data</code> - is storage for private information. Actually it allows to provide additional data information about an event.</li>
+</ul>
+<p>Additionally we may see that <code>notifier_fn_t</code> returns an integer value. This integer value maybe one of:</p>
+<ul>
+<li><code>NOTIFY_DONE</code> - subscriber does not interested in notification;</li>
+<li><code>NOTIFY_OK</code> - notification was processed correctly;</li>
+<li><code>NOTIFY_BAD</code> - something went wrong;</li>
+<li><code>NOTIFY_STOP</code> - notification is done, but no further callbacks should be called for this event.</li>
+</ul>
+<p>All of these results defined as macros in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> header file:</p>
+<pre><code class="language-C">#define NOTIFY_DONE		0x0000
+#define NOTIFY_OK		0x0001
+#define NOTIFY_BAD		(NOTIFY_STOP_MASK|0x0002)
+#define NOTIFY_STOP		(NOTIFY_OK|NOTIFY_STOP_MASK)
+</code></pre>
+<p>Where <code>NOTIFY_STOP_MASK</code> represented by the:</p>
+<pre><code class="language-C">#define NOTIFY_STOP_MASK	0x8000
+</code></pre>
+<p>macro and means that callbacks will not be called during next notifications.</p>
+<p>Each part of the Linux kernel which wants to be notified on a certain event will should provide own <code>notifier_fn_t</code> callback function. Main role of the <code>notification chains</code> mechanism is to call certain callbacks when an asynchronous event occurred.</p>
+<p>The main building block of the <code>notification chains</code> mechanism is the <code>notifier_block</code> structure:</p>
+<pre><code class="language-C">struct notifier_block {
+	notifier_fn_t notifier_call;
+	struct notifier_block __rcu *next;
+	int priority;
+};
+</code></pre>
+<p>which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> file. This struct contains pointer to callback function - <code>notifier_call</code>, link to the next notification callback and <code>priority</code> of a callback function as functions with higher priority are executed first.</p>
+<p>The Linux kernel provides notification chains of four following types:</p>
+<ul>
+<li>Blocking notifier chains;</li>
+<li>SRCU notifier chains;</li>
+<li>Atomic notifier chains;</li>
+<li>Raw notifier chains.</li>
+</ul>
+<p>Let's consider all of these types of notification chains by order:</p>
+<p>In the first case for the <code>blocking notifier chains</code>, callbacks will be called/executed in process context. This means that the calls in a notification chain may be blocked.</p>
+<p>The second <code>SRCU notifier chains</code> represent alternative form of <code>blocking notifier chains</code>. In the first case, blocking notifier chains uses <code>rw_semaphore</code> synchronization primitive to protect chain links. <code>SRCU</code> notifier chains run in process context too, but uses special form of <a href="https://en.wikipedia.org/wiki/Read-copy-update">RCU</a> mechanism which is permissible to block in an read-side critical section.</p>
+<p>In the third case for the <code>atomic notifier chains</code> runs in interrupt or atomic context and protected by <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a> synchronization primitive. The last <code>raw notifier chains</code> provides special type of notifier chains without any locking restrictions on callbacks. This means that protection rests on the shoulders of caller side. It is very useful when we want to protect our chain with very specific locking mechanism.</p>
+<p>If we will look at the implementation of the <code>notifier_block</code> structure, we will see that it contains pointer to the <code>next</code> element from a notification chain list, but we have no head. Actually a head of such list is in separate structure depends on type of a notification chain. For example for the <code>blocking notifier chains</code>:</p>
+<pre><code class="language-C">struct blocking_notifier_head {
+	struct rw_semaphore rwsem;
+	struct notifier_block __rcu *head;
+};
+</code></pre>
+<p>or for <code>atomic notification chains</code>:</p>
+<pre><code class="language-C">struct atomic_notifier_head {
+	spinlock_t lock;
+	struct notifier_block __rcu *head;
+};
+</code></pre>
+<p>Now as we know a little about <code>notification chains</code> mechanism let's consider implementation of its API.</p>
+<h2 id="notification-chains">Notification Chains</h2>
+<p>Usually there are two sides in a publish/subscriber mechanisms. One side who wants to get notifications and other side(s) who generates these notifications. We will consider notification chains mechanism from both sides. We will consider <code>blocking notification chains</code> in this part, because of other types of notification chains are similar to it and differs mostly in protection mechanisms.</p>
+<p>Before a notification producer is able to produce notification, first of all it should initialize head of a notification chain. For example let's consider notification chains related to kernel <a href="https://en.wikipedia.org/wiki/Loadable_kernel_module">loadable modules</a>. If we will look in the <a href="https://github.com/torvalds/linux/blob/master/kernel/module.c">kernel/module.c</a> source code file, we will see following definition:</p>
+<pre><code class="language-C">static BLOCKING_NOTIFIER_HEAD(module_notify_list);
+</code></pre>
+<p>which defines head for loadable modules blocking notifier chain. The <code>BLOCKING_NOTIFIER_HEAD</code> macro is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> header file and expands to the following code:</p>
+<pre><code class="language-C">#define BLOCKING_INIT_NOTIFIER_HEAD(name) do {	\
+		init_rwsem(&amp;(name)-&gt;rwsem);	                            \
+		(name)-&gt;head = NULL;		                            \
+	} while (0)
+</code></pre>
+<p>So we may see that it takes name of a name of a head of a blocking notifier chain and initializes read/write <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">semaphore</a> and set head to <code>NULL</code>. Besides the <code>BLOCKING_INIT_NOTIFIER_HEAD</code> macro, the Linux kernel additionally provides <code>ATOMIC_INIT_NOTIFIER_HEAD</code>, <code>RAW_INIT_NOTIFIER_HEAD</code> macros and <code>srcu_init_notifier</code> function for initialization atomic and other types of notification chains.</p>
+<p>After initialization of a head of a notification chain, a subsystem which wants to receive notification from the given notification chain it should register with certain function which is depends on type of notification. If you will look in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/notifier.h">include/linux/notifier.h</a> header file, you will see following four function for this:</p>
+<pre><code class="language-C">extern int atomic_notifier_chain_register(struct atomic_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int blocking_notifier_chain_register(struct blocking_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int raw_notifier_chain_register(struct raw_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int srcu_notifier_chain_register(struct srcu_notifier_head *nh,
+		struct notifier_block *nb);
+</code></pre>
+<p>As I already wrote above, we will cover only blocking notification chains in the part, so let's consider implementation of the <code>blocking_notifier_chain_register</code> function. Implementation of this function is located in the <a href="https://github.com/torvalds/linux/blob/master/kernel/notifier.c">kernel/notifier.c</a> source code file and as we may see the <code>blocking_notifier_chain_register</code> takes two parameters:</p>
+<ul>
+<li><code>nh</code> - head of a notification chain;</li>
+<li><code>nb</code> - notification descriptor.</li>
+</ul>
+<p>Now let's look at the implementation of the <code>blocking_notifier_chain_register</code> function:</p>
+<pre><code class="language-C">int raw_notifier_chain_register(struct raw_notifier_head *nh,
+		struct notifier_block *n)
+{
+	return notifier_chain_register(&amp;nh-&gt;head, n);
+}
+</code></pre>
+<p>As we may see it just returns result of the <code>notifier_chain_register</code> function from the same source code file and as we may understand this function does all job for us. Definition of the <code>notifier_chain_register</code> function looks:</p>
+<pre><code class="language-C">int blocking_notifier_chain_register(struct blocking_notifier_head *nh,
+		struct notifier_block *n)
+{
+	int ret;
+
+	if (unlikely(system_state == SYSTEM_BOOTING))
+		return notifier_chain_register(&amp;nh-&gt;head, n);
+
+	down_write(&amp;nh-&gt;rwsem);
+	ret = notifier_chain_register(&amp;nh-&gt;head, n);
+	up_write(&amp;nh-&gt;rwsem);
+	return ret;
+}
+</code></pre>
+<p>As we may see implementation of the <code>blocking_notifier_chain_register</code> is pretty simple. First of all there is check which check current system state and if a system in rebooting state we just call the <code>notifier_chain_register</code>. In other way we do the same call of the <code>notifier_chain_register</code> but as you may see this call is protected with read/write semaphores. Now let's look at the implementation of the <code>notifier_chain_register</code> function:</p>
+<pre><code class="language-C">static int notifier_chain_register(struct notifier_block **nl,
+		struct notifier_block *n)
+{
+	while ((*nl) != NULL) {
+		if (n-&gt;priority &gt; (*nl)-&gt;priority)
+			break;
+		nl = &amp;((*nl)-&gt;next);
+	}
+	n-&gt;next = *nl;
+	rcu_assign_pointer(*nl, n);
+	return 0;
+}
+</code></pre>
+<p>This function just inserts new <code>notifier_block</code> (given by a subsystem which wants to get notifications) to the notification chain list. Besides subscribing on an event, subscriber may unsubscribe from a certain events with the set of <code>unsubscribe</code> functions:</p>
+<pre><code class="language-C">extern int atomic_notifier_chain_unregister(struct atomic_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int blocking_notifier_chain_unregister(struct blocking_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int raw_notifier_chain_unregister(struct raw_notifier_head *nh,
+		struct notifier_block *nb);
+
+extern int srcu_notifier_chain_unregister(struct srcu_notifier_head *nh,
+		struct notifier_block *nb);
+</code></pre>
+<p>When a producer of notifications wants to notify subscribers about an event, the <code>*.notifier_call_chain</code> function will be called. As you already may guess each type of notification chains provides own function to produce notification:</p>
+<pre><code class="language-C">extern int atomic_notifier_call_chain(struct atomic_notifier_head *nh,
+		unsigned long val, void *v);
+
+extern int blocking_notifier_call_chain(struct blocking_notifier_head *nh,
+		unsigned long val, void *v);
+
+extern int raw_notifier_call_chain(struct raw_notifier_head *nh,
+		unsigned long val, void *v);
+
+extern int srcu_notifier_call_chain(struct srcu_notifier_head *nh,
+		unsigned long val, void *v);
+</code></pre>
+<p>Let's consider implementation of the <code>blocking_notifier_call_chain</code> function. This function is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/notifier.c">kernel/notifier.c</a> source code file:</p>
+<pre><code class="language-C">int blocking_notifier_call_chain(struct blocking_notifier_head *nh,
+		unsigned long val, void *v)
+{
+	return __blocking_notifier_call_chain(nh, val, v, -1, NULL);
+}
+</code></pre>
+<p>and as we may see it just returns result of the <code>__blocking_notifier_call_chain</code> function. As we may see, the <code>blocking_notifer_call_chain</code> takes three parameters:</p>
+<ul>
+<li><code>nh</code> - head of notification chain list;</li>
+<li><code>val</code> - type of a notification;</li>
+<li><code>v</code> - input parameter which may be used by handlers.</li>
+</ul>
+<p>But the <code>__blocking_notifier_call_chain</code> function takes five parameters:</p>
+<pre><code class="language-C">int __blocking_notifier_call_chain(struct blocking_notifier_head *nh,
+				   unsigned long val, void *v,
+				   int nr_to_call, int *nr_calls)
+{
+    ...
+    ...
+    ...
+}
+</code></pre>
+<p>Where <code>nr_to_call</code> and <code>nr_calls</code> are number of notifier functions to be called and number of sent notifications. As you may guess the main goal of the <code>__blocking_notifer_call_chain</code> function and other functions for other notification types is to call callback function when an event occurred. Implementation of the <code>__blocking_notifier_call_chain</code> is pretty simple, it just calls the <code>notifier_call_chain</code> function from the same source code file protected with read/write semaphore:</p>
+<pre><code class="language-C">int __blocking_notifier_call_chain(struct blocking_notifier_head *nh,
+				   unsigned long val, void *v,
+				   int nr_to_call, int *nr_calls)
+{
+	int ret = NOTIFY_DONE;
+
+	if (rcu_access_pointer(nh-&gt;head)) {
+		down_read(&amp;nh-&gt;rwsem);
+		ret = notifier_call_chain(&amp;nh-&gt;head, val, v, nr_to_call,
+					nr_calls);
+		up_read(&amp;nh-&gt;rwsem);
+	}
+	return ret;
+}
+</code></pre>
+<p>and returns its result. In this case all job is done by the <code>notifier_call_chain</code> function. Main purpose of this function informs registered notifiers about an asynchronous event:</p>
+<pre><code class="language-C">static int notifier_call_chain(struct notifier_block **nl,
+			       unsigned long val, void *v,
+			       int nr_to_call, int *nr_calls)
+{
+    ...
+    ...
+    ...
+    ret = nb-&gt;notifier_call(nb, val, v);
+    ...
+    ...
+    ...
+    return ret;
+}
+</code></pre>
+<p>That's all. In generall all looks pretty simple.</p>
+<p>Now let's consider on a simple example related to <a href="https://en.wikipedia.org/wiki/Loadable_kernel_module">loadable modules</a>. If we will look in the <a href="https://github.com/torvalds/linux/blob/master/kernel/module.c">kernel/module.c</a>. As we already saw in this part, there is:</p>
+<pre><code class="language-C">static BLOCKING_NOTIFIER_HEAD(module_notify_list);
+</code></pre>
+<p>definition of the <code>module_notify_list</code> in the <a href="https://github.com/torvalds/linux/blob/master/kernel/module.c">kernel/module.c</a> source code file. This definition determines head of list of blocking notifier chains related to kernel modules. There are at least three following events:</p>
+<ul>
+<li>MODULE_STATE_LIVE</li>
+<li>MODULE_STATE_COMING</li>
+<li>MODULE_STATE_GOING</li>
+</ul>
+<p>in which maybe interested some subsystems of the Linux kernel. For example tracing of kernel modules states. Instead of direct call of the <code>atomic_notifier_chain_register</code>, <code>blocking_notifier_chain_register</code> and etc., most notification chains come with a set of wrappers used to register to them. Registatrion on these modules events is going with the help of such wrapper:</p>
+<pre><code class="language-C">int register_module_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&amp;module_notify_list, nb);
+}
+</code></pre>
+<p>If we will look in the <a href="https://github.com/torvalds/linux/blob/master/kernel/tracepoint.c">kernel/tracepoint.c</a> source code file, we will see such registration during initialization of <a href="https://www.kernel.org/doc/Documentation/trace/tracepoints.txt">tracepoints</a>:</p>
+<pre><code class="language-C">static __init int init_tracepoints(void)
+{
+	int ret;
+
+	ret = register_module_notifier(&amp;tracepoint_module_nb);
+	if (ret)
+		pr_warn("Failed to register tracepoint module enter notifier\n");
+
+	return ret;
+}
+</code></pre>
+<p>Where <code>tracepoint_module_nb</code> provides callback function:</p>
+<pre><code class="language-C">static struct notifier_block tracepoint_module_nb = {
+	.notifier_call = tracepoint_module_notify,
+	.priority = 0,
+};
+</code></pre>
+<p>When one of the <code>MODULE_STATE_LIVE</code>, <code>MODULE_STATE_COMING</code> or <code>MODULE_STATE_GOING</code> events occurred. For example the <code>MODULE_STATE_LIVE</code> the <code>MODULE_STATE_COMING</code> notifications will be sent during execution of the <a href="http://man7.org/linux/man-pages/man2/init_module.2.html">init_module</a> <a href="https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-1.html">system call</a>. Or for example <code>MODULE_STATE_GOING</code> will be sent during execution of the <a href="http://man7.org/linux/man-pages/man2/delete_module.2.html">delete_module</a> <code>system call</code>:</p>
+<pre><code class="language-C">SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
+		unsigned int, flags)
+{
+    ...
+    ...
+    ...
+    blocking_notifier_call_chain(&amp;module_notify_list,
+				     MODULE_STATE_GOING, mod);
+    ...
+    ...
+    ...
+}
+</code></pre>
+<p>Thus when one of these system call will be called from userspace, the Linux kernel will send certain notification depends on a system call and the <code>tracepoint_module_notify</code> callback function will be called.</p>
+<p>That's all.</p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/C_(programming_language)">C programming langauge</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Callback_(computer_programming)">callback</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Read-copy-update">RCU</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Loadable_kernel_module">loadable modules</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-3.html">semaphore</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/trace/tracepoints.txt">tracepoints</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-1.html">system call</a></li>
+<li><a href="http://man7.org/linux/man-pages/man2/init_module.2.html">init_module system call</a></li>
+<li><a href="http://man7.org/linux/man-pages/man2/delete_module.2.html">delete_module</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Concepts/initcall.html">previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/22/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/22/index.html">计算与推断思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/17.html">Kivy Developers From China</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 243个">243</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/63/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/photoshop_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/63/index.html">Web前端写给Web设计师的注意事项</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/39.html">onface</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="photoshop">photoshop</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 116个">116</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/59/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/59/index.html">TensorFlow 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/35.html">jikexueyuanwiki</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8767个">8767</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8127;var bookPageRelUrl ='Concepts/notification_chains.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

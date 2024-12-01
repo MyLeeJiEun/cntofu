@@ -1,0 +1,392 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>前言-C 语言编程透视</title>
+<meta content='前言,C 语言编程透视' name='keywords'>
+<meta content='前言,C 语言编程透视' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/43/zh/preface/01-chapter0.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">版本修订历史</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/43/zh/chapters/02-chapter1.markdown">
+<span class="">把 Vim 打造成源代..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/43/index.html">C 语言编程透视</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-c-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="前言">前言</h1>
+<ul>
+<li><a href="#toc_1235_30984_1">背景</a></li>
+<li><a href="#toc_1235_30984_2">现状</a></li>
+<li><a href="#toc_1235_30984_3">计划</a></li>
+</ul>
+<p><span id="toc_1235_30984_1"></span></p>
+<h2 id="背景">背景</h2>
+<p>笔者 2007 年开始系统地学习 Shell 编程，并在<a href="http://oss.lzu.edu.cn">兰大开源社区</a>写了序列文章。</p>
+<p>在编写<a href="http://tinylab.gitbooks.io/shellbook">《Shell 编程范例》</a>文章的<a href="http://tinylab.gitbooks.io/shellbook/content/zh/chapters/01-chapter7.html">《进程操作》</a>一章时，为了全面了解进程的来龙去脉，对程序开发过程的细节、ELF 格式的分析、进程的内存映像等进行了全面地梳理，后来搞得“雪球越滚越大”，甚至脱离了 Shell 编程关注的内容。所以想了个小办法，“大事化小，小事化了”，把涉及到的内容进行了分解，进而演化成另外一个完整的序列。</p>
+<p>2008 年 3 月 1 日，当初步完成整个序列时，做了如下的小结：</p>
+<blockquote>
+<p>到今天，关于"Linux 下 C 语言开发过程"的一个简单视图总算粗略地完成了，从寒假之前的一段时间到现在过了将近一个月左右吧。写这个主题的目的源自“Shell 编程范例之进程操作”，当写到这一章时，突然对进程的由来、本身和去向感到“迷惑不解”。所以想着好好花些时间来弄清楚它们，现在发现，这个由来就是这里的程序开发过程，进程来自一个普通的文本文件，在这里是 C 语言程序，C 语言程序经过编辑、预处理、编译、汇编、链接、执行而成为一个进程；而进程本身呢？当一个可执行文件被执行以后，有了 exec 调用，被程序解释器映射到了内存中，有了它的内存映像；而进程的去向呢？通过不断地执行指令和内存映像的变化，进程完成着各项任务，等任务完成以后就可以退出了（exit）。</p>
+<p>这样一份视图实际上是在寒假之前绘好的，可以从下图中看到它；不过到现在才明白背后的很多细节。这些细节就是这个序列的每个篇章，可以对照“视图”来阅读它们。</p>
+</blockquote>
+<p><a href="https://img.cntofu.com/book/open-c-book/zh/preface/pic/c_dev_procedure.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/open-c-book/zh/preface/pic/c_dev_procedure.jpg" alt="C语言程序开发过程视图"></a></p>
+<p><span id="toc_1235_30984_2"></span></p>
+<h2 id="现状">现状</h2>
+<p>目前整个序列大部分都已经以 Blog 的形式写完，大体结构目下：</p>
+<ul>
+<li> <p><a href="http://www.tinylab.org/make-vim-source-code-editor/">《把 VIM 打造成源代码编辑器》</a></p>
+<ul>
+<li>源代码编辑过程：用 VIM 编辑代码的一些技巧</li>
+<li>更新时间：2008-2-22</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/behind-the-gcc-compiler/">《GCC 编译的背后》</a></p>
+<ul>
+<li>编译过程：预处理、编译、汇编、链接</li>
+<li>第一部分：《预处理和编译》（更新时间：2008-2-22）</li>
+<li>第二部分：《汇编和链接》（更新时间：2008-2-22）</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/program-execution-the-moment/">《程序执行的那一刹那 》</a></p>
+<ul>
+<li>执行过程：当从命令行输入一个命令之后</li>
+<li>更新时间：2008-2-15</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/process-memory-image/">《进程的内存映像》</a></p>
+<ul>
+<li>进程加载过程：程序在内存里是个什么样子？</li>
+<li>第一部分（讨论“缓冲区溢出和注入”问题）（更新时间：2008-2-13）</li>
+<li>第二部分（讨论进程的内存分布情况）（更新时间：2008-6-1）</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/process-and-basic-operation/">《进程和进程的基本操作》</a></p>
+<ul>
+<li>进程操作：描述进程相关概念和基本操作</li>
+<li>更新时间：2008-2-21</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/details-of-a-dynamic-symlink/">《动态符号链接的细节》</a></p>
+<ul>
+<li>动态链接过程：函数 puts/printf 的地址在哪里？</li>
+<li>更新时间：2008-2-26</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/as-an-executable-file-to-slim-down/">《打造史上最小可执行ELF文件》</a></p>
+<ul>
+<li>ELF 详解：从”减肥”的角度一层一层剖开 ELF 文件，最终获得一个可打印 Hello World 的 <strong>45</strong> 字节 ELF 可执行文件</li>
+<li>更新时间：2008-2-23</li>
+</ul> </li>
+<li> <p><a href="http://www.tinylab.org/testing-debugging-and-optimization-of-code-summary/">《代码测试、调试与优化小结》</a></p>
+<ul>
+<li>程序开发过后：内存溢出了吗？有缓冲区溢出？代码覆盖率如何测试呢？怎么调试汇编代码？有哪些代码优化技巧和方法呢？</li>
+<li>更新时间：2008-2-29</li>
+</ul> </li>
+</ul>
+<p><span id="toc_1235_30984_3"></span></p>
+<h2 id="计划">计划</h2>
+<p>考虑到整个 Linux 世界的蓬勃发展，Linux 和 C 语言的应用环境越来越多，相关使用群体会不断增加，所以最近计划把该序列重新整理，以自由书籍的方式不断更新，以便惠及更多的读者。</p>
+<p>打算重新规划、增补整个序列，并以开源项目的方式持续维护，并通过 <a href="http://tinylab.org">泰晓科技|TinyLab.org</a> 平台接受读者的反馈，直到正式发行出版。</p>
+<p>自由书籍将会维护在 <a href="http://tinylab.org">泰晓科技</a> 的<a href="https://github.com/tinyclub/open-c-book">项目仓库</a>中。项目相关信息如下：</p>
+<ul>
+<li>项目首页：<a href="http://www.tinylab.org/open-c-book/">http://www.tinylab.org/open-c-book/</a></li>
+<li>代码仓库：<a href="https://github.com/tinyclub/open-c-book">https://github.com/tinyclub/open-c-book.git</a></li>
+</ul>
+<p>欢迎大家指出本书初稿中的不足，甚至参与到相关章节的写作、校订和完善中来。</p>
+<p>如果有时间和兴趣，欢迎参与。可以通过 <a href="http://www.tinylab.org/about/">泰晓科技</a> 联系我们，或者直接关注微博<a href="http://weibo.com/tinylaborg">@泰晓科技</a>并私信我们。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/102/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/102/index.html">C 语言进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">32页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/199/index.html">
+<img class="uk-book-cover" src="/static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/199/index.html">什么是 Markdown</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">38页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/146/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/146/index.html">http2讲解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/78.html">bagder</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1463个">1463</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/175/index.html">
+<img class="uk-book-cover" src="/static/icons/48/nodejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/175/index.html">Node.js面试题，侧重后端应用与对Node核心的理解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/97.html">jimuyouyou</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nodejs">nodejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">8页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1483个">1483</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/126/index.html">
+<img class="uk-book-cover" src="/static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/126/index.html">前端晚自修</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/43/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2868">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2869">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2870">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter1.markdown" title="把 Vim 打造成源代码编辑器" data-book-page-rel-url="zh/chapters/02-chapter1.markdown" data-book-page-id="2871">把 Vim 打造成源代码编辑器</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter2.markdown" title="Gcc 编译的背后" data-book-page-rel-url="zh/chapters/02-chapter2.markdown" data-book-page-id="2872">Gcc 编译的背后</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter3.markdown" title="程序执行的一刹那" data-book-page-rel-url="zh/chapters/02-chapter3.markdown" data-book-page-id="2873">程序执行的一刹那</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter4.markdown" title="动态符号链接的细节" data-book-page-rel-url="zh/chapters/02-chapter4.markdown" data-book-page-id="2874">动态符号链接的细节</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter5.markdown" title="缓冲区溢出与注入分析" data-book-page-rel-url="zh/chapters/02-chapter5.markdown" data-book-page-id="2875">缓冲区溢出与注入分析</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter6.markdown" title="进程的内存映像" data-book-page-rel-url="zh/chapters/02-chapter6.markdown" data-book-page-id="2876">进程的内存映像</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter7.markdown" title="进程和进程的基本操作" data-book-page-rel-url="zh/chapters/02-chapter7.markdown" data-book-page-id="2877">进程和进程的基本操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter8.markdown" title="打造史上最小可执行ELF文件(45字节)" data-book-page-rel-url="zh/chapters/02-chapter8.markdown" data-book-page-id="2878">打造史上最小可执行ELF文件(45字节)</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter9.markdown" title="代码测试、调试与优化" data-book-page-rel-url="zh/chapters/02-chapter9.markdown" data-book-page-id="2879">代码测试、调试与优化</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =43;var bookPageId =2870;var bookPageRelUrl ='zh/preface/01-chapter1.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

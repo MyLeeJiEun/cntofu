@@ -1,0 +1,911 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>用户空间的程序启动过程-Linux 内核揭密</title>
+<meta content='用户空间的程序启动过程,Linux 内核揭密' name='keywords'>
+<meta content='用户空间的程序启动过程,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Misc/contribute.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Linux 内核开发</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/">
+<span class="">书写并提交你第一个内核..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="用户空间的程序启动过程">用户空间的程序启动过程</h1>
+<h2 id="简介">简介</h2>
+<p>虽然 <a href="https://www.gitbook.com/book/xinqiu/linux-insides-cn/details">linux-insides-zh</a> 大多描述的是内核相关的东西，但是我已经决定写一个大多与用户空间相关的部分。</p>
+<p><a href="https://zh.wikipedia.org/wiki/%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">系统调用</a>章节的<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-4.html">第四部分</a>已经描述了当我们想运行一个程序， Linux 内核的行为。这部分我想研究一下从用户空间的角度，当我们在 Linux 系统上运行一个程序，会发生什么。</p>
+<p>我不知道你知识储备如何，但是在我的大学时期我学到，一个 <code>C</code> 程序从一个叫做 main 的函数开始执行。而且，这是部分正确的。每时每刻，当我们开始写一个新的程序时，我们从下面的实例代码开始编程：</p>
+<pre><code class="language-C">int main(int argc, char *argv[]) {
+	// Entry point is here
+}
+</code></pre>
+<p>但是你如何对于底层编程感兴趣的话，可能你已经知道 <code>main</code> 函数并不是程序的真正入口。如果你在调试器中看了下面这个简单程序，就可以很确信这一点：</p>
+<pre><code class="language-C">int main(int argc, char *argv[]) {
+	return 0;
+}
+</code></pre>
+<p>让我们来编译并且在 <a href="https://www.gnu.org/software/gdb/">gdb</a> 中运行这个程序：</p>
+<pre><code>$ gcc -ggdb program.c -o program
+$ gdb ./program
+The target architecture is assumed to be i386:x86-64:intel
+Reading symbols from ./program...done.
+</code></pre>
+<p>让我们在 gdb 中执行 <code>info files</code> 这个指令。这个指令会打印关于被不同段占据的内存和调试目标的信息。</p>
+<pre><code>(gdb) info files
+Symbols from "../../../home/alex/program".
+Local exec file:
+	`/home/alex/program', file type elf64-x86-64.
+	Entry point: 0x400430
+	0x0000000000400238 - 0x0000000000400254 is .interp
+	0x0000000000400254 - 0x0000000000400274 is .note.ABI-tag
+	0x0000000000400274 - 0x0000000000400298 is .note.gnu.build-id
+	0x0000000000400298 - 0x00000000004002b4 is .gnu.hash
+	0x00000000004002b8 - 0x0000000000400318 is .dynsym
+	0x0000000000400318 - 0x0000000000400357 is .dynstr
+	0x0000000000400358 - 0x0000000000400360 is .gnu.version
+	0x0000000000400360 - 0x0000000000400380 is .gnu.version_r
+	0x0000000000400380 - 0x0000000000400398 is .rela.dyn
+	0x0000000000400398 - 0x00000000004003c8 is .rela.plt
+	0x00000000004003c8 - 0x00000000004003e2 is .init
+	0x00000000004003f0 - 0x0000000000400420 is .plt
+	0x0000000000400420 - 0x0000000000400428 is .plt.got
+	0x0000000000400430 - 0x00000000004005e2 is .text
+	0x00000000004005e4 - 0x00000000004005ed is .fini
+	0x00000000004005f0 - 0x0000000000400610 is .rodata
+	0x0000000000400610 - 0x0000000000400644 is .eh_frame_hdr
+	0x0000000000400648 - 0x000000000040073c is .eh_frame
+	0x0000000000600e10 - 0x0000000000600e18 is .init_array
+	0x0000000000600e18 - 0x0000000000600e20 is .fini_array
+	0x0000000000600e20 - 0x0000000000600e28 is .jcr
+	0x0000000000600e28 - 0x0000000000600ff8 is .dynamic
+	0x0000000000600ff8 - 0x0000000000601000 is .got
+	0x0000000000601000 - 0x0000000000601028 is .got.plt
+	0x0000000000601028 - 0x0000000000601034 is .data
+	0x0000000000601034 - 0x0000000000601038 is .bss
+</code></pre>
+<p>注意 <code>Entry point: 0x400430</code> 这一行。现在我们知道我们程序入口点的真正地址。让我们在这个地址下一个断点，然后运行我们的程序，看看会发生什么：</p>
+<pre><code>(gdb) break *0x400430
+Breakpoint 1 at 0x400430
+(gdb) run
+Starting program: /home/alex/program 
+
+Breakpoint 1, 0x0000000000400430 in _start ()
+</code></pre>
+<p>有趣。我们并没有看见 <code>main</code> 函数的执行，但是我们看见另外一个函数被调用。这个函数是 <code>_start</code> 而且根据调试器展现给我们看的，它是我们程序的真正入口。那么，这个函数是从哪里来的，又是谁调用了这个 <code>main</code> 函数，什么时候调用的。我会在后续部分尝试回答这些问题。</p>
+<h2 id="内核如何运行新程序">内核如何运行新程序</h2>
+<p>首先，让我们来看一下下面这个简单的 <code>C</code> 程序：</p>
+<pre><code class="language-C">// program.c
+
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+
+static int x = 1;
+
+int y = 2;
+
+int main(int argc, char *argv[]) {
+	int z = 3;
+
+	printf("x + y + z = %d\n", x + y + z);
+
+	return EXIT_SUCCESS;
+}
+</code></pre>
+<p>我们可以确定这个程序按照我们预期那样工作。让我们来编译它：</p>
+<pre><code>$ gcc -Wall program.c -o sum
+</code></pre>
+<p>并且执行：</p>
+<pre><code>$ ./sum
+x + y + z = 6
+</code></pre>
+<p>好的，直到现在所有事情看起来听挺好。你可能已经知道一个特殊的<a href="https://zh.wikipedia.org/wiki/%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">系统调用</a>家族 - <a href="http://man7.org/linux/man-pages/man3/execl.3.html">exec*</a> 系统调用。正如我们从帮助手册中读到的：</p>
+<blockquote>
+<p>The exec() family of functions replaces the current process image with a new process image.</p>
+</blockquote>
+<p>如果你已经阅读过<a href="https://zh.wikipedia.org/wiki/%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8">系统调用</a>章节的<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-4.html">第四部分</a>，你可能就知道 execve 这个系统调用定义在 <a href="https://github.com/torvalds/linux/blob/master/fs/exec.c#L1859">files/exec.c</a> 文件中，并且如下所示，</p>
+<pre><code class="language-C">SYSCALL_DEFINE3(execve,
+		const char __user *, filename,
+		const char __user *const __user *, argv,
+		const char __user *const __user *, envp)
+{
+	return do_execve(getname(filename), argv, envp);
+}
+</code></pre>
+<p>它以可执行文件的名字，命令行参数的集合以及环境变量的集合作为参数。正如你猜测的，每一件事都是 <code>do_execve</code> 函数完成的。在这里我将不描述这个函数的实现细节，因为你可以从<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SysCall/syscall-4.html">这里</a>读到。但是，简而言之，<code>do_execve</code> 函数会检查诸如文件名是否有效，未超出进程数目限制等等。在这些检查之后，这个函数会解析 <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a> 格式的可执行文件，为新的可执行文件创建内存描述符，并且在栈，堆等内存区域填上适当的值。当二进制镜像设置完成，<code>start_thread</code> 函数会设置一个新的进程。这个函数是框架相关的，而且对于 <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> 框架，它的定义是在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/process_64.c#L231">arch/x86/kernel/process_64.c</a> 文件中。</p>
+<p><code>start_thread</code> 为<a href="https://en.wikipedia.org/wiki/X86_memory_segmentation">段寄存器</a>设置新的值。从这一点开始，新进程已经准备就绪。一旦<a href="(https://en.wikipedia.org/wiki/Context_switch)">进程切换</a>完成，控制权就会返回到用户空间，并且新的可执行文件将会执行。</p>
+<p>这就是所有内核方面的内容。Linux 内核为执行准备二进制镜像，而且它的执行从上下文切换开始，结束之后将控制权返回用户空间。但是它并不能回答像 <code>_start</code> 来自哪里这样的问题。让我们在下一段尝试回答这些问题。</p>
+<h2 id="用户空间程序如何启动">用户空间程序如何启动</h2>
+<p>在之前的段落汇总，我们看到了内核是如何为可执行文件运行做准备工作的。让我们从用户空间来看这相同的工作。我们已经知道一个程序的入口点是 <code>_start</code> 函数。但是这个函数是从哪里来的呢？它可能来自于一个库。但是如果你记得清楚的话，我们在程序编译过程中并没有链接任何库。</p>
+<pre><code>$ gcc -Wall program.c -o sum
+</code></pre>
+<p>你可能会猜 <code>_start</code> 来自于<a href="https://en.wikipedia.org/wiki/Standard_library">标准库</a>。是的，确实是这样。如果你尝试去重新编译我们的程序，并给 gcc 传递可以开启 <code>verbose mode</code> 的 <code>-v</code> 选项，你会看到下面的长输出。我们并不对整体输出感兴趣，让我们来看一下下面的步骤：</p>
+<p>首先，使用 <code>gcc</code> 编译我们的程序：</p>
+<pre><code>$ gcc -v -ggdb program.c -o sum
+...
+...
+...
+/usr/libexec/gcc/x86_64-redhat-linux/6.1.1/cc1 -quiet -v program.c -quiet -dumpbase program.c -mtune=generic -march=x86-64 -auxbase test -ggdb -version -o /tmp/ccvUWZkF.s
+...
+...
+...
+</code></pre>
+<p><code>cc1</code> 编译器将编译我们的 <code>C</code> 代码并且生成 <code>/tmp/ccvUWZkF.s</code> 汇编文件。之后我们可以看见我们的汇编文件被 <code>GNU as</code> 编译器编译为目标文件：</p>
+<pre><code>$ gcc -v -ggdb program.c -o sum
+...
+...
+...
+as -v --64 -o /tmp/cc79wZSU.o /tmp/ccvUWZkF.s
+...
+...
+...
+</code></pre>
+<p>最后我们的目标文件会被 <code>collect2</code> 链接到一起：</p>
+<pre><code>$ gcc -v -ggdb program.c -o sum
+...
+...
+...
+/usr/libexec/gcc/x86_64-redhat-linux/6.1.1/collect2 -plugin /usr/libexec/gcc/x86_64-redhat-linux/6.1.1/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-redhat-linux/6.1.1/lto-wrapper -plugin-opt=-fresolution=/tmp/ccLEGYra.res -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s --build-id --no-add-needed --eh-frame-hdr --hash-style=gnu -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o test /usr/lib/gcc/x86_64-redhat-linux/6.1.1/../../../../lib64/crt1.o /usr/lib/gcc/x86_64-redhat-linux/6.1.1/../../../../lib64/crti.o /usr/lib/gcc/x86_64-redhat-linux/6.1.1/crtbegin.o -L/usr/lib/gcc/x86_64-redhat-linux/6.1.1 -L/usr/lib/gcc/x86_64-redhat-linux/6.1.1/../../../../lib64 -L/lib/../lib64 -L/usr/lib/../lib64 -L. -L/usr/lib/gcc/x86_64-redhat-linux/6.1.1/../../.. /tmp/cc79wZSU.o -lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed /usr/lib/gcc/x86_64-redhat-linux/6.1.1/crtend.o /usr/lib/gcc/x86_64-redhat-linux/6.1.1/../../../../lib64/crtn.o
+...
+...
+...
+</code></pre>
+<p>是的，我们可以看见一个很长的命令行选项列表被传递给链接器。让我们从另一条路行进。我们知道我们的程序都依赖标准库。</p>
+<pre><code>$ ldd program
+	linux-vdso.so.1 (0x00007ffc9afd2000)
+	libc.so.6 =&gt; /lib64/libc.so.6 (0x00007f56b389b000)
+	/lib64/ld-linux-x86-64.so.2 (0x0000556198231000)
+</code></pre>
+<p>从那里我们会用一些库函数，像 <code>printf</code> 。但是不止如此。这就是为什么当我们给编译器传递 <code>-nostdlib</code> 参数，我们会收到错误报告：</p>
+<pre><code>$ gcc -nostdlib program.c -o program
+/usr/bin/ld: warning: cannot find entry symbol _start; defaulting to 000000000040017c
+/tmp/cc02msGW.o: In function `main':
+/home/alex/program.c:11: undefined reference to `printf'
+collect2: error: ld returned 1 exit status
+</code></pre>
+<p>除了这些错误，我们还看见 <code>_start</code> 符号未定义。所以现在我们可以确定 <code>_start</code> 函数来自于标准库。但是即使我们链接标准库，它也无法成功编译：</p>
+<pre><code>$ gcc -nostdlib -lc -ggdb program.c -o program
+/usr/bin/ld: warning: cannot find entry symbol _start; defaulting to 0000000000400350
+</code></pre>
+<p>好的，当我们使用 <code>/usr/lib64/libc.so.6</code> 链接我们的程序，编译器并不报告标准库函数的未定义引用，但是 <code>_start</code> 符号仍然未被解析。让我们重新回到 <code>gcc</code> 的冗长输出，看看 <code>collect2</code> 的参数。我们现在最重要的问题是我们的程序不仅链接了标准库，还有一些目标文件。第一个目标文件是 <code>/lib64/crt1.o</code> 。而且，如果我们使用 <code>objdump</code> 工具去看这个目标文件的内部，我们将看见 <code>_start</code> 符号：</p>
+<pre><code>$ objdump -d /lib64/crt1.o 
+
+/lib64/crt1.o:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000000000 &lt;_start&gt;:
+   0:	31 ed                	xor    %ebp,%ebp
+   2:	49 89 d1             	mov    %rdx,%r9
+   5:	5e                   	pop    %rsi
+   6:	48 89 e2             	mov    %rsp,%rdx
+   9:	48 83 e4 f0          	and    $0xfffffffffffffff0,%rsp
+   d:	50                   	push   %rax
+   e:	54                   	push   %rsp
+   f:	49 c7 c0 00 00 00 00 	mov    $0x0,%r8
+  16:	48 c7 c1 00 00 00 00 	mov    $0x0,%rcx
+  1d:	48 c7 c7 00 00 00 00 	mov    $0x0,%rdi
+  24:	e8 00 00 00 00       	callq  29 &lt;_start+0x29&gt;
+  29:	f4                   	hlt    
+</code></pre>
+<p>因为 <code>crt1.o</code> 是一个共享目标文件，所以我们只看到桩而不是真正的函数调用。让我们来看一下 <code>_start</code> 函数的源码。因为这个函数是框架相关的，所以 <code>_start</code> 的实现是在 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/start.S;h=f1b961f5ba2d6a1ebffee0005f43123c4352fbf4;hb=HEAD">sysdeps/x86_64/start.S</a> 这个汇编文件中。</p>
+<p><code>_start</code> 始于对 <code>ebp</code> 寄存器的清零，正如 <a href="(https://software.intel.com/sites/default/files/article/402129/mpx-linux64-abi.pdf)">ABI</a> 所建议的。</p>
+<pre><code class="language-assembly">xorl %ebp, %ebp
+</code></pre>
+<p>之后，将终止函数的地址放到 <code>r9</code> 寄存器中：</p>
+<pre><code class="language-assembly">mov %RDX_LP, %R9_LP
+</code></pre>
+<p>正如 <a href="http://flint.cs.yale.edu/cs422/doc/ELF_Format.pdf">ELF</a> 标准所述，</p>
+<blockquote>
+<p>After the dynamic linker has built the process image and performed the relocations, each shared object gets the opportunity to execute some initialization code. ... Similarly, shared objects may have termination functions, which are executed with the atexit (BA_OS) mechanism after the base process begins its termination sequence.</p>
+</blockquote>
+<p>所以我们需要把终止函数的地址放到 <code>r9</code> 寄存器，因为将来它会被当作第六个参数传递给 <code>__libc_start_main</code> 。注意，终止函数的地址初始是存储在 <code>rdx</code> 寄存器。除了 <code>%rdx</code> 和 <code>%rsp</code> 之外的其他寄存器保存未确定的值。<code>_start</code> 函数中真正的重点是调用 <code>__libc_start_main</code>。所以下一步就是为调用这个函数做准备。</p>
+<p><code>__libc_start_main</code> 的实现是在 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=csu/libc-start.c;h=0fb98f1606bab475ab5ba2d0fe08c64f83cce9df;hb=HEAD">csu/libc-start.c</a> 文件中。让我们来看一下这个函数：</p>
+<pre><code class="language-C">STATIC int LIBC_START_MAIN (int (*main) (int, char **, char **),
+ 			                int argc,
+			                char **argv,
+ 			                __typeof (main) init,
+			                void (*fini) (void),
+			                void (*rtld_fini) (void),
+			                void *stack_end)
+</code></pre>
+<p>It takes address of the <code>main</code> function of a program, <code>argc</code> and <code>argv</code>. <code>init</code> and <code>fini</code> functions are constructor and destructor of the program. The <code>rtld_fini</code> is termination function which will be called after the program will be exited to terminate and free dynamic section. The last parameter of the <code>__libc_start_main</code> is the pointer to the stack of the program. Before we can call the <code>__libc_start_main</code> function, all of these parameters must be prepared and passed to it. Let's return to the <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/start.S;h=f1b961f5ba2d6a1ebffee0005f43123c4352fbf4;hb=HEAD">sysdeps/x86_64/start.S</a> assembly file and continue to see what happens before the <code>__libc_start_main</code> function will be called from there.</p>
+<p>该函数以程序 <code>main</code> 函数的地址，<code>argc</code> 和 <code>argv</code> 作为输入。<code>init</code> 和 <code>fini</code> 函数分别是程序的构造函数和析构函数。<code>rtld_fini</code> 是当程序退出时调用的终止函数，用来终止以及释放动态段。<code>__libc_start_main</code> 函数的最后一个参数是一个指向程序栈的指针。在我们调用 <code>__libc_start_main</code> 函数之前，所有的参数都要被准备好，并且传递给它。让我们返回 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/start.S;h=f1b961f5ba2d6a1ebffee0005f43123c4352fbf4;hb=HEAD">sysdeps/x86_64/start.S</a> 这个文件，继续看在 <code>__libc_start_main</code> 被调用之前发生了什么。</p>
+<p>我们可以从栈上获取我们所需的 <code>__libc_start_main</code> 的所有参数。当 <code>_start</code> 被调用的时候，我们的栈如下所示：</p>
+<pre><code>+-----------------+
+|       NULL      |
++-----------------+ 
+|       envp      |
++-----------------+ 
+|       NULL      |
++------------------
+|       argv      | &lt;- rsp
++------------------
+|       argc      |
++-----------------+ 
+</code></pre>
+<p>当我们清零了 <code>ebp</code> 寄存器，并且将终止函数的地址保存到 <code>r9</code> 寄存器中之后，我们取出栈顶元素，放到 <code>rsi</code> 寄存器中。最终 <code>rsp</code> 指向 <code>argv</code> 数组，<code>rsi</code> 保存传递给程序的命令行参数的数目：</p>
+<pre><code>+-----------------+
+|       NULL      |
++-----------------+ 
+|       envp      |
++-----------------+ 
+|       NULL      |
++------------------
+|       argv      | &lt;- rsp
++-----------------+
+</code></pre>
+<p>这之后，我们将 <code>argv</code> 数组的地址赋值给 <code>rdx</code> 寄存器中。</p>
+<pre><code class="language-assembly">popq %rsi
+mov %RSP_LP, %RDX_LP
+</code></pre>
+<p>从这一时刻开始，我们已经有了 <code>argc</code> 和 <code>argv</code>。我们仍要将构造函数和析构函数的指针放到合适的寄存器，以及传递指向栈的指针。下面汇编代码的前三行按照 <a href="https://software.intel.com/sites/default/files/article/402129/mpx-linux64-abi.pdf">ABI</a> 中的建议设置栈为 <code>16</code> 字节对齐，并将 <code>rax</code> 压栈：</p>
+<pre><code class="language-assembly">and  $~15, %RSP_LP
+pushq %rax
+
+pushq %rsp
+mov $__libc_csu_fini, %R8_LP
+mov $__libc_csu_init, %RCX_LP
+mov $main, %RDI_LP
+</code></pre>
+<p>栈对齐之后，我们压栈栈的地址，并且将构造函数和析构函数的地址放到 <code>r8</code> 和 <code>rcx</code> 寄存器中，同时将 <code>main</code> 函数的地址放到 <code>rdi</code> 寄存器中。从这个时刻开始，我们可以调用 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=csu/libc-start.c;h=0fb98f1606bab475ab5ba2d0fe08c64f83cce9df;hb=HEAD">csu/libc-start.c</a> 中的 <code>__libc_start_main</code> 函数。</p>
+<p>在我们查看 <code>__libc_start_main</code> 函数之前，让我们添加 <code>/lib64/crt1.o</code> 文件并且再次尝试编译我们的程序：</p>
+<pre><code>$ gcc -nostdlib /lib64/crt1.o -lc -ggdb program.c -o program
+/lib64/crt1.o: In function `_start':
+(.text+0x12): undefined reference to `__libc_csu_fini'
+/lib64/crt1.o: In function `_start':
+(.text+0x19): undefined reference to `__libc_csu_init'
+collect2: error: ld returned 1 exit status
+</code></pre>
+<p>现在我们看见了另外一个错误 - 未找到 <code>__libc_csu_fini</code> 和 <code>__libc_csu_init</code> 。我们知道这两个函数的地址被传递给 <code>__libc_start_main</code> 作为参数，同时这两个函数还是我们程序的构造函数和析构函数。但是在 <code>C</code> 程序中，构造函数和析构函数意味着什么呢？我们已经在 <a href="http://flint.cs.yale.edu/cs422/doc/ELF_Format.pdf">ELF</a> 标准中看到：</p>
+<blockquote>
+<p>After the dynamic linker has built the process image and performed the relocations, each shared object gets the opportunity to execute some initialization code. ... Similarly, shared objects may have termination functions, which are executed with the atexit (BA_OS) mechanism after the base process begins its termination sequence.</p>
+</blockquote>
+<p>所以链接器除了一般的段，如 <code>.text</code>, <code>.data</code> 之外创建了两个特殊的段：</p>
+<ul>
+<li><code>.init</code></li>
+<li><code>.fini</code></li>
+</ul>
+<p>We can find it with <code>readelf</code> util:</p>
+<p>我们可以通过 <code>readelf</code> 工具找到它们：</p>
+<pre><code>$ readelf -e test | grep init
+  [11] .init             PROGBITS         00000000004003c8  000003c8
+
+$ readelf -e test | grep fini
+  [15] .fini             PROGBITS         0000000000400504  00000504
+</code></pre>
+<p>这两个将被替换为二进制镜像的开始和结尾，包含分别被称为构造函数和析构函数的例程。这些例程的要点是在程序的真正代码执行之前，做一些初始化/终结，像全局变量如 <a href="http://man7.org/linux/man-pages/man3/errno.3.html">errno</a> ，为系统例程分配和释放内存等等。</p>
+<p>你可能可以从这些函数的名字推测，这两个会在 <code>main</code> 函数之前和之后被调用。<code>.init</code> 和 <code>.fini</code> 段的定义在 <code>/lib64/crti.o</code> 中。如果我们添加这个目标文件：</p>
+<pre><code>$ gcc -nostdlib /lib64/crt1.o /lib64/crti.o  -lc -ggdb program.c -o program
+</code></pre>
+<p>我们不会收到任何错误报告。但是让我们尝试去运行我们的程序，看看发生什么：</p>
+<pre><code>$ ./program
+Segmentation fault (core dumped)
+</code></pre>
+<p>是的，我们收到 <code>segmentation fault</code> 。让我们通过 <code>objdump</code> 看看 <code>lib64/crti.o</code> 的内容：</p>
+<pre><code>$ objdump -D /lib64/crti.o
+
+/lib64/crti.o:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+0000000000000000 &lt;_init&gt;:
+   0:	48 83 ec 08          	sub    $0x8,%rsp
+   4:	48 8b 05 00 00 00 00 	mov    0x0(%rip),%rax        # b &lt;_init+0xb&gt;
+   b:	48 85 c0             	test   %rax,%rax
+   e:	74 05                	je     15 &lt;_init+0x15&gt;
+  10:	e8 00 00 00 00       	callq  15 &lt;_init+0x15&gt;
+
+Disassembly of section .fini:
+
+0000000000000000 &lt;_fini&gt;:
+   0:	48 83 ec 08          	sub    $0x8,%rsp
+</code></pre>
+<p>正如上面所写的， <code>/lib64/crti.o</code> 目标文件包含 <code>.init</code> 和 <code>.fini</code> 段的定义，但是我们可以看见这个函数的桩。让我们看一下 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/crti.S;h=e9d86ed08ab134a540e3dae5f97a9afb82cdb993;hb=HEAD">sysdeps/x86_64/crti.S</a> 文件中的源码：</p>
+<pre><code class="language-assembly">	.section .init,"ax",@progbits
+	.p2align 2
+	.globl _init
+	.type _init, @function
+_init:
+	subq $8, %rsp
+	movq PREINIT_FUNCTION@GOTPCREL(%rip), %rax
+	testq %rax, %rax
+	je .Lno_weak_fn
+	call *%rax
+.Lno_weak_fn:
+	call PREINIT_FUNCTION
+</code></pre>
+<p>它包含 <code>.init</code> 段的定义，而且汇编代码设置 16 字节的对齐。之后，如果它不是零，我们调用 <code>PREINIT_FUNCTION</code>；否则不调用：</p>
+<pre><code>00000000004003c8 &lt;_init&gt;:
+  4003c8:       48 83 ec 08             sub    $0x8,%rsp
+  4003cc:       48 8b 05 25 0c 20 00    mov    0x200c25(%rip),%rax        # 600ff8 &lt;_DYNAMIC+0x1d0&gt;
+  4003d3:       48 85 c0                test   %rax,%rax
+  4003d6:       74 05                   je     4003dd &lt;_init+0x15&gt;
+  4003d8:       e8 43 00 00 00          callq  400420 &lt;__libc_start_main@plt+0x10&gt;
+  4003dd:       48 83 c4 08             add    $0x8,%rsp
+  4003e1:       c3                      retq
+</code></pre>
+<p>where the <code>PREINIT_FUNCTION</code> is the <code>__gmon_start__</code> which does setup for profiling. You may note that we have no return instruction in the <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/crti.S;h=e9d86ed08ab134a540e3dae5f97a9afb82cdb993;hb=HEAD">sysdeps/x86_64/crti.S</a>. Actually that's why we got segmentation fault. Prolog of <code>_init</code> and <code>_fini</code> is placed in the <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/crtn.S;h=e9d86ed08ab134a540e3dae5f97a9afb82cdb993;hb=HEAD">sysdeps/x86_64/crtn.S</a> assembly file:</p>
+<p>其中，<code>PREINIT_FUNCTION</code> 是设置简况的 <code>__gmon_start__</code>。你可能发现，在 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/crti.S;h=e9d86ed08ab134a540e3dae5f97a9afb82cdb993;hb=HEAD">sysdeps/x86_64/crti.S</a>中，我们没有 <code>return</code> 指令。事实上，这就是我们获得 <code>segmentation fault</code> 的原因。<code>_init</code> 和 <code>_fini</code> 的序言被放在 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/crtn.S;h=e9d86ed08ab134a540e3dae5f97a9afb82cdb993;hb=HEAD">sysdeps/x86_64/crtn.S</a> 汇编文件中：</p>
+<pre><code class="language-assembly">.section .init,"ax",@progbits
+addq $8, %rsp
+ret
+
+.section .fini,"ax",@progbits
+addq $8, %rsp
+ret
+</code></pre>
+<p>如果我们把它加到编译过程中，我们的程序会被成功编译和运行。</p>
+<pre><code>$ gcc -nostdlib /lib64/crt1.o /lib64/crti.o /lib64/crtn.o  -lc -ggdb program.c -o program
+
+$ ./program
+x + y + z = 6
+</code></pre>
+<h2 id="结论">结论</h2>
+<p>现在让我们回到 <code>_start</code> 函数，以及尝试去浏览 <code>main</code> 函数被调用之前的完整调用链。</p>
+<p><code>_start</code> 总是被默认的 <code>ld</code> 脚本链接到程序 <code>.text</code> 段的起始位置：</p>
+<pre><code>$ ld --verbose | grep ENTRY
+ENTRY(_start)
+</code></pre>
+<p><code>_start</code> 函数定义在 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/x86_64/start.S;h=f1b961f5ba2d6a1ebffee0005f43123c4352fbf4;hb=HEAD">sysdeps/x86_64/start.S</a> 汇编文件中，并且在 <code>__libc_start_main</code> 被调用之前做一些准备工作，像从栈上获取 <code>argc/argv</code>，栈准备等。来自于 <a href="https://sourceware.org/git/?p=glibc.git;a=blob;f=csu/libc-start.c;h=0fb98f1606bab475ab5ba2d0fe08c64f83cce9df;hb=HEAD">csu/libc-start.c</a> 文件中的 <code>__libc_start_main</code> 函数注册构造函数和析构函数，开启线程，做一些安全相关的操作，比如在有需要的情况下设置 <code>stack canary</code>，调用初始化，最后调用程序的 <code>main</code> 函数以及返回结果退出。而构造函数和析构函数分别是 <code>main</code> 之前和之后被调用。</p>
+<pre><code class="language-C">result = main (argc, argv, __environ MAIN_AUXVEC_PARAM);
+exit (result);
+</code></pre>
+<p>结束</p>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/System_call">system call</a></li>
+<li><a href="https://www.gnu.org/software/gdb/">gdb</a></li>
+<li><a href="http://linux.die.net/man/2/execve">execve</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86_memory_segmentation">segment registers</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Context_switch">context switch</a></li>
+<li><a href="https://software.intel.com/sites/default/files/article/402129/mpx-linux64-abi.pdf">System V ABI</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/29/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/135/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/135/index.html">微前端的那些事儿</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">55页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/72/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/72/index.html">前端开发规范手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/45.html">Aaaaaashu</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 693个">693</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8139;var bookPageRelUrl ='Misc/program_startup.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

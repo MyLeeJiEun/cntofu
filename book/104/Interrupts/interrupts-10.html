@@ -1,0 +1,872 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>最后一部分-Linux 内核揭密</title>
+<meta content='最后一部分,Linux 内核揭密' name='keywords'>
+<meta content='最后一部分,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Interrupts/interrupts-9.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Softirq, Ta..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/SysCall/README.html">
+<span class="">系统调用</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="中断和中断处理十">中断和中断处理(十)</h1>
+<h2 id="终结篇">终结篇</h2>
+<p>本文是 Linux 内核<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/index.html">中断和中断处理</a>的第十节。在<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/interrupts-9.html">上一节</a>，我们了解了延后中断及其相关概念，如 <code>softirq</code>，<code>tasklet</code>，<code>workqueue</code>。本节我们继续深入这个主题，现在是见识真正的硬件驱动的时候了。</p>
+<p>以 <a href="http://netwinder.osuosl.org/pub/netwinder/docs/intel/datashts/27813501.pdf">StringARM** SA-100/21285 评估板</a>串行驱动为例，我们来观察驱动程序如何请求一个 <a href="https://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQ</a> 线，一个中断被触发时会发生什么之类的。驱动程序代码位于 <a href="https://github.com/torvalds/linux/blob/master/drivers/tty/serial/21285.c">drivers/tty/serial/21285.c</a> 源文件。好啦，源码在手，说走就走！</p>
+<h2 id="一个内核模块的初始化">一个内核模块的初始化</h2>
+<p>与本书其他新概念类似，为了考察这个驱动程序，我们从考察它的初始化过程开始。如你所知，Linux 内核为驱动程序或者内核模块的初始化和终止提供了两个宏：</p>
+<ul>
+<li><code>module_init</code></li>
+<li><code>module_exit</code></li>
+</ul>
+<p>可以在驱动程序的源代码中查阅这些宏的用法:</p>
+<pre><code class="language-C">module_init(serial21285_init);
+module_exit(serial21285_exit);
+</code></pre>
+<p>大多数驱动程序都能编译成一个可装载的内核<a href="https://en.wikipedia.org/wiki/Loadable_kernel_module">模块</a>，亦或被静态地链入 Linux 内核。前一种情况下，一个设备驱动程序的初始化由 <code>module_init</code> 与 <code>module_exit</code> 宏触发。这些宏定义在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/init.h">include/linux/init.h</a> 中:</p>
+<pre><code class="language-C">#define module_init(initfn)                                     \
+        static inline initcall_t __inittest(void)               \
+        { return initfn; }                                      \
+        int init_module(void) __attribute__((alias(#initfn)));
+
+#define module_exit(exitfn)                                     \
+        static inline exitcall_t __exittest(void)               \
+        { return exitfn; }                                      \
+        void cleanup_module(void) __attribute__((alias(#exitfn)));
+</code></pre>
+<p>并被 <a href="http://kernelnewbies.org/Documents/InitcallMechanism">initcall</a> 函数调用：</p>
+<ul>
+<li><code>early_initcall</code></li>
+<li><code>pure_initcall</code></li>
+<li><code>core_initcall</code></li>
+<li><code>postcore_initcall</code></li>
+<li><code>arch_initcall</code></li>
+<li><code>subsys_initcall</code></li>
+<li><code>fs_initcall</code></li>
+<li><code>rootfs_initcall</code></li>
+<li><code>device_initcall</code></li>
+<li><code>late_initcall</code></li>
+</ul>
+<p>这些函数又被 <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> 中的 <code>do_initcalls</code> 函数调用。然而，如果设备驱动程序被静态链入 Linux 内核，那么这些宏的实现则如下所示：</p>
+<pre><code class="language-C">#define module_init(x)  __initcall(x);
+#define module_exit(x)  __exitcall(x);
+</code></pre>
+<p>这种情况下，模块装载的实现位于 <a href="https://github.com/torvalds/linux/blob/master/kernel/module.c">kernel/module.c</a> 源文件中，而初始化发生在 <code>do_init_module</code> 函数内。我们不打算在本章深入探讨可装载模块的细枝末节，而会在一个专门介绍 Linux 内核模块的章节中窥其真容。话说回来，<code>module_init</code> 宏接受一个参数 - 本例中这个值是 <code>serial21285_init</code>。从函数名可以得知，这个函数做了一些驱动程序初始化的相关工作。请看：</p>
+<pre><code class="language-C">static int __init serial21285_init(void)
+{
+	int ret;
+
+	printk(KERN_INFO "Serial: 21285 driver\n");
+
+	serial21285_setup_ports();
+
+	ret = uart_register_driver(&amp;serial21285_reg);
+	if (ret == 0)
+		uart_add_one_port(&amp;serial21285_reg, &amp;serial21285_port);
+
+	return ret;
+}
+</code></pre>
+<p>如你所见，首先它把驱动程序相关信息写入内核缓冲区，然后调用 <code>serial21285_setup_ports</code> 函数。该函数设置了 <code>serial21285_port</code> 设备的基本 <a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver/transmitter">uart</a> 时钟：</p>
+<pre><code class="language-C">unsigned int mem_fclk_21285 = 50000000;
+
+static void serial21285_setup_ports(void)
+{
+	serial21285_port.uartclk = mem_fclk_21285 / 4;
+}
+</code></pre>
+<p>此处的 <code>serial21285</code> 是描述 <code>uart</code> 驱动程序的结构体：</p>
+<pre><code class="language-C">static struct uart_driver serial21285_reg = {
+	.owner			= THIS_MODULE,
+	.driver_name	= "ttyFB",
+	.dev_name		= "ttyFB",
+	.major			= SERIAL_21285_MAJOR,
+	.minor			= SERIAL_21285_MINOR,
+	.nr			    = 1,
+	.cons			= SERIAL_21285_CONSOLE,
+};
+</code></pre>
+<p>如果驱动程序注册成功，我们借助 <a href="https://github.com/torvalds/linux/blob/master/drivers/tty/serial/serial_core.c">drivers/tty/serial/serial_core.c</a> 源文件中的 <code>uart_add_one_port</code> 函数添加由驱动程序定义的端口 <code>serial21285_port</code> 结构体，然后从 <code>serial21285_init</code> 函数返回：</p>
+<pre><code class="language-C">if (ret == 0)
+	uart_add_one_port(&amp;serial21285_reg, &amp;serial21285_port);
+
+return ret;
+</code></pre>
+<p>到此为止，我们的驱动程序初始化完毕。当一个 <code>uart</code> 端口被 <a href="https://github.com/torvalds/linux/blob/master/drivers/tty/serial/serial_core.c">drivers/tty/serial/serial_core.c</a> 中的 <code>uart_open</code> 函数打开，该函数会调用 <code>uart_startup</code> 函数来启动这个串行端口，后者会调用 <code>startup</code> 函数。它是 <code>uart_ops</code> 结构体的一部分。每个 <code>uart</code> 驱动程序都会定义这样一个结构体。在本例中，它是这样的：</p>
+<pre><code class="language-C">static struct uart_ops serial21285_ops = {
+	...
+	.startup	= serial21285_startup,
+	...
+}
+</code></pre>
+<p>可以看到，<code>.startup</code> 字段是对 <code>serial21285_startup</code> 函数的引用。这个函数的实现是我们的关注重点，因为它与中断和中断处理密切相关。</p>
+<h2 id="请求中断线">请求中断线</h2>
+<p>我们来看看 <code>serial21285_startup</code> 函数的实现：</p>
+<pre><code class="language-C">static int serial21285_startup(struct uart_port *port)
+{
+	int ret;
+
+	tx_enabled(port) = 1;
+	rx_enabled(port) = 1;
+
+	ret = request_irq(IRQ_CONRX, serial21285_rx_chars, 0,
+			  serial21285_name, port);
+	if (ret == 0) {
+		ret = request_irq(IRQ_CONTX, serial21285_tx_chars, 0,
+				  serial21285_name, port);
+		if (ret)
+			free_irq(IRQ_CONRX, port);
+	}
+
+	return ret;
+}
+</code></pre>
+<p>首先是<code>TX</code>和<code>RX</code>。一个设备的串行总线仅由两条线组成：一条用于发送数据，另一条用于接收数据。与此对应，串行设备应该有两个串行引脚：接收器 - <code>RX</code> 和发送器 - <code>TX</code>。通过调用 <code>tx_enabled</code> 和 <code>rx_enalbed</code> 这两个宏来激活这些线。函数接下来的部分是我们最感兴趣的。注意 <code>request_irq</code> 这个函数。它注册了一个中断处理程序，然后激活一条给定的中断线。看一下这个函数的实现细节。该函数定义在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/interrupt.h">include/linux/interrupt.h</a> 头文件中，如下所示：</p>
+<pre><code class="language-C">static inline int __must_check
+request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
+            const char *name, void *dev)
+{
+        return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+}
+</code></pre>
+<p>可以看到，<code>request_irq</code> 函数接受五个参数：</p>
+<ul>
+<li><code>irq</code> - 被请求的中断号</li>
+<li><code>handler</code> - 中断处理程序指针</li>
+<li><code>flags</code> - 掩码选项</li>
+<li><code>name</code> - 中断拥有者的名称</li>
+<li><code>dev</code> - 用于共享中断线的指针</li>
+</ul>
+<p>现在我们来考察 <code>request_irq</code> 函数的调用。可以看到，第一个参数是 <code>IRQ_CONRX</code>。我们知道它是中断号，但 <code>CONRX</code> 又是什么东西？这个宏定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/arm/mach-footbridge/include/mach/irqs.h">arch/arm/mach-footbridge/include/mach/irqs.h</a> 头文件中。我们可以在这里找到 <code>21285</code> 主板能够产生的全部中断。注意，在第二次调用 <code>request_irq</code> 函数时，我们传入了 <code>IRQ_CONTX</code> 中断号。我们的驱动程序会在这些中断中处理 <code>RX</code> 和 <code>TX</code> 事件。这些宏的实现很简单：</p>
+<pre><code class="language-C">#define IRQ_CONRX               _DC21285_IRQ(0)
+#define IRQ_CONTX               _DC21285_IRQ(1)
+...
+...
+...
+#define _DC21285_IRQ(x)         (16 + (x))
+</code></pre>
+<p>这个主板的 <a href="https://en.wikipedia.org/wiki/Industry_Standard_Architecture">ISA</a> 中断号分布在<code>0</code>到<code>15</code>这个范围内。因此，我们的中断号就是在此之后的头两个值：<code>16</code> 和 <code>17</code>。在 <code>request_irq</code> 函数的两次调用中，第二个参数分别是 <code>serial21285_rx_chars</code> 和 <code>serial21285_tx_chars</code> 函数。当一个 <code>RX</code> 或 <code>TX</code> 中断发生时，这些函数就会被调用。我们不会在此深入探究这些函数，因为本章讲述的是中断与中断处理，而并非设备和驱动。下一个参数是 <code>flags</code>，<code>request_irq</code> 函数的两次调用中，它的值都是零。所有合法的 <code>flags</code> 都在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/interrupt.h">include/linux/interrupt.h</a> 中定义成诸如 <code>IRQF_*</code> 此类的宏。一些例子：</p>
+<ul>
+<li><code>IRQF_SHARED</code> - 允许多个设备共享此中断号</li>
+<li><code>IRQF_PERCPU</code> - 此中断号属于单独cpu的(per cpu)</li>
+<li><code>IRQF_NO_THREAD</code> - 中断不能线程化</li>
+<li><code>IRQF_NOBALANCING</code> - 此中断步参与irq平衡时</li>
+<li><code>IRQF_IRQPOLL</code> - 此中断用于轮询</li>
+<li>等等</li>
+</ul>
+<p>这里，我们传入的是 <code>0</code>，也就是 <code>IRQF_TRIGGER_NONE</code>。这个标志是说，它不配置任何水平触发或边缘触发的中断行为。至于第四个参数(<code>name</code>)，我们传入 <code>serial21285_name</code> ，它定义如下：</p>
+<pre><code class="language-C">static const char serial21285_name[] = "Footbridge UART";
+</code></pre>
+<p>它会显示在 <code>/proc/interrupts</code> 的输出中。针对最后一个参数，我们传入一个指向 <code>uart_port</code> 结构体的指针。对 <code>request_irq</code> 函数及其参数有所了解后，我们来看看它的实现。从上文可知，<code>request_irq</code> 函数内部只是调用了定义在 <a href="https://github.com/torvalds/linux/blob/master/kernel/irq/manage.c">kernel/irq/manage.c</a> 源文件中的 <code>request_threaded_irq</code> 函数，并分配了一个给定的中断线。该函数起始部分是 <code>irqaction</code> 和 <code>irq_desc</code> 的定义：</p>
+<pre><code class="language-C">int request_threaded_irq(unsigned int irq, irq_handler_t handler,
+                         irq_handler_t thread_fn, unsigned long irqflags,
+                         const char *devname, void *dev_id)
+{
+        struct irqaction *action;
+        struct irq_desc *desc;
+        int retval;
+		...
+		...
+		...
+}
+</code></pre>
+<p>在本章，我们已经见识过 <code>irqaction</code> 和 <code>irq_desc</code> 结构体了。第一个结构体表示一个中断动作描述符，它包含中断处理程序指针，设备名称，中断号等等。第二个结构体表示一个中断描述符，包含指向 <code>irqaction</code> 的指针，中断标志等等。注意，<code>request_threaded_irq</code> 函数被 <code>request_irq</code> 调用时，带了一个额外的参数：<code>irq_handler_t thread_fn</code>。如果这个参数不为 <code>NULL</code>，它会创建 <code>irq</code> 线程，并在该线程中执行给定的 <code>irq</code> 处理程序。下一步，我们要做如下检查：</p>
+<pre><code class="language-C">if (((irqflags &amp; IRQF_SHARED) &amp;&amp; !dev_id) ||
+            (!(irqflags &amp; IRQF_SHARED) &amp;&amp; (irqflags &amp; IRQF_COND_SUSPEND)) ||
+            ((irqflags &amp; IRQF_NO_SUSPEND) &amp;&amp; (irqflags &amp; IRQF_COND_SUSPEND)))
+               return -EINVAL;
+</code></pre>
+<p>首先，我们确保共享中断时传入了真正的 <code>dev_id</code>(译者注：不然后面搞不清楚哪台设备产生了中断)，而且 <code>IRQF_COND_SUSPEND</code> 仅对共享中断生效。否则退出函数，返回 <code>-EINVAL</code> 错误。之后，我们借助 <a href="https://github.com/torvalds/linux/blob/master/kernel/irq/irqdesc.c">kernel/irq/irqdesc.c</a> 源文件中定义的 <code>irq_to_desc</code> 函数将给定的 <code>irq</code> 中断号转换成 <code>irq</code> 中断描述符。如果不成功，则退出函数，返回 <code>-EINVAL</code> 错误：</p>
+<pre><code class="language-C">desc = irq_to_desc(irq);
+if (!desc)
+    return -EINVAL;
+</code></pre>
+<p><code>irq_to_desc</code> 函数检查给定的 <code>irq</code> 中断号是否小于最大中断号，并且返回中断描述符。这里，<code>irq</code> 中断号就是 <code>irq_desc</code> 数组的偏移量：</p>
+<pre><code class="language-C">struct irq_desc *irq_to_desc(unsigned int irq)
+{
+        return (irq &lt; NR_IRQS) ? irq_desc + irq : NULL;
+}
+</code></pre>
+<p>由于我们已经把 <code>irq</code> 中断号转换成了 <code>irq</code> 中断描述符，现在来检查描述符的状态，确保我们可以请求中断：</p>
+<pre><code class="language-C">if (!irq_settings_can_request(desc) || WARN_ON(irq_settings_is_per_cpu_devid(desc)))
+    return -EINVAL;
+</code></pre>
+<p>失败则返回 <code>-EINVAL</code> 错误。接着，我们检查给定的中断处理程序(译者注：是指 <code>handler</code> 变量)。如果它没被传入 <code>request_irq</code> 函数，我们就检查 <code>thread_fn</code>。两个都是 <code>NULL</code> 则返回 <code>-EINVAL</code>。如果中断处理程序没有被传入 <code>request_irq</code> 函数而 <code>thread_fn</code> 不为空，则把 <code>handler</code> 设为 <code>irq_default_primary_handler</code>：</p>
+<pre><code class="language-C">if (!handler) {
+    if (!thread_fn)
+        return -EINVAL;
+	handler = irq_default_primary_handler;
+}
+</code></pre>
+<p>下一步，我们通过 <code>kzalloc</code> 函数为 <code>irqaction</code> 分配内存，若不成功则返回：</p>
+<pre><code class="language-C">action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+if (!action)
+    return -ENOMEM;
+</code></pre>
+<p>欲知 <code>kzalloc</code> 详情，请查阅专门介绍 Linux 内核<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">内存管理</a>的章节。为 <code>irqaction</code> 分配空间后，我们即对这个结构体进行初始化，设置它的中断处理程序，中断标志，设备名称等等：</p>
+<pre><code class="language-C">action-&gt;handler = handler;
+action-&gt;thread_fn = thread_fn;
+action-&gt;flags = irqflags;
+action-&gt;name = devname;
+action-&gt;dev_id = dev_id;
+</code></pre>
+<p>在 <code>request_threaded_irq</code> 函数末尾，我们调用 <a href="https://github.com/torvalds/linux/blob/master/kernel/irq/manage.c">kernel/irq/manage.c</a> 中的 <code>__setup_irq</code> 函数，并注册一个给定的 <code>irqaction</code>。然后释放 <code>irqaction</code> 内存并返回：</p>
+<pre><code class="language-C">chip_bus_lock(desc);
+retval = __setup_irq(irq, desc, action);
+chip_bus_sync_unlock(desc);
+
+if (retval)
+	kfree(action);
+
+return retval;
+</code></pre>
+<p>注意，<code>__setup_irq</code> 函数的调用位于 <code>chip_bus_lock</code> 和 <code>chip_bus_sync_unlock</code> 函数之间。这些函数对慢速总线(如 <a href="https://en.wikipedia.org/wiki/I%C2%B2C">i2c</a>)芯片进行锁定／解锁。现在来看看 <code>__setup_irq</code> 函数的实现。<code>__setup_irq</code> 函数开头是各种检查。首先我们检查给定的中断描述符不为 <code>NULL</code>，<code>irqchip</code> 不为 <code>NULL</code>，以及给定的中断描述符模块拥有者不为 <code>NULL</code>。接下来我们检查中断是否嵌套在其他中断线程中。如果是的，我们则以 <code>irq_nested_primary_handler</code> 替换 <code>irq_default_priamry_handler</code>。</p>
+<p>下一步，如果给定的中断不是嵌套的，并且 <code>thread_fn</code> 不为空，我们就通过 <code>kthread_create</code> 创建了一个中断处理线程。</p>
+<pre><code class="language-C">if (new-&gt;thread_fn &amp;&amp; !nested) {
+	struct task_struct *t;
+	t = kthread_create(irq_thread, new, "irq/%d-%s", irq, new-&gt;name);
+	...
+}
+</code></pre>
+<p>并在最后为给定的中断描述符的剩余字段赋值。于是，我们的 <code>16</code> 和 <code>17</code> 号中断请求线注册完毕。当一个中断控制器获得这些中断的相关事件时，<code>serial21285_rx_chars</code> 和<code>serial21285_tx_chars</code> 函数会被调用。现在我们来看一看一个中断发生时到底发生了什么。</p>
+<h2 id="准备处理中断">准备处理中断</h2>
+<p>通过上文，我们观察了为给定的中断描述符请求中断号，为给定的中断注册 <code>irqaction</code> 结构体的过程。我们已经知道，当一个中断事件发生时，中断控制器向处理器通知该事件，处理器尝试为这个中断找到一个合适的中断门。如果你已阅读本章<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/interrupts-8.html">第八节</a>，你应该还记得 <code>native_init_IRQ</code> 函数。这个函数会初始化本地 <a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">APIC</a>。这个函数的如下部分是我们现在最感兴趣的地方：</p>
+<pre><code class="language-C">for_each_clear_bit_from(i, used_vectors, first_system_vector) {
+	set_intr_gate(i, irq_entries_start +
+		8 * (i - FIRST_EXTERNAL_VECTOR));
+}
+</code></pre>
+<p>这里，我们从第 <code>first_system_vector</code> 位开始，依次向后迭代 <code>used_vectors</code> 位图中所有被清除的位：</p>
+<pre><code class="language-C">int first_system_vector = FIRST_SYSTEM_VECTOR; // 0xef
+</code></pre>
+<p>并且设置中断门，<code>i</code> 是向量号，<code>irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR)</code> 是起始地址。仅有一处尚不明了 - <code>irq_entries_start</code>。这个符号定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/entry_entry_64.S">arch/x86/entry/entry_64.S</a> 汇编文件中，并提供了 <code>irq</code> 入口。一起来看：</p>
+<pre><code class="language-assembly">	.align 8
+ENTRY(irq_entries_start)
+    vector=FIRST_EXTERNAL_VECTOR
+    .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
+	pushq	$(~vector+0x80)
+    vector=vector+1
+	jmp	common_interrupt
+	.align	8
+    .endr
+END(irq_entries_start)
+</code></pre>
+<p>这里我们可以看到 <a href="https://en.wikipedia.org/wiki/GNU_Assembler">GNU 汇编器</a>的 <code>.rept</code> 指令。这条指令会把 <code>.endr</code> 之前的这几行代码重复 <code>FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR</code> 次。我们已经知道 <code>FIRST_SYSTEM_VECTOR</code> 的值是 <code>0xef</code>，而 <code>FIRST_EXTERNAL_VECTOR</code> 等于 <code>0x20</code>。于是，它将运行：</p>
+<pre><code class="language-python">&gt;&gt;&gt; 0xef - 0x20
+207
+</code></pre>
+<p>次。在 <code>.rept</code> 指令主体中，我们把入口程序地址压入栈中(注意，我们使用负数表示中断向量号，因为正数留作标识<a href="https://en.wikipedia.org/wiki/System_call">系统调用</a>之用)，将 <code>vector</code> 变量加 1，并跳转到 <code>common_interrupt</code> 标签。在 <code>common_interrupt</code> 中，我们调整了栈中向量号，执行 <code>interrupt</code> 指令，参数是 <code>do_IRQ</code>：</p>
+<pre><code class="language-assembly">common_interrupt:
+	addq	$-0x80, (%rsp)
+	interrupt do_IRQ
+</code></pre>
+<p><code>interrupt</code> 宏定义在同一个源文件中。它把<a href="https://en.wikipedia.org/wiki/Processor_register">通用</a>寄存器的值保存在栈中。如果需要，它还会通过 <code>SWAPGS</code> 汇编指令在内核中改变用户空间 <code>gs</code> 寄存器。它会增加 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a> 的 <code>irq_count</code> 变量，来表明我们处于中断状态，然后调用 <code>do_IRQ</code> 函数。该函数定义于 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/irq.c">arch/x86/kernel/irq.c</a> 源文件中，作用是处理我们的设备中断。让我们一起考察这个函数。<code>do_IRQ</code> 函数接受一个参数 - <code>pt_regs</code> 结构体，它存放着用户空间寄存器的值：</p>
+<pre><code class="language-C">__visible unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
+{
+    struct pt_regs *old_regs = set_irq_regs(regs);
+    unsigned vector = ~regs-&gt;orig_ax;
+    unsigned irq;
+
+	irq_enter();
+    exit_idle();
+	...
+	...
+	...
+}
+</code></pre>
+<p>函数开头调用了 <code>set_irq_regs</code> 函数，后者返回被保存的 <code>per-cpu</code> 中断寄存器指针。然后又调用 <code>irq_enter</code> 和 <code>exit_idle</code> 函数。第一个函数 <code>irq_enter</code> 进入到一个中断上下文，更新 <code>__preempt_count</code> 变量。第二个函数 <code>exit_idle</code> 检查当前进程是否是 <a href="https://en.wikipedia.org/wiki/Process_identifier">pid</a> 为 <code>0</code> 的 <code>idle</code> 进程，然后把 <code>IDLE_END</code> 传送给 <code>idle_notifier</code>。</p>
+<p>接下来，我们从当前 cpu 中读取 <code>irq</code> 值，并调用 <code>handle_irq</code> 函数：</p>
+<pre><code class="language-C">irq = __this_cpu_read(vector_irq[vector]);
+
+if (!handle_irq(irq, regs)) {
+	...
+	...
+	...
+}
+...
+...
+...
+</code></pre>
+<p><code>handle_irq</code> 函数定义于 <a href="https://github.com/torvalds/linux/blob/arch/x86/kernel/irq_64.c">arch/x86/kernel/irq_64.c</a> 源文件中，它检查给定的中断描述符，然后调用 <code>generic_handle_irq_desc</code> 函数：</p>
+<pre><code class="language-C">desc = irq_to_desc(irq);
+	if (unlikely(!desc))
+		return false;
+generic_handle_irq_desc(irq, desc);
+</code></pre>
+<p>该函数又调用中断处理程序：</p>
+<pre><code class="language-C">static inline void generic_handle_irq_desc(unsigned int irq, struct irq_desc *desc)
+{
+       desc-&gt;handle_irq(irq, desc);
+}
+</code></pre>
+<p>但是，停一停……<code>handle_irq</code> 是何方神圣，为什么在知道 <code>irqaction</code> 指向真正的中断处理程序的情况下，偏偏通过中断描述符调用我们的中断处理程序？实际上，<code>irq_desc-&gt;handle_irq</code> 是一个用来调用中断处理程序的上层 API。它在<a href="https://en.wikipedia.org/wiki/Device_tree">设备树</a> 和 <a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">APIC</a> 的初始化过程中就设定好了。内核通过它选择正确的函数以及 <code>irq-&gt;actions(s)</code> 的调用链。就这样，当一个中断发生时，<code>serial21285_tx_chars</code> 或者 <code>serial21285_rx_chars</code> 函数会被调用。</p>
+<p>在 <code>do_IRQ</code> 函数末尾，我们调用 <code>irq_exit</code> 函数来退出中断上下文，调用 <code>set_irq_regs</code> 函数并传入先前的用户空间寄存器，最后返回：</p>
+<pre><code class="language-C">irq_exit();
+set_irq_regs(old_regs);
+return 1;
+</code></pre>
+<p>我们已经知道，当一个 <code>IRQ</code> 工作结束之后，如果有延后中断，它们会被执行。</p>
+<h2 id="退出中断">退出中断</h2>
+<p>好了，中断处理程序执行完毕，我们必须从中断中返回。在 <code>do_IRQ</code> 函数将工作处理完毕后，我们将回到 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/entry_entry_64.S">arch/x86/entry/entry_64.S</a> 汇编代码的 <code>ret_from_intr</code> 标签处。首先，我们通过 <code>DISABLE_INTERRUPTS</code> 宏禁止中断，这个宏被扩展成 <code>cli</code> 指令，将 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a> 的 <code>irq_count</code> 变量值减 1。记住，当我们处于中断上下文的时候，这个变量的值是 <code>1</code>：</p>
+<pre><code class="language-assembly">DISABLE_INTERRUPTS(CLBR_NONE)
+TRACE_IRQS_OFF
+decl	PER_CPU_VAR(irq_count)
+</code></pre>
+<p>最后一步，我们检查之前的上下文(用户空间或者内核空间)，正确地恢复它，然后通过指令退出中断：</p>
+<pre><code class="language-assembly">INTERRUPT_RETURN
+</code></pre>
+<p>此处的 <code>INTERRUPT_RETURN</code> 宏是：</p>
+<pre><code class="language-C">#define INTERRUPT_RETURN	jmp native_iret
+</code></pre>
+<p>而</p>
+<pre><code class="language-assembly">ENTRY(native_iret)
+
+.global native_irq_return_iret
+native_irq_return_iret:
+	iretq
+</code></pre>
+<p>本节到此结束。</p>
+<h2 id="总结">总结</h2>
+<p>这里是<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/index.html">中断和中断处理</a> 章节的第十节的结尾。如你在本节开头读到的那样，这是本章的最后一节。本章开篇阐述了中断理论，我们于是明白了什么是中断，中断的类型，然后也了解了异常以及对这种类型中断的处理，延后中断。最后在本节，我们考察了硬件中断和对这些中断的处理。当然，本节甚至本章都未能覆盖到 Linux 内核中断和中断处理的所有方面。这样并不现实，至少对我而言如此。这是一项浩大工程，不知你作何感想，对我来说，它确实浩大。这个主题远远超出本章讲述的内容，我不确定地球上能否找到一本书可以涵盖这个主题。我们漏掉了关于中断和中断处理的很多内容，但我相信，深入研究中断和中断处理相关的内核源码是个不错的点子。</p>
+<p>如果有任何疑问或者建议，撰写评论或者在 <a href="https://twitter.com/0xAX">twitter</a> 上联系我。</p>
+<p><strong>请注意，英语并非我的母语。任何不便之处，我深感抱歉。如果发现任何错误，请在 <a href="https://github.com/0xAX/linux-insides">linux-insides</a> 向我发送 PR。(译者注：翻译问题请发送 PR 到 <a href="https://www.gitbook.com/book/xinqiu/linux-insides-cn">linux-insides-cn</a>)</strong></p>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="https://www.kernel.org/doc/Documentation/serial/driver">串行驱动文档</a></li>
+<li><a href="http://netwinder.osuosl.org/pub/netwinder/docs/intel/datashts/27813501.pdf">StrongARM** SA-110/21285 评估板</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQ</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Loadable_kernel_module">模块</a></li>
+<li><a href="http://kernelnewbies.org/Documents/InitcallMechanism">initcall</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver/transmitter">uart</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Industry_Standard_Architecture">ISA</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">内存管理</a></li>
+<li><a href="https://en.wikipedia.org/wiki/I%C2%B2C">i2c</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">APIC</a></li>
+<li><a href="https://en.wikipedia.org/wiki/GNU_Assembler">GNU 汇编器</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Processor_register">处理器寄存器</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Process_identifier">pid</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Device_tree">设备树</a></li>
+<li><a href="https://en.wikipedia.org/wiki/System_call">系统调用</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/interrupts-9.html">上一节</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/165/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/165/index.html">Python学习知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/94.html">coco369</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">85页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 190个">190</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/116/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/116/index.html">Protocol Buffer 3学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/100/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/lua_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/100/index.html">Lua编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/61.html">andycai</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="lua">lua</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 192个">192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7486;var bookPageRelUrl ='Interrupts/interrupts-10.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

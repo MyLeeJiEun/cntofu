@@ -1,0 +1,693 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>进程操作-Shell 编程范例</title>
+<meta content='进程操作,Shell 编程范例' name='keywords'>
+<meta content='进程操作,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/chapters/01-chapter6.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">文件系统操作</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/44/zh/chapters/01-chapter8.markdown">
+<span class="">网络操作</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="进程操作">进程操作</h1>
+<ul>
+<li><a href="#toc_10579_14683_1">前言</a></li>
+<li><a href="#toc_10579_14683_2">什么是程序，什么又是进程</a></li>
+<li><a href="#toc_10579_14683_3">进程的创建</a></li>
+<li><a href="#toc_10579_14683_4">范例：让程序在后台运行</a></li>
+<li><a href="#toc_10579_14683_5">范例：查看进程 ID</a></li>
+<li><a href="#toc_10579_14683_6">范例：查看进程的内存映像</a></li>
+<li><a href="#toc_10579_14683_7">查看进程的属性和状态</a></li>
+<li><a href="#toc_10579_14683_8">范例：通过 ps 命令查看进程属性</a></li>
+<li><a href="#toc_10579_14683_9">范例：通过 pstree 查看进程亲缘关系</a></li>
+<li><a href="#toc_10579_14683_10">范例：用 top 动态查看进程信息</a></li>
+<li><a href="#toc_10579_14683_11">范例：确保特定程序只有一个副本在运行</a></li>
+<li><a href="#toc_10579_14683_12">调整进程的优先级</a></li>
+<li><a href="#toc_10579_14683_13">范例：获取进程优先级</a></li>
+<li><a href="#toc_10579_14683_14">范例：调整进程的优先级</a></li>
+<li><a href="#toc_10579_14683_15">结束进程</a></li>
+<li><a href="#toc_10579_14683_16">范例：结束进程</a></li>
+<li><a href="#toc_10579_14683_17">范例：暂停某个进程</a></li>
+<li><a href="#toc_10579_14683_18">范例：查看进程退出状态</a></li>
+<li><a href="#toc_10579_14683_19">进程通信</a></li>
+<li><a href="#toc_10579_14683_20">范例：无名管道（pipe）</a></li>
+<li><a href="#toc_10579_14683_21">范例：有名管道（named pipe）</a></li>
+<li><a href="#toc_10579_14683_22">范例：信号（Signal）</a></li>
+<li><a href="#toc_10579_14683_23">作业和作业控制</a></li>
+<li><a href="#toc_10579_14683_24">范例：创建后台进程，获取进程的作业号和进程号</a></li>
+<li><a href="#toc_10579_14683_25">范例：把作业调到前台并暂停</a></li>
+<li><a href="#toc_10579_14683_26">范例：查看当前作业情况</a></li>
+<li><a href="#toc_10579_14683_27">范例：启动停止的进程并运行在后台</a></li>
+<li><a href="#toc_10579_14683_28">参考资料</a></li>
+</ul>
+<p><span id="toc_10579_14683_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>进程作为程序真正发挥作用时的“形态”，我们有必要对它的一些相关操作非常熟悉，这一节主要描述进程相关的概念和操作，将介绍包括程序、进程、作业等基本概念以及进程状态查询、进程通信等相关的操作。</p>
+<p><span id="toc_10579_14683_2"></span></p>
+<h2 id="什么是程序什么又是进程">什么是程序，什么又是进程</h2>
+<p>程序是指令的集合，而进程则是程序执行的基本单元。为了让程序完成它的工作，必须让程序运行起来成为进程，进而利用处理器资源、内存资源，进行各种 <code>I/O</code> 操作，从而完成某项特定工作。</p>
+<p>从这个意思上说，程序是静态的，而进程则是动态的。</p>
+<p>进程有区别于程序的地方还有：进程除了包含程序文件中的指令数据以外，还需要在内核中有一个数据结构用以存放特定进程的相关属性，以便内核更好地管理和调度进程，从而完成多进程协作的任务。因此，从这个意义上可以说“高于”程序，超出了程序指令本身。</p>
+<p>如果进行过多进程程序的开发，又会发现，一个程序可能创建多个进程，通过多个进程的交互完成任务。在 Linux 下，多进程的创建通常是通过 <code>fork</code> 系统调用来实现。从这个意义上来说程序则”包含”了进程。</p>
+<p>另外一个需要明确的是，程序可以由多种不同程序语言描述，包括 C 语言程序、汇编语言程序和最后编译产生的机器指令等。</p>
+<p>下面简单讨论 Linux 下面如何通过 Shell 进行进程的相关操作。</p>
+<p><span id="toc_10579_14683_3"></span></p>
+<h2 id="进程的创建">进程的创建</h2>
+<p>通常在命令行键入某个程序文件名以后，一个进程就被创建了。例如，</p>
+<p><span id="toc_10579_14683_4"></span></p>
+<h3 id="范例让程序在后台运行">范例：让程序在后台运行</h3>
+<pre><code>$ sleep 100 &amp;
+[1] 9298
+</code></pre>
+<p><span id="toc_10579_14683_5"></span></p>
+<h3 id="范例查看进程-id">范例：查看进程 ID</h3>
+<p>用<code>pidof</code>可以查看指定程序名的进程ID：</p>
+<pre><code>$ pidof sleep
+9298
+</code></pre>
+<p><span id="toc_10579_14683_6"></span></p>
+<h3 id="范例查看进程的内存映像">范例：查看进程的内存映像</h3>
+<pre><code>$ cat /proc/9298/maps
+08048000-0804b000 r-xp 00000000 08:01 977399     /bin/sleep
+0804b000-0804c000 rw-p 00003000 08:01 977399     /bin/sleep
+0804c000-0806d000 rw-p 0804c000 00:00 0          [heap]
+b7c8b000-b7cca000 r--p 00000000 08:01 443354
+...
+bfbd8000-bfbed000 rw-p bfbd8000 00:00 0          [stack]
+ffffe000-fffff000 r-xp 00000000 00:00 0          [vdso]
+</code></pre>
+<p>程序被执行后，就被加载到内存中，成为了一个进程。上面显示了该进程的内存映像（虚拟内存），包括程序指令、数据，以及一些用于存放程序命令行参数、环境变量的栈空间，用于动态内存申请的堆空间都被分配好。</p>
+<p>关于程序在命令行执行过程的细节，请参考<a href="02-chapter3.markdown">《Linux 命令行下程序执行的一刹那》</a>。</p>
+<p>实际上，创建一个进程，也就是说让程序运行，还有其他的办法，比如，通过一些配置让系统启动时自动启动程序（具体参考 <code>man init</code>），或者是通过配置 <code>crond</code> （或者 <code>at</code>）让它定时启动程序。除此之外，还有一个方式，那就是编写 Shell 脚本，把程序写入一个脚本文件，当执行脚本文件时，文件中的程序将被执行而成为进程。这些方式的细节就不介绍，下面了解如何查看进程的属性。</p>
+<p>需要补充一点的是：在命令行下执行程序，可以通过 <code>ulimit</code> 内置命令来设置进程可以利用的资源，比如进程可以打开的最大文件描述符个数，最大的栈空间，虚拟内存空间等。具体用法见 <code>help ulimit</code> 。</p>
+<p><span id="toc_10579_14683_7"></span></p>
+<h2 id="查看进程的属性和状态">查看进程的属性和状态</h2>
+<p>可以通过 <code>ps</code> 命令查看进程相关属性和状态，这些信息包括进程所属用户，进程对应的程序，进程对 <code>cpu</code> 和内存的使用情况等信息。熟悉如何查看它们有助于进行相关的统计分析等操作。</p>
+<p><span id="toc_10579_14683_8"></span></p>
+<h3 id="范例通过-ps-命令查看进程属性">范例：通过 ps 命令查看进程属性</h3>
+<p>查看系统当前所有进程的属性：</p>
+<pre><code>$ ps -ef
+</code></pre>
+<p>查看命令中包含某字符的程序对应的进程，进程 <code>ID</code> 是 1 。 <code>TTY</code> 为？表示和终端没有关联：</p>
+<pre><code>$ ps -C init
+  PID TTY          TIME CMD
+    1 ?        00:00:01 init
+</code></pre>
+<p>选择某个特定用户启动的进程：</p>
+<pre><code>$ ps -U falcon
+</code></pre>
+<p>按照指定格式输出指定内容，下面输出命令名和 <code>cpu</code> 使用率：</p>
+<pre><code>$ ps -e -o "%C %c"
+</code></pre>
+<p>打印 <code>cpu</code> 使用率最高的前 4 个程序：</p>
+<pre><code>$ ps -e -o "%C %c" | sort -u -k1 -r | head -5
+ 7.5 firefox-bin
+ 1.1 Xorg
+ 0.8 scim-panel-gtk
+ 0.2 scim-bridge
+</code></pre>
+<p>获取使用虚拟内存最大的 5 个进程：</p>
+<pre><code>$ ps -e -o "%z %c" | sort -n -k1 -r | head -5
+349588 firefox-bin
+ 96612 xfce4-terminal
+ 88840 xfdesktop
+ 76332 gedit
+ 58920 scim-panel-gtk
+</code></pre>
+<p><span id="toc_10579_14683_9"></span></p>
+<h3 id="范例通过-pstree-查看进程亲缘关系">范例：通过 pstree 查看进程亲缘关系</h3>
+<p>系统所有进程之间都有“亲缘”关系，可以通过 <code>pstree</code> 查看这种关系：</p>
+<pre><code>$ pstree
+</code></pre>
+<p>上面会打印系统进程调用树，可以非常清楚地看到当前系统中所有活动进程之间的调用关系。</p>
+<p><span id="toc_10579_14683_10"></span></p>
+<h3 id="范例用top动态查看进程信息">范例：用top动态查看进程信息</h3>
+<pre><code>$ top
+</code></pre>
+<p>该命令最大特点是可以动态地查看进程信息，当然，它还提供了一些其他的参数，比如 <code>-S</code> 可以按照累计执行时间的大小排序查看，也可以通过 <code>-u</code> 查看指定用户启动的进程等。</p>
+<p>补充： <code>top</code> 命令支持交互式，比如它支持 <code>u</code> 命令显示用户的所有进程，支持通过 <code>k</code> 命令杀掉某个进程；如果使用 <code>-n 1</code> 选项可以启用批处理模式，具体用法为：</p>
+<pre><code>$ top -n 1 -b
+</code></pre>
+<p><span id="toc_10579_14683_11"></span></p>
+<h3 id="范例确保特定程序只有一个副本在运行">范例：确保特定程序只有一个副本在运行</h3>
+<p>下面来讨论一个有趣的问题：如何让一个程序在同一时间只有一个在运行。</p>
+<p>这意味着当一个程序正在被执行时，它将不能再被启动。那该怎么做呢？</p>
+<p>假如一份相同的程序被复制成了很多份，并且具有不同的文件名被放在不同的位置，这个将比较糟糕，所以考虑最简单的情况，那就是这份程序在整个系统上是唯一的，而且名字也是唯一的。这样的话，有哪些办法来回答上面的问题呢？</p>
+<p>总的机理是：在程序开头检查自己有没有执行，如果执行了则停止否则继续执行后续代码。</p>
+<p>策略则是多样的，由于前面的假设已经保证程序文件名和代码的唯一性，所以通过 <code>ps</code> 命令找出当前所有进程对应的程序名，逐个与自己的程序名比较，如果已经有，那么说明自己已经运行了。</p>
+<pre><code>ps -e -o "%c" | tr -d " " | grep -q ^init$ &nbsp; #查看当前程序是否执行
+[ $? -eq 0 ] &amp;&amp; exit&nbsp;  #如果在，那么退出, $?表示上一条指令是否执行成功
+</code></pre>
+<p>每次运行时先在指定位置检查是否存在一个保存自己进程 <code>ID</code> 的文件，如果不存在，那么继续执行，如果存在，那么查看该进程 <code>ID</code> 是否正在运行，如果在，那么退出，否则往该文件重新写入新的进程 <code>ID</code>，并继续。</p>
+<pre><code>pidfile=/tmp/$0".pid"
+if [ -f $pidfile ]; then
+   	OLDPID=$(cat $pidfile)
+	ps -e -o "%p" | tr -d " " | grep -q "^$OLDPID$"
+	[ $? -eq 0 ] &amp;&amp; exit
+fi
+
+echo $$ &gt; $pidfile
+
+#... 代码主体
+
+#设置信号0的动作，当程序退出时触发该信号从而删除掉临时文件
+trap "rm $pidfile"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 0
+</code></pre>
+<p>更多实现策略自己尽情发挥吧！</p>
+<p><span id="toc_10579_14683_12"></span></p>
+<h2 id="调整进程的优先级">调整进程的优先级</h2>
+<p>在保证每个进程都能够顺利执行外，为了让某些任务优先完成，那么系统在进行进程调度时就会采用一定的调度办法，比如常见的有按照优先级的时间片轮转的调度算法。这种情况下，可以通过 <code>renice</code> 调整正在运行的程序的优先级，例如：`</p>
+<p><span id="toc_10579_14683_13"></span></p>
+<h3 id="范例获取进程优先级">范例：获取进程优先级</h3>
+<pre><code>$ ps -e -o "%p %c %n" | grep xfs
+ 5089 xfs               0
+</code></pre>
+<p><span id="toc_10579_14683_14"></span></p>
+<h3 id="范例调整进程的优先级">范例：调整进程的优先级</h3>
+<pre><code>$ renice 1 -p 5089
+renice: 5089: setpriority: Operation not permitted
+$ sudo renice 1 -p 5089   #需要权限才行
+[sudo] password for falcon:
+5089: old priority 0, new priority 1
+$ ps -e -o "%p %c %n" | grep xfs  #再看看，优先级已经被调整过来了
+ 5089 xfs               1
+</code></pre>
+<p><span id="toc_10579_14683_15"></span></p>
+<h2 id="结束进程">结束进程</h2>
+<p>既然可以通过命令行执行程序，创建进程，那么也有办法结束它。可以通过 <code>kill</code> 命令给用户自己启动的进程发送某个信号让进程终止，当然“万能”的 <code>root</code> 几乎可以 <code>kill</code> 所有进程（除了 <code>init</code> 之外）。例如，</p>
+<p><span id="toc_10579_14683_16"></span></p>
+<h3 id="范例结束进程">范例：结束进程</h3>
+<pre><code>$ sleep 50 &amp;   #启动一个进程
+[1] 11347
+$ kill 11347
+</code></pre>
+<p><code>kill</code> 命令默认会发送终止信号（ <code>SIGTERM</code> ）给程序，让程序退出，但是 <code>kill</code> 还可以发送其他信号，这些信号的定义可以通过 <code>man 7 signal</code> 查看到，也可以通过 <code>kill -l</code> 列出来。</p>
+<pre><code>$ man 7 signal
+$ kill -l
+ 1) SIGHUP       2) SIGINT       3) SIGQUIT      4) SIGILL
+ 5) SIGTRAP      6) SIGABRT      7) SIGBUS       8) SIGFPE
+ 9) SIGKILL     10) SIGUSR1     11) SIGSEGV     12) SIGUSR2
+13) SIGPIPE     14) SIGALRM     15) SIGTERM     16) SIGSTKFLT
+17) SIGCHLD     18) SIGCONT     19) SIGSTOP     20) SIGTSTP
+21) SIGTTIN     22) SIGTTOU     23) SIGURG      24) SIGXCPU
+25) SIGXFSZ     26) SIGVTALRM   27) SIGPROF     28) SIGWINCH
+29) SIGIO       30) SIGPWR      31) SIGSYS      34) SIGRTMIN
+35) SIGRTMIN+1  36) SIGRTMIN+2  37) SIGRTMIN+3  38) SIGRTMIN+4
+39) SIGRTMIN+5  40) SIGRTMIN+6  41) SIGRTMIN+7  42) SIGRTMIN+8
+43) SIGRTMIN+9  44) SIGRTMIN+10 45) SIGRTMIN+11 46) SIGRTMIN+12
+47) SIGRTMIN+13 48) SIGRTMIN+14 49) SIGRTMIN+15 50) SIGRTMAX-14
+51) SIGRTMAX-13 52) SIGRTMAX-12 53) SIGRTMAX-11 54) SIGRTMAX-10
+55) SIGRTMAX-9  56) SIGRTMAX-8  57) SIGRTMAX-7  58) SIGRTMAX-6
+59) SIGRTMAX-5  60) SIGRTMAX-4  61) SIGRTMAX-3  62) SIGRTMAX-2
+63) SIGRTMAX-1  64) SIGRTMAX
+</code></pre>
+<p><span id="toc_10579_14683_17"></span></p>
+<h3 id="范例暂停某个进程">范例：暂停某个进程</h3>
+<p>例如，用 <code>kill</code> 命令发送 <code>SIGSTOP</code> 信号给某个程序，让它暂停，然后发送 <code>SIGCONT</code> 信号让它继续运行。</p>
+<pre><code>$ sleep 50 &amp;
+[1] 11441
+$ jobs
+[1]+  Running                 sleep 50 &amp;
+$ kill -s SIGSTOP 11441   #这个等同于我们对一个前台进程执行CTRL+Z操作
+$ jobs
+[1]+  Stopped                 sleep 50
+$ kill -s SIGCONT 11441   #这个等同于之前我们使用bg %1操作让一个后台进程运行起来
+$ jobs
+[1]+  Running                 sleep 50 &amp;
+$ kill %1                  #在当前会话(session)下，也可以通过作业号控制进程
+$ jobs
+[1]+  Terminated              sleep 50
+</code></pre>
+<p>可见 <code>kill</code> 命令提供了非常好的功能，不过它只能根据进程的 <code>ID</code> 或者作业来控制进程，而 <code>pkill</code> 和 <code>killall</code> 提供了更多选择，它们扩展了通过程序名甚至是进程的用户名来控制进程的方法。更多用法请参考它们的手册。</p>
+<p><span id="toc_10579_14683_18"></span></p>
+<h3 id="范例查看进程退出状态">范例：查看进程退出状态</h3>
+<p>当程序退出后，如何判断这个程序是正常退出还是异常退出呢？还记得 Linux 下，那个经典 <code>hello world</code> 程序吗？在代码的最后总是有条 <code>return 0</code> 语句。这个 <code>return 0</code> 实际上是让程序员来检查进程是否正常退出的。如果进程返回了一个其他的数值，那么可以肯定地说这个进程异常退出了，因为它都没有执行到 <code>return 0</code> 这条语句就退出了。</p>
+<p>那怎么检查进程退出的状态，即那个返回的数值呢？</p>
+<p>在 <code>Shell</code> 中，可以检查这个特殊的变量 <code>$?</code>，它存放了上一条命令执行后的退出状态。</p>
+<pre><code>$ test1
+bash: test1: command not found
+$ echo $?
+127
+$ cat ./test.c | grep hello
+$ echo $?
+1
+$ cat ./test.c | grep hi
+	printf("hi, myself!\n");
+$ echo $?
+0
+</code></pre>
+<p>貌似返回 0 成为了一个潜规则，虽然没有标准明确规定，不过当程序正常返回时，总是可以从 <code>$?</code> 中检测到 0，但是异常时，总是检测到一个非 0 值。这就告诉我们在程序的最后最好是跟上一个 <code>exit 0</code> 以便任何人都可以通过检测 <code>$?</code> 确定程序是否正常结束。如果有一天，有人偶尔用到你的程序，试图检查它的退出状态，而你却在程序的末尾莫名地返回了一个 <code>-1</code> 或者 1，那么他将会很苦恼，会怀疑他自己编写的程序到底哪个地方出了问题，检查半天却不知所措，因为他太信任你了，竟然从头至尾都没有怀疑你的编程习惯可能会与众不同！</p>
+<p><span id="toc_10579_14683_19"></span></p>
+<h2 id="进程通信">进程通信</h2>
+<p>为便于设计和实现，通常一个大型的任务都被划分成较小的模块。不同模块之间启动后成为进程，它们之间如何通信以便交互数据，协同工作呢？在《UNIX 环境高级编程》一书中提到很多方法，诸如管道（无名管道和有名管道）、信号（<code>signal</code>）、报文（<code>Message</code>）队列（消息队列）、共享内存（<code>mmap/munmap</code>）、信号量（<code>semaphore</code>，主要是同步用，进程之间，进程的不同线程之间）、套接口（<code>Socket</code>，支持不同机器之间的进程通信）等，而在 Shell 中，通常直接用到的就有管道和信号等。下面主要介绍管道和信号机制在 Shell 编程时的一些用法。</p>
+<p><span id="toc_10579_14683_20"></span></p>
+<h3 id="范例无名管道pipe">范例：无名管道（pipe）</h3>
+<p>在 Linux 下，可以通过 <code>|</code> 连接两个程序，这样就可以用它来连接后一个程序的输入和前一个程序的输出，因此被形象地叫做个管道。在 C 语言中，创建无名管道非常简单方便，用 <code>pipe</code> 函数，传入一个具有两个元素的 <code>int</code> 型的数组就可以。这个数组实际上保存的是两个文件描述符，父进程往第一个文件描述符里头写入东西后，子进程可以从第一个文件描述符中读出来。</p>
+<p>如果用多了命令行，这个管子 <code>|</code> 应该会经常用。比如上面有个演示把 <code>ps</code> 命令的输出作为 <code>grep</code> 命令的输入：</p>
+<pre><code>$ ps -ef | grep init
+</code></pre>
+<p>也许会觉得这个“管子”好有魔法，竟然真地能够链接两个程序的输入和输出，它们到底是怎么实现的呢？实际上当输入这样一组命令时，当前 Shell 会进行适当的解析，把前面一个进程的输出关联到管道的输出文件描述符，把后面一个进程的输入关联到管道的输入文件描述符，这个关联过程通过输入输出重定向函数 <code>dup</code> （或者 <code>fcntl</code> ）来实现。</p>
+<p><span id="toc_10579_14683_21"></span></p>
+<h3 id="范例有名管道named-pipe">范例：有名管道（named pipe）</h3>
+<p>有名管道实际上是一个文件（无名管道也像一个文件，虽然关系到两个文件描述符，不过只能一边读另外一边写），不过这个文件比较特别，操作时要满足先进先出，而且，如果试图读一个没有内容的有名管道，那么就会被阻塞，同样地，如果试图往一个有名管道里写东西，而当前没有程序试图读它，也会被阻塞。下面看看效果。</p>
+<pre><code>$ mkfifo fifo_test    #通过mkfifo命令创建一个有名管道
+$ echo "fewfefe" &gt; fifo_test
+#试图往fifo_test文件中写入内容，但是被阻塞，要另开一个终端继续下面的操作
+$ cat fifo_test        #另开一个终端，记得，另开一个。试图读出fifo_test的内容
+fewfefe
+</code></pre>
+<p>这里的 <code>echo</code> 和 <code>cat</code> 是两个不同的程序，在这种情况下，通过 <code>echo</code> 和 <code>cat</code> 启动的两个进程之间并没有父子关系。不过它们依然可以通过有名管道通信。</p>
+<p>这样一种通信方式非常适合某些特定情况：例如有这样一个架构，这个架构由两个应用程序构成，其中一个通过循环不断读取 <code>fifo_test</code> 中的内容，以便判断，它下一步要做什么。如果这个管道没有内容，那么它就会被阻塞在那里，而不会因死循环而耗费资源，另外一个则作为一个控制程序不断地往 <code>fifo_test</code> 中写入一些控制信息，以便告诉之前的那个程序该做什么。下面写一个非常简单的例子。可以设计一些控制码，然后控制程序不断地往 <code>fifo_test</code> 里头写入，然后应用程序根据这些控制码完成不同的动作。当然，也可以往 <code>fifo_test</code> 传入除控制码外的其他数据。</p>
+<ul>
+<li> <p>应用程序的代码</p> <pre><code>  $ cat app.sh
+  #!/bin/bash
+
+  FIFO=fifo_test
+  while :;
+  do
+  	CI=`cat $FIFO`  #CI --&gt; Control Info
+  	case $CI in
+  	    0) echo "The CONTROL number is ZERO, do something ..."
+  		    ;;
+  	    1) echo "The CONTROL number is ONE, do something ..."
+  		    ;;
+  	    *) echo "The CONTROL number not recognized, do something else..."
+  		    ;;
+  	esac
+  done
+</code></pre> </li>
+<li> <p>控制程序的代码</p> <pre><code>  $ cat control.sh
+  #!/bin/bash
+
+  FIFO=fifo_test
+  CI=$1
+
+  [ -z "$CI" ] &amp;&amp; echo "the control info should not be empty" &amp;&amp; exit
+
+  echo $CI &gt; $FIFO
+</code></pre> </li>
+<li> <p>一个程序通过管道控制另外一个程序的工作</p> <pre><code>  $ chmod +x app.sh control.sh    #修改这两个程序的可执行权限，以便用户可以执行它们
+  $ ./app.sh  #在一个终端启动这个应用程序，在通过./control.sh发送控制码以后查看输出
+  The CONTROL number is ONE, do something ...    #发送1以后
+  The CONTROL number is ZERO, do something ...    #发送0以后
+  The CONTROL number not recognized, do something else...  #发送一个未知的控制码以后
+  $ ./control.sh 1            #在另外一个终端，发送控制信息，控制应用程序的工作
+  $ ./control.sh 0
+  $ ./control.sh 4343
+</code></pre> </li>
+</ul>
+<p>这样一种应用架构非常适合本地的多程序任务设计，如果结合 <code>web cgi</code>，那么也将适合远程控制的要求。引入 <code>web cgi</code> 的唯一改变是，要把控制程序 <code>./control.sh</code> 放到 <code>web</code> 的 <code>cgi</code> 目录下，并对它作一些修改，以使它符合 <code>CGI</code> 的规范，这些规范包括文档输出格式的表示（在文件开头需要输出 <code>content-tpye: text/html</code> 以及一个空白行）和输入参数的获取 <code>(web</code> 输入参数都存放在 <code>QUERY_STRING</code> 环境变量里头）。因此一个非常简单的 <code>CGI</code> 控制程序可以写成这样：</p>
+<pre><code>#!/bin/bash
+
+FIFO=./fifo_test
+CI=$QUERY_STRING
+
+[ -z "$CI" ] &amp;&amp; echo "the control info should not be empty" &amp;&amp; exit
+
+echo -e "content-type: text/html\n\n"
+echo $CI &gt; $FIFO
+</code></pre>
+<p>在实际使用时，请确保 <code>control.sh</code> 能够访问到 <code>fifo_test</code> 管道，并且有写权限，以便通过浏览器控制 <code>app.sh</code> ：</p>
+<pre><code>http://ipaddress\_or\_dns/cgi-bin/control.sh?0
+</code></pre>
+<p>问号 <code>?</code> 后面的内容即 <code>QUERY_STRING</code>，类似之前的 <code>$1</code> 。</p>
+<p>这样一种应用对于远程控制，特别是嵌入式系统的远程控制很有实际意义。在去年的暑期课程上，我们就通过这样一种方式来实现马达的远程控制。首先，实现了一个简单的应用程序以便控制马达的转动，包括转速，方向等的控制。为了实现远程控制，我们设计了一些控制码，以便控制马达转动相关的不同属性。</p>
+<p>在 C 语言中，如果要使用有名管道，和 Shell 类似，只不过在读写数据时用 <code>read</code>，<code>write</code> 调用，在创建 <code>fifo</code> 时用 <code>mkfifo</code> 函数调用。</p>
+<p><span id="toc_10579_14683_22"></span></p>
+<h3 id="范例信号signal">范例：信号（Signal）</h3>
+<p>信号是软件中断，Linux 用户可以通过 <code>kill</code> 命令给某个进程发送一个特定的信号，也可以通过键盘发送一些信号，比如 <code>CTRL+C</code> 可能触发 <code>SGIINT</code> 信号，而 <code>CTRL+\</code> 可能触发 <code>SGIQUIT</code> 信号等，除此之外，内核在某些情况下也会给进程发送信号，比如在访问内存越界时产生 <code>SGISEGV</code> 信号，当然，进程本身也可以通过 <code>kill</code>，<code>raise</code> 等函数给自己发送信号。对于 Linux 下支持的信号类型，大家可以通过 <code>man 7 signal</code> 或者 <code>kill -l</code> 查看到相关列表和说明。</p>
+<p>对于有些信号，进程会有默认的响应动作，而有些信号，进程可能直接会忽略，当然，用户还可以对某些信号设定专门的处理函数。在 Shell 中，可以通过 <code>trap</code> 命令（Shell 内置命令）来设定响应某个信号的动作（某个命令或者定义的某个函数），而在 C 语言中可以通过 <code>signal</code> 调用注册某个信号的处理函数。这里仅仅演示 <code>trap</code> 命令的用法。</p>
+<pre><code>$ function signal_handler { echo "hello, world."; } #定义signal_handler函数
+$ trap signal_handler SIGINT  #执行该命令设定：收到SIGINT信号时打印hello, world
+$ hello, world     #按下CTRL+C，可以看到屏幕上输出了hello, world字符串
+</code></pre>
+<p>类似地，如果设定信号 0 的响应动作，那么就可以用 <code>trap</code> 来模拟 C 语言程序中的 <code>atexit</code> 程序终止函数的登记，即通过 <code>trap signal_handler SIGQUIT</code> 设定的 <code>signal_handler</code> 函数将在程序退出时执行。信号 0 是一个特别的信号，在 <code>POSIX.1</code> 中把信号编号 0 定义为空信号，这常被用来确定一个特定进程是否仍旧存在。当一个程序退出时会触发该信号。</p>
+<pre><code>$ cat sigexit.sh
+#!/bin/bash
+
+function signal_handler {
+	echo "hello, world"
+}
+trap signal_handler 0
+$ chmod +x sigexit.sh
+$ ./sigexit.sh    #实际Shell编程会用该方式在程序退出时来做一些清理临时文件的收尾工作
+hello, world
+</code></pre>
+<p><span id="toc_10579_14683_23"></span></p>
+<h2 id="作业和作业控制">作业和作业控制</h2>
+<p>当我们为完成一些复杂的任务而将多个命令通过 <code>|,\&gt;,&lt;, ;, (,)</code> 等组合在一起时，通常这个命令序列会启动多个进程，它们间通过管道等进行通信。而有时在执行一个任务的同时，还有其他的任务需要处理，那么就经常会在命令序列的最后加上一个&amp;，或者在执行命令后，按下 <code>CTRL+Z</code> 让前一个命令暂停。以便做其他的任务。等做完其他一些任务以后，再通过 <code>fg</code> 命令把后台任务切换到前台。这样一种控制过程通常被成为作业控制，而那些命令序列则被成为作业，这个作业可能涉及一个或者多个程序，一个或者多个进程。下面演示一下几个常用的作业控制操作。</p>
+<p><span id="toc_10579_14683_24"></span></p>
+<h3 id="范例创建后台进程获取进程的作业号和进程号">范例：创建后台进程，获取进程的作业号和进程号</h3>
+<pre><code>$ sleep 50 &amp;
+[1] 11137
+</code></pre>
+<p><span id="toc_10579_14683_25"></span></p>
+<h3 id="范例把作业调到前台并暂停">范例：把作业调到前台并暂停</h3>
+<p>使用 Shell 内置命令 <code>fg</code> 把作业 1 调到前台运行，然后按下 <code>CTRL+Z</code> 让该进程暂停</p>
+<pre><code>$ fg %1
+sleep 50
+^Z
+[1]+  Stopped                 sleep 50
+</code></pre>
+<p><span id="toc_10579_14683_26"></span></p>
+<h3 id="范例查看当前作业情况">范例：查看当前作业情况</h3>
+<pre><code>$ jobs            #查看当前作业情况，有一个作业停止
+[1]+  Stopped                 sleep 50
+$ sleep 100 &amp;     #让另外一个作业在后台运行
+[2] 11138
+$ jobs            #查看当前作业情况，一个正在运行，一个停止
+[1]+  Stopped                 sleep 50
+[2]-  Running                 sleep 100 &amp;
+</code></pre>
+<p><span id="toc_10579_14683_27"></span></p>
+<h3 id="范例启动停止的进程并运行在后台">范例：启动停止的进程并运行在后台</h3>
+<pre><code>$ bg %1
+[2]+ sleep 50 &amp;
+</code></pre>
+<p>不过，要在命令行下使用作业控制，需要当前 Shell，内核终端驱动等对作业控制支持才行。</p>
+<p><span id="toc_10579_14683_28"></span></p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li>《UNIX 环境高级编程》</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/31/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/104/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/46/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/188/index.html">
+<img class="uk-book-cover" src="/static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/45/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/140/index.html">
+<img class="uk-book-cover" src="/static/icons/48/haskell_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/140/index.html">HASKELL 趣學指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/73.html">MnO2</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="haskell">haskell</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 301个">301</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2889;var bookPageRelUrl ='zh/chapters/01-chapter7.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

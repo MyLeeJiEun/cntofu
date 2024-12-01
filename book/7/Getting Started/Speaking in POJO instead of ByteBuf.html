@@ -1,0 +1,420 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf-Netty 4.x 用户指南(Netty 4.x User Guide)</title>
+<meta content='Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf,Netty 4.x 用户指南,Netty 4.x User Guide' name='keywords'>
+<meta content='Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf,Netty 4.x 用户指南,Netty 4.x User Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/7/Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Dealing wit..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/7/Getting%20Started/Shutting%20Down%20Your%20Application.html">
+<span class="">Shutting Do..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/7/index.html">Netty 4.x 用户指南 (Netty 4.x User Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/waylau/netty-4-user-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="speaking-in-pojo-instead-of-bytebuf-用pojo代替bytebuf">Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf</h1>
+<p>我们回顾了迄今为止的所有例子使用 <a href="http://netty.io/4.0/api/io/netty/buffer/ByteBuf.html">ByteBuf</a> 作为协议消息的主要数据结构。在本节中,我们将改善的 TIME 协议客户端和服务器例子，使用 POJO 代替 ByteBuf。</p>
+<p>在 <a href="http://netty.io/4.0/api/io/netty/channel/ChannelHandler.html">ChannelHandler</a> 使用 POIO 的好处很明显：通过从ChannelHandler 中提取出 ByteBuf 的代码，将会使 ChannelHandler的实现变得更加可维护和可重用。在 TIME 客户端和服务器的例子中，我们读取的仅仅是一个32位的整形数据，直接使用 ByteBuf 不会是一个主要的问题。然而，你会发现当你需要实现一个真实的协议，分离代码变得非常的必要。</p>
+<p>首先，让我们定义一个新的类型叫做 UnixTime。</p>
+<pre><code>public class UnixTime {
+
+    private final long value;
+
+    public UnixTime() {
+        this(System.currentTimeMillis() / 1000L + 2208988800L);
+    }
+
+    public UnixTime(long value) {
+        this.value = value;
+    }
+
+    public long value() {
+        return value;
+    }
+
+    @Override
+    public String toString() {
+        return new Date((value() - 2208988800L) * 1000L).toString();
+    }
+}
+</code></pre>
+<p>现在我们可以修改下 TimeDecoder 类，返回一个 UnixTime，以替代ByteBuf</p>
+<pre><code>@Override
+protected void decode(ChannelHandlerContext ctx, ByteBuf in, List&lt;Object&gt; out) {
+    if (in.readableBytes() &lt; 4) {
+        return;
+    }
+
+    out.add(new UnixTime(in.readUnsignedInt()));
+}
+</code></pre>
+<p>下面是修改后的解码器，TimeClientHandler 不再任何的 ByteBuf 代码了。</p>
+<pre><code>@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    UnixTime m = (UnixTime) msg;
+    System.out.println(m);
+    ctx.close();
+}
+</code></pre>
+<p>是不是变得更加简单和优雅了？相同的技术可以被运用到服务端。让我们修改一下 TimeServerHandler 的代码。</p>
+<pre><code>@Override
+public void channelActive(ChannelHandlerContext ctx) {
+    ChannelFuture f = ctx.writeAndFlush(new UnixTime());
+    f.addListener(ChannelFutureListener.CLOSE);
+}
+</code></pre>
+<p>现在,唯一缺少的功能是一个编码器,是<a href="http://netty.io/4.0/api/io/netty/channel/ChannelOutboundHandler.html">ChannelOutboundHandler</a>的实现，用来将 UnixTime 对象重新转化为一个 ByteBuf。这是比编写一个解码器简单得多,因为没有需要处理的数据包编码消息时拆分和组装。</p>
+<pre><code>public class TimeEncoder extends ChannelOutboundHandlerAdapter {
+    @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+        UnixTime m = (UnixTime) msg;
+        ByteBuf encoded = ctx.alloc().buffer(4);
+        encoded.writeInt((int)m.value());
+        ctx.write(encoded, promise); // (1)
+    }
+}
+</code></pre>
+<p>1.在这几行代码里还有几个重要的事情。第一，通过 <a href="http://netty.io/4.0/api/io/netty/channel/ChannelPromise.html">ChannelPromise</a>，当编码后的数据被写到了通道上 Netty 可以通过这个对象标记是成功还是失败。第二， 我们不需要调用 cxt.flush()。因为处理器已经单独分离出了一个方法 void flush(ChannelHandlerContext cxt),如果像自己实现 flush() 方法内容可以自行覆盖这个方法。</p>
+<p>进一步简化操作，你可以使用 <a href="http://netty.io/4.0/api/io/netty/handler/codec/MessageToByteEncoder.html">MessageToByteEncode</a>:</p>
+<pre><code>public class TimeEncoder extends MessageToByteEncoder&lt;UnixTime&gt; {
+    @Override
+    protected void encode(ChannelHandlerContext ctx, UnixTime msg, ByteBuf out) {
+        out.writeInt((int)msg.value());
+    }
+}
+</code></pre>
+<p>最后的任务就是在 TimeServerHandler 之前把 TimeEncoder 插入到ChannelPipeline。 但这是不那么重要的工作。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/8/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/8/index.html">Netty 实战(精髓)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">101页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 817个">817</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/176/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/176/index.html">30秒学会常用JavaScript代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/98.html">30 seconds</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">701页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 44975个">44975</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/1/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/blockchain_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/1/index.html">区块链技术指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/1.html">ayamefing</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="blockchain">blockchain</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">102页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 34个">34</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/184/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/132/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/vuejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/132/index.html">vue-router文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/71.html">srzyhead</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="vuejs">vuejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/7/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Preface 前言" disabled data-book-page-rel-url="" data-book-page-id="643">Preface 前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Problem.html" title="The Problem 问题" data-book-page-rel-url="Preface/The%20Problem.html" data-book-page-id="644">The Problem 问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Solution.html" title="The Solution 解决" data-book-page-rel-url="Preface/The%20Solution.html" data-book-page-id="645">The Solution 解决</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Getting%20Started.html" title="Getting Started 开始" data-book-page-rel-url="Getting%20Started/Getting%20Started.html" data-book-page-id="646">Getting Started 开始</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Before%20Getting%20Started.html" title="Before Getting Started 开始之前" data-book-page-rel-url="Getting%20Started/Before%20Getting%20Started.html" data-book-page-id="647">Before Getting Started 开始之前</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Discard%20Server.html" title="Writing a Discard Server 写个抛弃服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Discard%20Server.html" data-book-page-id="648">Writing a Discard Server 写个抛弃服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Looking%20into%20the%20Received%20Data.html" title="Looking into the Received Data 查看收到的数据" data-book-page-rel-url="Getting%20Started/Looking%20into%20the%20Received%20Data.html" data-book-page-id="649">Looking into the Received Data 查看收到的数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20an%20Echo%20Server.html" title="Writing an Echo Server 写个应答服务器" data-book-page-rel-url="Getting%20Started/Writing%20an%20Echo%20Server.html" data-book-page-id="650">Writing an Echo Server 写个应答服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Server.html" title="Writing a Time Server 写个时间服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Server.html" data-book-page-id="651">Writing a Time Server 写个时间服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Client.html" title="Writing a Time Client 写个时间客户端" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Client.html" data-book-page-id="652">Writing a Time Client 写个时间客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" title="Dealing with a Stream-based Transport 处理一个基于流的传输" data-book-page-rel-url="Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" data-book-page-id="653">Dealing with a Stream-based Transport 处理一个基于流的传输</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" title="Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf" data-book-page-rel-url="Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" data-book-page-id="654">Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Shutting%20Down%20Your%20Application.html" title="Shutting Down Your Application 关闭你的应用" data-book-page-rel-url="Getting%20Started/Shutting%20Down%20Your%20Application.html" data-book-page-id="655">Shutting Down Your Application 关闭你的应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Summary.html" title="Summary 总结" data-book-page-rel-url="Getting%20Started/Summary.html" data-book-page-id="656">Summary 总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Architectural%20Overview.html" title="Architectural Overview 架构总览" data-book-page-rel-url="Architectural%20Overview/Architectural%20Overview.html" data-book-page-id="657">Architectural Overview 架构总览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" title="Rich Buffer Data Structure 丰富的缓冲实现" data-book-page-rel-url="Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" data-book-page-id="658">Rich Buffer Data Structure 丰富的缓冲实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" title="Universal Asynchronous I/O API 统一的异步 I/O API" data-book-page-rel-url="Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" data-book-page-id="659">Universal Asynchronous I/O API 统一的异步 I/O API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" title="Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型" data-book-page-rel-url="Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" data-book-page-id="660">Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" title="Advanced Components for More Rapid Development 适用快速开发的高级组件" data-book-page-rel-url="Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" data-book-page-id="661">Advanced Components for More Rapid Development 适用快速开发的高级组件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Summary.html" title="Summary 总结" data-book-page-rel-url="Architectural%20Overview/Summary.html" data-book-page-id="662">Summary 总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =7;var bookPageId =654;var bookPageRelUrl ='Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

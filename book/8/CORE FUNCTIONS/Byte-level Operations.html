@@ -1,0 +1,993 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>字节级别的操作-Netty 实战(精髓)(Netty in Action)</title>
+<meta content='字节级别的操作,Netty 实战(精髓),Netty in Action' name='keywords'>
+<meta content='字节级别的操作,Netty 实战(精髓),Netty in Action' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/8/CORE%20FUNCTIONS/ByteBuf%20-%20The%20byte%20data%20container.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">ByteBuf - 字..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/8/CORE%20FUNCTIONS/ByteBufHolder.html">
+<span class="">ByteBufHold..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/8/index.html">Netty 实战(精髓) (Netty in Action)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/waylau/essential-netty-in-action" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="字节级别的操作">字节级别的操作</h1>
+<p>除了基本的读写操作， ByteBuf 还提供了它所包含的数据的修改方法。</p>
+<p>###随机访问索引</p>
+<p>ByteBuf 使用zero-based 的 indexing(从0开始的索引)，第一个字节的索引是 0，最后一个字节的索引是 ByteBuf 的 capacity - 1，下面代码是遍历 ByteBuf 的所有字节：</p>
+<p>Listing 5.6 Access data</p>
+<pre><code>ByteBuf buffer = ...;
+for (int i = 0; i &lt; buffer.capacity(); i++) {
+    byte b = buffer.getByte(i);
+    System.out.println((char) b);
+}
+</code></pre>
+<p>注意通过索引访问时不会推进 readerIndex （读索引）和 writerIndex（写索引），我们可以通过 ByteBuf 的 readerIndex(index) 或 writerIndex(index) 来分别推进读索引或写索引</p>
+<p>顺序访问索引</p>
+<p>ByteBuf 提供两个指针变量支付读和写操作，读操作是使用 readerIndex()，写操作时使用 writerIndex()。这和JDK的ByteBuffer不同，ByteBuffer只有一个方法来设置索引，所以需要使用 flip() 方法来切换读和写模式。</p>
+<p>ByteBuf 一定符合：0 &lt;= readerIndex &lt;= writerIndex &lt;= capacity。</p>
+<p>Figure 5.3 ByteBuf internal segmentation</p>
+<p>![](../images/Figure 5.3 ByteBuf internal segmentation.jpg)</p>
+<p>1.字节，可以被丢弃，因为它们已经被读</p>
+<p>2.还没有被读的字节是：“readable bytes（可读字节）”</p>
+<p>3.空间可加入多个字节的是：“writeable bytes（写字节）”</p>
+<p>###可丢弃字节的字节</p>
+<p>标有“可丢弃字节”的段包含已经被读取的字节。他们可以被丢弃，通过调用discardReadBytes() 来回收空间。这个段的初始大小存储在readerIndex，为 0，当“read”操作被执行时递增（“get”操作不会移动 readerIndex）。</p>
+<p>图5.4示出了在 图5.3 中的缓冲区中调用 discardReadBytes() 所示的结果。你可以看到，在丢弃字节段的空间已变得可用写。需要注意的是不能保证对可写的段之后的内容在 discardReadBytes() 方法之后已经被调用。</p>
+<p>Figure 5.4 ByteBuf after discarding read bytes.</p>
+<p>![](../images/Figure 5.4 ByteBuf after discarding read bytes.jpg)</p>
+<p>1.字节尚未被读出（readerIndex 现在 0）。 2.可用的空间，由于空间被回收而增大。</p>
+<p>ByteBuf.discardReadBytes() 可以用来清空 ByteBuf 中已读取的数据，从而使 ByteBuf 有多余的空间容纳新的数据，但是discardReadBytes() 可能会涉及内存复制，因为它需要移动 ByteBuf 中可读的字节到开始位置，这样的操作会影响性能，一般在需要马上释放内存的时候使用收益会比较大。</p>
+<p>###可读字节</p>
+<p>ByteBuf 的“可读字节”分段存储的是实际数据。新分配，包装，或复制的缓冲区的 readerIndex 的默认值为 0 。任何操作，其名称以 "read" 或 "skip" 开头的都将检索或跳过该数据在当前 readerIndex ，并且通过读取的字节数来递增。</p>
+<p>如果所谓的读操作是一个指定 ByteBuf 参数作为写入的对象，并且没有一个目标索引参数，目标缓冲区的 writerIndex 也会增加了。例如：</p>
+<pre><code>readBytes(ByteBuf dest);
+</code></pre>
+<p>如果试图从缓冲器读取已经用尽的可读的字节，则抛出IndexOutOfBoundsException。清单5.8显示了如何读取所有可读字节。</p>
+<p>Listing 5.7 Read all data</p>
+<pre><code>//遍历缓冲区的可读字节
+ByteBuf buffer= ...;
+while (buffer.isReadable()) {
+    System.out.println(buffer.readByte());
+}
+</code></pre>
+<p>这段是未定义内容的地方，准备好写。一个新分配的缓冲区的 writerIndex 的默认值是 0 。任何操作，其名称 "write"开头的操作在当前的 writerIndex 写入数据时，递增字节写入的数量。如果写操作的目标也是 ByteBuf ，且未指定源索引，则源缓冲区的 readerIndex 将增加相同的量。例如：</p>
+<pre><code>writeBytes(ByteBuf dest);
+</code></pre>
+<p>如果试图写入超出目标的容量，则抛出 IndexOutOfBoundException。</p>
+<p>下面的例子展示了填充随机整数到缓冲区中，直到耗尽空间。该方法writableBytes() 被用在这里确定是否存在足够的缓冲空间。</p>
+<p>Listing 5.8 Write data</p>
+<pre><code>//填充随机整数到缓冲区中
+ByteBuf buffer = ...;
+while (buffer.writableBytes() &gt;= 4) {
+    buffer.writeInt(random.nextInt());
+}
+</code></pre>
+<p>###索引管理</p>
+<p>在 JDK 的 InputStream 定义了 mark(int readlimit) 和 reset()方法。这些是分别用来标记流中的当前位置和复位流到该位置。</p>
+<p>同样，您可以设置和重新定位ByteBuf readerIndex 和 writerIndex 通过调用 markReaderIndex(), markWriterIndex(), resetReaderIndex() 和 resetWriterIndex()。这些类似于InputStream 的调用，所不同的是，没有 readlimit 参数来指定当标志变为无效。</p>
+<p>您也可以通过调用 readerIndex(int) 或 writerIndex(int) 将指标移动到指定的位置。在尝试任何无效位置上设置一个索引将导致 IndexOutOfBoundsException 异常。</p>
+<p>调用 clear() 可以同时设置 readerIndex 和 writerIndex 为 0。注意，这不会清除内存中的内容。让我们看看它是如何工作的。 （图5.5图重复5.3 ）</p>
+<p>Figure 5.5 Before clear() is called</p>
+<p>![](../images/Figure 5.5 Before clear is called.jpg)</p>
+<p>调用之前，包含3个段，下面显示了调用之后</p>
+<p>Figure 5.6 After clear() is called</p>
+<p>![](../images/Figure 5.6 After clear is called.jpg)</p>
+<p>现在 整个 ByteBuf 空间都是可写的了。</p>
+<p>clear() 比 discardReadBytes() 更低成本，因为他只是重置了索引，而没有内存拷贝。</p>
+<p>###查询操作</p>
+<p>有几种方法，以确定在所述缓冲器中的指定值的索引。最简单的是使用 indexOf() 方法。更复杂的搜索执行以 ByteBufProcessor 为参数的方法。这个接口定义了一个方法，boolean process(byte value)，它用来报告输入值是否是一个正在寻求的值。</p>
+<p>ByteBufProcessor 定义了很多方便实现共同目标值。例如，假设您的应用程序需要集成所谓的“<a href="http://help.adobe.com/en_US/as3/dev/WSb2ba3b1aad8a27b0-181c51321220efd9d1c-8000.html">Flash sockets</a>”，将使用 NULL 结尾的内容。调用</p>
+<pre><code>forEachByte（ByteBufProcessor.FIND_NUL）
+</code></pre>
+<p>通过减少的，因为少量的 “边界检查”的处理过程中执行了，从而使 消耗 Flash 数据变得 编码工作量更少、效率更高。</p>
+<p>下面例子展示了寻找一个回车符，<code>\ r</code>的一个例子。</p>
+<p>Listing 5.9 Using ByteBufProcessor to find <code>\r</code></p>
+<pre><code>ByteBuf buffer = ...;
+int index = buffer.forEachByte(ByteBufProcessor.FIND_CR);
+</code></pre>
+<p>###衍生的缓冲区</p>
+<p>“衍生的缓冲区”是代表一个专门的展示 ByteBuf 内容的“视图”。这种视图是由 duplicate(), slice(), slice(int, int),readOnly(), 和 order(ByteOrder) 方法创建的。所有这些都返回一个新的 ByteBuf 实例包括它自己的 reader, writer 和标记索引。然而，内部数据存储共享就像在一个 NIO 的 ByteBuffer。这使得衍生的缓冲区创建、修改其 内容，以及修改其“源”实例更廉价。</p>
+<p><em>ByteBuf 拷贝</em></p>
+<p><em>如果需要已有的缓冲区的全新副本，使用 copy() 或者 copy(int, int)。不同于派生缓冲区，这个调用返回的 ByteBuf 有数据的独立副本。</em></p>
+<p>若需要操作某段数据，使用 slice(int, int)，下面展示了用法：</p>
+<p>Listing 5.10 Slice a ByteBuf</p>
+<pre><code>Charset utf8 = Charset.forName("UTF-8");
+ByteBuf buf = Unpooled.copiedBuffer("Netty in Action rocks!", utf8); //1
+
+ByteBuf sliced = buf.slice(0, 14);          //2
+System.out.println(sliced.toString(utf8));  //3
+
+buf.setByte(0, (byte) 'J');                 //4
+assert buf.getByte(0) == sliced.getByte(0);
+</code></pre>
+<p>1.创建一个 ByteBuf 保存特定字节串。</p>
+<p>2.创建从索引 0 开始，并在 14 结束的 ByteBuf 的新 slice。</p>
+<p>3.打印 Netty in Action</p>
+<p>4.更新索引 0 的字节。</p>
+<p>5.断言成功，因为数据是共享的，并以一个地方所做的修改将在其他地方可见。</p>
+<p>下面看下如何将一个 ByteBuf 段的副本不同于 slice。</p>
+<p>Listing 5.11 Copying a ByteBuf</p>
+<pre><code>Charset utf8 = Charset.forName("UTF-8");
+ByteBuf buf = Unpooled.copiedBuffer("Netty in Action rocks!", utf8);     //1
+
+ByteBuf copy = buf.copy(0, 14);               //2
+System.out.println(copy.toString(utf8));      //3
+
+buf.setByte(0, (byte) 'J');                   //4
+assert buf.getByte(0) != copy.getByte(0);
+</code></pre>
+<p>1.创建一个 ByteBuf 保存特定字节串。</p>
+<p>2.创建从索引0开始和 14 结束 的 ByteBuf 的段的拷贝。</p>
+<p>3.打印 Netty in Action</p>
+<p>4.更新索引 0 的字节。</p>
+<p>5.断言成功，因为数据不是共享的，并以一个地方所做的修改将不影响其他。</p>
+<p>代码几乎是相同的，但所 衍生的 ByteBuf 效果是不同的。因此，使用一个 slice 可以尽可能避免复制内存。</p>
+<p>###读/写操作</p>
+<p>读/写操作主要由2类：</p>
+<ul>
+<li>gget()/set() 操作从给定的索引开始，保持不变</li>
+<li>read()/write() 操作从给定的索引开始，与字节访问的数量来适用，递增当前的写索引或读索引</li>
+</ul>
+<p>ByteBuf 的各种读写方法或其他一些检查方法可以看 ByteBuf 的 API，下面是常见的 get() 操作：</p>
+<p>Table 5.1 get() operations</p>
+<table>
+<thead>
+<tr>
+<th>方法名称</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>getBoolean(int)</td>
+<td>返回当前索引的 Boolean 值</td>
+</tr>
+<tr>
+<td>getByte(int) getUnsignedByte(int)</td>
+<td>返回当前索引的(无符号)字节</td>
+</tr>
+<tr>
+<td>getMedium(int) getUnsignedMedium(int)</td>
+<td>返回当前索引的 (无符号) 24-bit 中间值</td>
+</tr>
+<tr>
+<td>getInt(int) getUnsignedInt(int)</td>
+<td>返回当前索引的(无符号) 整型</td>
+</tr>
+<tr>
+<td>getLong(int) getUnsignedLong(int)</td>
+<td>返回当前索引的 (无符号) Long 型</td>
+</tr>
+<tr>
+<td>getShort(int) getUnsignedShort(int)</td>
+<td>返回当前索引的 (无符号) Short 型</td>
+</tr>
+<tr>
+<td>getBytes(int, ...)</td>
+<td>字节</td>
+</tr>
+</tbody>
+</table>
+<p>常见 set() 操作如下</p>
+<p>Table 5.2 set() operations</p>
+<table>
+<thead>
+<tr>
+<th>方法名称</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>setBoolean(int, boolean)</td>
+<td>在指定的索引位置设置 Boolean 值</td>
+</tr>
+<tr>
+<td>setByte(int, int)</td>
+<td>在指定的索引位置设置 byte 值</td>
+</tr>
+<tr>
+<td>setMedium(int, int)</td>
+<td>在指定的索引位置设置 24-bit 中间 值</td>
+</tr>
+<tr>
+<td>setInt(int, int)</td>
+<td>在指定的索引位置设置 int 值</td>
+</tr>
+<tr>
+<td>setLong(int, long)</td>
+<td>在指定的索引位置设置 long 值</td>
+</tr>
+<tr>
+<td>setShort(int, int)</td>
+<td>在指定的索引位置设置 short 值</td>
+</tr>
+</tbody>
+</table>
+<p>下面是用法：</p>
+<p>Listing 5.12 get() and set() usage</p>
+<pre><code>Charset utf8 = Charset.forName("UTF-8");
+ByteBuf buf = Unpooled.copiedBuffer("Netty in Action rocks!", utf8);	//1
+System.out.println((char)buf.getByte(0));					//2
+
+int readerIndex = buf.readerIndex();						//3
+int writerIndex = buf.writerIndex();
+
+buf.setByte(0, (byte)'B');							//4
+
+System.out.println((char)buf.getByte(0));					//5
+assert readerIndex == buf.readerIndex();					//6
+assert writerIndex ==  buf.writerIndex();
+</code></pre>
+<p>1.创建一个新的 ByteBuf 给指定 String 保存字节</p>
+<p>2.打印的第一个字符，<code>N</code></p>
+<p>3.存储当前 readerIndex 和 writerIndex</p>
+<p>4.更新索引 0 的字符<code>B</code></p>
+<p>5.打印出的第一个字符，现在<code>B</code></p>
+<p>6.这些断言成功，因为这些操作永远不会改变索引</p>
+<p>现在，让我们来看看 read() 操作，对当前 readerIndex 或 writerIndex 进行操作。这些用于从 ByteBuf 读取就好像它是一个流。 （对应的　write() 操作用于“追加”到　ByteBuf　）。下面展示了常见的　 read() 方法。</p>
+<p>Table 5.3 read() operations</p>
+<table>
+<thead>
+<tr>
+<th>方法名称</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>readBoolean()　</td>
+<td>　Reads the Boolean value at the current readerIndex and increases the readerIndex by 1.</td>
+</tr>
+<tr>
+<td>readByte()　readUnsignedByte()　</td>
+<td>Reads the (unsigned) byte value at the current readerIndex and increases　the readerIndex by 1.</td>
+</tr>
+<tr>
+<td>readMedium()　readUnsignedMedium()　</td>
+<td>Reads the (unsigned) 24-bit medium value at the current readerIndex and　increases the readerIndex by 3.</td>
+</tr>
+<tr>
+<td>readInt()　readUnsignedInt()</td>
+<td>　Reads the (unsigned) int value at the current readerIndex and increases　the readerIndex by 4.</td>
+</tr>
+<tr>
+<td>readLong()　readUnsignedLong()　</td>
+<td>　Reads the (unsigned) int value at the current readerIndex and increases　the readerIndex by 8.</td>
+</tr>
+<tr>
+<td>readShort()　readUnsignedShort()　</td>
+<td>Reads the (unsigned) int value at the current readerIndex and increases　the readerIndex by 2.</td>
+</tr>
+<tr>
+<td>readBytes(int,int, ...)</td>
+<td>Reads the value on the current readerIndex for the given length into the　given object. Also increases the readerIndex by the length.</td>
+</tr>
+</tbody>
+</table>
+<p>每个　read() 方法都对应一个　write()。</p>
+<p>Table 5.4 Write operations</p>
+<table>
+<thead>
+<tr>
+<th>方法名称</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>writeBoolean(boolean)</td>
+<td>　Writes the Boolean value on the current writerIndex and increases the　writerIndex by 1.</td>
+</tr>
+<tr>
+<td>writeByte(int)</td>
+<td>　Writes the byte value on the current writerIndex and increases the　writerIndex by 1.</td>
+</tr>
+<tr>
+<td>writeMedium(int)</td>
+<td>　Writes the medium value on the current writerIndex and increases the　writerIndex by 3.</td>
+</tr>
+<tr>
+<td>writeInt(int)</td>
+<td>　Writes the int value on the current writerIndex and increases the　writerIndex by 4.</td>
+</tr>
+<tr>
+<td>writeLong(long)</td>
+<td>　Writes the long value on the current writerIndex and increases the　writerIndex by 8.</td>
+</tr>
+<tr>
+<td>writeShort(int)</td>
+<td>　Writes the short value on the current writerIndex and increases thewriterIndex by 2.</td>
+</tr>
+<tr>
+<td>writeBytes(int，...）</td>
+<td>　Transfers the bytes on the current writerIndex from given resources.</td>
+</tr>
+</tbody>
+</table>
+<p>Listing 5.13 read()/write() operations on the ByteBuf</p>
+<pre><code>Charset utf8 = Charset.forName("UTF-8");
+ByteBuf buf = Unpooled.copiedBuffer("Netty in Action rocks!", utf8);	//1
+System.out.println((char)buf.readByte());					//2
+
+int readerIndex = buf.readerIndex();						//3
+int writerIndex = buf.writerIndex();						//4
+
+buf.writeByte((byte)'?');							//5
+
+assert readerIndex == buf.readerIndex();
+assert writerIndex != buf.writerIndex();
+</code></pre>
+<p>1.创建一个新的 ByteBuf 保存给定 String 的字节。</p>
+<p>2.打印的第一个字符，<code>N</code></p>
+<p>3.存储当前的 readerIndex</p>
+<p>4.保存当前的 writerIndex</p>
+<p>5.更新索引0的字符 <code>B</code></p>
+<p>6.此断言成功，因为 writeByte() 在 5 移动了 writerIndex</p>
+<p>###更多操作</p>
+<p>Table 5.5 Other useful operations</p>
+<table>
+<thead>
+<tr>
+<th>方法名称</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>isReadable()</td>
+<td>Returns true if at least one byte can be read.</td>
+</tr>
+<tr>
+<td>isWritable()</td>
+<td>Returns true if at least one byte can be written.</td>
+</tr>
+<tr>
+<td>readableBytes()</td>
+<td>Returns the number of bytes that can be read.</td>
+</tr>
+<tr>
+<td>writablesBytes()</td>
+<td>Returns the number of bytes that can be written.</td>
+</tr>
+<tr>
+<td>capacity()</td>
+<td>Returns the number of bytes that the ByteBuf can hold. After this it will try to expand again until maxCapacity() is reached.</td>
+</tr>
+<tr>
+<td>maxCapacity()</td>
+<td>Returns the maximum number of bytes the ByteBuf can hold.</td>
+</tr>
+<tr>
+<td>hasArray()</td>
+<td>Returns true if the ByteBuf is backed by a byte array.</td>
+</tr>
+<tr>
+<td>array()</td>
+<td>Returns the byte array if the ByteBuf is backed by a byte array, otherwise throws an</td>
+</tr>
+</tbody>
+</table>
+<p>UnsupportedOperationException.</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/7/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/7/index.html">Netty 4.x 用户指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1131个">1131</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/32/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/32/index.html">浅入浅出 Android 安全</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 59个">59</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/41/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/41/index.html">Android官方培訓課程中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">294页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/63/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/photoshop_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/63/index.html">Web前端写给Web设计师的注意事项</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/39.html">onface</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="photoshop">photoshop</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 116个">116</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/8/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="开始" disabled data-book-page-rel-url="" data-book-page-id="663">开始</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Asynchronous%20and%20Event%20Driven.html" title="Netty-异步和数据驱动" data-book-page-rel-url="GETTING%20STARTED/Asynchronous%20and%20Event%20Driven.html" data-book-page-id="664">Netty-异步和数据驱动</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Introducing%20Netty.html" title="Netty 介绍" data-book-page-rel-url="GETTING%20STARTED/Introducing%20Netty.html" data-book-page-id="665">Netty 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Building%20Blocks.html" title="构成部分" data-book-page-rel-url="GETTING%20STARTED/Building%20Blocks.html" data-book-page-id="666">构成部分</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/About%20this%20Book.html" title="关于本书" data-book-page-rel-url="GETTING%20STARTED/About%20this%20Book.html" data-book-page-id="667">关于本书</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Your%20first%20Netty%20application.html" title="第一个 Netty 应用" data-book-page-rel-url="GETTING%20STARTED/Your%20first%20Netty%20application.html" data-book-page-id="668">第一个 Netty 应用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Setting%20up%20the%20development%20environment.html" title="设置开发环境" data-book-page-rel-url="GETTING%20STARTED/Setting%20up%20the%20development%20environment.html" data-book-page-id="669">设置开发环境</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Netty%20client%20%20server%20overview.html" title="Netty 客户端/服务端 总览" data-book-page-rel-url="GETTING%20STARTED/Netty%20client%20%20server%20overview.html" data-book-page-id="670">Netty 客户端/服务端 总览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Writing%20the%20echo%20server.html" title="写一个 echo 服务器" data-book-page-rel-url="GETTING%20STARTED/Writing%20the%20echo%20server.html" data-book-page-id="671">写一个 echo 服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Writing%20an%20echo%20client.html" title="写一个 echo 客户端" data-book-page-rel-url="GETTING%20STARTED/Writing%20an%20echo%20client.html" data-book-page-id="672">写一个 echo 客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Building%20and%20running%20the%20Echo%20Server%20and%20Client.html" title="编译和运行 Echo 服务器和客户端" data-book-page-rel-url="GETTING%20STARTED/Building%20and%20running%20the%20Echo%20Server%20and%20Client.html" data-book-page-id="673">编译和运行 Echo 服务器和客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Summary.html" title="总结" data-book-page-rel-url="GETTING%20STARTED/Summary.html" data-book-page-id="674">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Netty%20Overview.html" title="Netty 总览" data-book-page-rel-url="GETTING%20STARTED/Netty%20Overview.html" data-book-page-id="675">Netty 总览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Netty%20Crash%20Course.html" title="Netty 快速入门" data-book-page-rel-url="GETTING%20STARTED/Netty%20Crash%20Course.html" data-book-page-id="676">Netty 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/Channels,%20Events%20and%20IO.html" title="Channel, Event 和 I/O" data-book-page-rel-url="GETTING%20STARTED/Channels,%20Events%20and%20IO.html" data-book-page-id="677">Channel, Event 和 I/O</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/The%20What%20and%20Why%20of%20Bootstrapping.html" title="什么是 Bootstrapping 为什么要用" data-book-page-rel-url="GETTING%20STARTED/The%20What%20and%20Why%20of%20Bootstrapping.html" data-book-page-id="678">什么是 Bootstrapping 为什么要用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/ChannelHandler%20and%20ChannelPipeline.html" title="ChannelHandler 和 ChannelPipeline" data-book-page-rel-url="GETTING%20STARTED/ChannelHandler%20and%20ChannelPipeline.html" data-book-page-id="679">ChannelHandler 和 ChannelPipeline</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/A%20Closer%20Look%20at%20ChannelHandlers.html" title="近距离观察 ChannelHandler" data-book-page-rel-url="GETTING%20STARTED/A%20Closer%20Look%20at%20ChannelHandlers.html" data-book-page-id="680">近距离观察 ChannelHandler</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/GETTING%20STARTED/3.6%20%20Summary.html" title="总结" data-book-page-rel-url="GETTING%20STARTED/3.6%20%20Summary.html" data-book-page-id="681">总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="核心功能" disabled data-book-page-rel-url="" data-book-page-id="682">核心功能</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Transports.html" title="Transport（传输）" data-book-page-rel-url="CORE%20FUNCTIONS/Transports.html" data-book-page-id="683">Transport（传输）</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Case%20study%20transport%20migration.html" title="案例研究:Transport 的迁移" data-book-page-rel-url="CORE%20FUNCTIONS/Case%20study%20transport%20migration.html" data-book-page-id="684">案例研究:Transport 的迁移</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Transport%20API.html" title="Transport API" data-book-page-rel-url="CORE%20FUNCTIONS/Transport%20API.html" data-book-page-id="685">Transport API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Included%20transports.html" title="包含的 Transport" data-book-page-rel-url="CORE%20FUNCTIONS/Included%20transports.html" data-book-page-id="686">包含的 Transport</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Transport%20Use%20Cases.html" title="Transport 使用情况" data-book-page-rel-url="CORE%20FUNCTIONS/Transport%20Use%20Cases.html" data-book-page-id="687">Transport 使用情况</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/4.5%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/4.5%20%20Summary.html" data-book-page-id="688">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Buffers.html" title="Buffer（缓冲）" data-book-page-rel-url="CORE%20FUNCTIONS/Buffers.html" data-book-page-id="689">Buffer（缓冲）</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Buffer%20API.html" title="Buffer API" data-book-page-rel-url="CORE%20FUNCTIONS/Buffer%20API.html" data-book-page-id="690">Buffer API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ByteBuf%20-%20The%20byte%20data%20container.html" title="ByteBuf - 字节数据的容器" data-book-page-rel-url="CORE%20FUNCTIONS/ByteBuf%20-%20The%20byte%20data%20container.html" data-book-page-id="691">ByteBuf - 字节数据的容器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Byte-level%20Operations.html" title="字节级别的操作" data-book-page-rel-url="CORE%20FUNCTIONS/Byte-level%20Operations.html" data-book-page-id="692">字节级别的操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ByteBufHolder.html" title="ByteBufHolder" data-book-page-rel-url="CORE%20FUNCTIONS/ByteBufHolder.html" data-book-page-id="693">ByteBufHolder</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ByteBuf%20allocation.html" title="ByteBuf 分配" data-book-page-rel-url="CORE%20FUNCTIONS/ByteBuf%20allocation.html" data-book-page-id="694">ByteBuf 分配</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Reference%20counting.html" title="引用计数器" data-book-page-rel-url="CORE%20FUNCTIONS/Reference%20counting.html" data-book-page-id="695">引用计数器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/5.7%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/5.7%20%20Summary.html" data-book-page-id="696">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ChannelHandler%20and%20ChannelPipeline.html" title="ChannelHandler 和 ChannelPipeline" data-book-page-rel-url="CORE%20FUNCTIONS/ChannelHandler%20and%20ChannelPipeline.html" data-book-page-id="697">ChannelHandler 和 ChannelPipeline</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/The%20ChannelHandler%20Family.html" title="ChannelHandler 家族" data-book-page-rel-url="CORE%20FUNCTIONS/The%20ChannelHandler%20Family.html" data-book-page-id="698">ChannelHandler 家族</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ChannelPipeline.html" title="ChannelPipeline" data-book-page-rel-url="CORE%20FUNCTIONS/ChannelPipeline.html" data-book-page-id="699">ChannelPipeline</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/ChannelHandlerContext.html" title="ChannelHandlerContext" data-book-page-rel-url="CORE%20FUNCTIONS/ChannelHandlerContext.html" data-book-page-id="700">ChannelHandlerContext</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/6.4%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/6.4%20%20Summary.html" data-book-page-id="701">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/The%20Codec%20Framework.html" title="Codec 框架" data-book-page-rel-url="CORE%20FUNCTIONS/The%20Codec%20Framework.html" data-book-page-id="702">Codec 框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/What%20is%20a%20Codec.html" title="什么是 Codec" data-book-page-rel-url="CORE%20FUNCTIONS/What%20is%20a%20Codec.html" data-book-page-id="703">什么是 Codec</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Decoders.html" title="Decoder(解码器)" data-book-page-rel-url="CORE%20FUNCTIONS/Decoders.html" data-book-page-id="704">Decoder(解码器)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Encoders.html" title="Encoder(编码器)" data-book-page-rel-url="CORE%20FUNCTIONS/Encoders.html" data-book-page-id="705">Encoder(编码器)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Abstract%20Codec%20classes.html" title="抽象 Codec(编解码器)类" data-book-page-rel-url="CORE%20FUNCTIONS/Abstract%20Codec%20classes.html" data-book-page-id="706">抽象 Codec(编解码器)类</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/7.5%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/7.5%20%20Summary.html" data-book-page-id="707">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Provided%20ChannelHandlers%20and%20Codecs.html" title="提供了的 ChannelHandler 和 Codec" data-book-page-rel-url="CORE%20FUNCTIONS/Provided%20ChannelHandlers%20and%20Codecs.html" data-book-page-id="708">提供了的 ChannelHandler 和 Codec</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Securing%20Netty%20applications%20with%20SSLTLS.html" title="使用 SSL/TLS 加密 Netty 程序" data-book-page-rel-url="CORE%20FUNCTIONS/Securing%20Netty%20applications%20with%20SSLTLS.html" data-book-page-id="709">使用 SSL/TLS 加密 Netty 程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Building%20Netty%20HTTPHTTPS%20applications.html" title="构建 Netty HTTP/HTTPS 应用" data-book-page-rel-url="CORE%20FUNCTIONS/Building%20Netty%20HTTPHTTPS%20applications.html" data-book-page-id="710">构建 Netty HTTP/HTTPS 应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Idle%20connections%20and%20Timeouts.html" title="空闲连接以及超时" data-book-page-rel-url="CORE%20FUNCTIONS/Idle%20connections%20and%20Timeouts.html" data-book-page-id="711">空闲连接以及超时</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Decoding%20delimited%20and%20length-based%20protocols.html" title="解码分隔符和基于长度的协议" data-book-page-rel-url="CORE%20FUNCTIONS/Decoding%20delimited%20and%20length-based%20protocols.html" data-book-page-id="712">解码分隔符和基于长度的协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Writing%20big%20data.html" title="编写大型数据" data-book-page-rel-url="CORE%20FUNCTIONS/Writing%20big%20data.html" data-book-page-id="713">编写大型数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Serializing%20data.html" title="序列化数据" data-book-page-rel-url="CORE%20FUNCTIONS/Serializing%20data.html" data-book-page-id="714">序列化数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/8.7%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/8.7%20%20Summary.html" data-book-page-id="715">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Bootstrapping.html" title="引导" data-book-page-rel-url="CORE%20FUNCTIONS/Bootstrapping.html" data-book-page-id="716">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Bootstrap%20types.html" title="Bootstrap 类型" data-book-page-rel-url="CORE%20FUNCTIONS/Bootstrap%20types.html" data-book-page-id="717">Bootstrap 类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Bootstrapping%20clients%20and%20connectionless%20protocols.html" title="引导客户端和无连接协议" data-book-page-rel-url="CORE%20FUNCTIONS/Bootstrapping%20clients%20and%20connectionless%20protocols.html" data-book-page-id="718">引导客户端和无连接协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Bootstrapping%20servers.html" title="引导服务器" data-book-page-rel-url="CORE%20FUNCTIONS/Bootstrapping%20servers.html" data-book-page-id="719">引导服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Bootstrapping%20clients%20from%20a%20Channel.html" title="从 Channel 引导客户端" data-book-page-rel-url="CORE%20FUNCTIONS/Bootstrapping%20clients%20from%20a%20Channel.html" data-book-page-id="720">从 Channel 引导客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Adding%20multiple%20ChannelHandlers%20during%20a%20bootstrap.html" title="在一个引导中添加多个 ChannelHandler" data-book-page-rel-url="CORE%20FUNCTIONS/Adding%20multiple%20ChannelHandlers%20during%20a%20bootstrap.html" data-book-page-id="721">在一个引导中添加多个 ChannelHandler</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Using%20Netty%20ChannelOptions%20and%20Attributes.html" title="使用Netty 的 ChannelOption 和属性" data-book-page-rel-url="CORE%20FUNCTIONS/Using%20Netty%20ChannelOptions%20and%20Attributes.html" data-book-page-id="722">使用Netty 的 ChannelOption 和属性</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/Shutting%20down%20a%20previously%20bootstrapped%20Client%20or%20Server.html" title="关闭之前已经引导的客户端或服务器" data-book-page-rel-url="CORE%20FUNCTIONS/Shutting%20down%20a%20previously%20bootstrapped%20Client%20or%20Server.html" data-book-page-id="723">关闭之前已经引导的客户端或服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/CORE%20FUNCTIONS/9.9%20%20Summary.html" title="总结" data-book-page-rel-url="CORE%20FUNCTIONS/9.9%20%20Summary.html" data-book-page-id="724">总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="NETTY 实例" disabled data-book-page-rel-url="" data-book-page-id="725">NETTY 实例</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Unit%20Testing.html" title="单元测试" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Unit%20Testing.html" data-book-page-id="726">单元测试</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Overview.html" title="总览" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Overview.html" data-book-page-id="727">总览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Testing%20ChannelHandler.html" title="测试 ChannelHandler" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Testing%20ChannelHandler.html" data-book-page-id="728">测试 ChannelHandler</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Testing%20exception%20handling.html" title="测试异常处理" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Testing%20exception%20handling.html" data-book-page-id="729">测试异常处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/10.4%20Summary.html" title="总结" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/10.4%20Summary.html" data-book-page-id="730">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/WebSockets.html" title="WebSocket" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/WebSockets.html" data-book-page-id="731">WebSocket</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/The%20example%20WebSockets%20application.html" title="WebSocket 程序示例" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/The%20example%20WebSockets%20application.html" data-book-page-id="732">WebSocket 程序示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Adding%20WebSockets%20support.html" title="添加 WebSocket 支持" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Adding%20WebSockets%20support.html" data-book-page-id="733">添加 WebSocket 支持</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Testing%20the%20Application.html" title="测试程序" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Testing%20the%20Application.html" data-book-page-id="734">测试程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/11.4%20Summary.html" title="总结" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/11.4%20Summary.html" data-book-page-id="735">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/SPDY.html" title="SPDY" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/SPDY.html" data-book-page-id="736">SPDY</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/SPDY%20background.html" title="SPDY 背景" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/SPDY%20background.html" data-book-page-id="737">SPDY 背景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/The%20sample%20application.html" title="示例程序" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/The%20sample%20application.html" data-book-page-id="738">示例程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Implementation.html" title="实现" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Implementation.html" data-book-page-id="739">实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Start%20the%20SpdyServer%20and%20test%20it.html" title="启动 SpdyServer 并测试" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Start%20the%20SpdyServer%20and%20test%20it.html" data-book-page-id="740">启动 SpdyServer 并测试</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/12.5%20Summary.html" title="总结" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/12.5%20Summary.html" data-book-page-id="741">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Broadcasting%20events%20with%20UDP.html" title="通过 UDP 广播事件" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Broadcasting%20events%20with%20UDP.html" data-book-page-id="742">通过 UDP 广播事件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/UDP%20Basics.html" title="UDP 基础" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/UDP%20Basics.html" data-book-page-id="743">UDP 基础</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/UDP%20Broadcast.html" title="UDP 广播" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/UDP%20Broadcast.html" data-book-page-id="744">UDP 广播</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/The%20UDP%20Sample%20Application.html" title="UDP 示例" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/The%20UDP%20Sample%20Application.html" data-book-page-id="745">UDP 示例</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/EventLog%20POJOs.html" title="EventLog 的 POJO" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/EventLog%20POJOs.html" data-book-page-id="746">EventLog 的 POJO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Writing%20the%20broadcaster.html" title="写广播器" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Writing%20the%20broadcaster.html" data-book-page-id="747">写广播器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Writing%20the%20monitor.html" title="写监视器" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Writing%20the%20monitor.html" data-book-page-id="748">写监视器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/Running%20the%20LogEventBroadcaster%20and%20LogEventMonitor.html" title="运行 LogEventBroadcaster 和 LogEventMonitor" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/Running%20the%20LogEventBroadcaster%20and%20LogEventMonitor.html" data-book-page-id="749">运行 LogEventBroadcaster 和 LogEventMonitor</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/NETTY%20BY%20EXAMPLE/13.8%20Summary.html" title="总结" data-book-page-rel-url="NETTY%20BY%20EXAMPLE/13.8%20Summary.html" data-book-page-id="750">总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="高级主题" disabled data-book-page-rel-url="" data-book-page-id="751">高级主题</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Implement%20a%20custom%20codec.html" title="实现自定义的编解码器" data-book-page-rel-url="ADVANCED%20TOPICS/Implement%20a%20custom%20codec.html" data-book-page-id="752">实现自定义的编解码器</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Scope%20of%20the%20codec.html" title="编解码器的范围" data-book-page-rel-url="ADVANCED%20TOPICS/Scope%20of%20the%20codec.html" data-book-page-id="753">编解码器的范围</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Implementing%20the%20Memcached%20codec.html" title="实现 Memcached 编解码器" data-book-page-rel-url="ADVANCED%20TOPICS/Implementing%20the%20Memcached%20codec.html" data-book-page-id="754">实现 Memcached 编解码器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Getting%20to%20know%20the%20Memcached%20binary%20protocol.html" title="了解 Memcached 二进制协议" data-book-page-rel-url="ADVANCED%20TOPICS/Getting%20to%20know%20the%20Memcached%20binary%20protocol.html" data-book-page-id="755">了解 Memcached 二进制协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Netty%20encoders%20and%20decoders.html" title="Netty 编码器和解码器" data-book-page-rel-url="ADVANCED%20TOPICS/Netty%20encoders%20and%20decoders.html" data-book-page-id="756">Netty 编码器和解码器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Testing%20the%20codec.html" title="测试编解码器" data-book-page-rel-url="ADVANCED%20TOPICS/Testing%20the%20codec.html" data-book-page-id="757">测试编解码器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/14.6%20Summary.html" title="总结" data-book-page-rel-url="ADVANCED%20TOPICS/14.6%20Summary.html" data-book-page-id="758">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/EventLoop%20and%20thread%20model.html" title="EventLoop 和线程模型" data-book-page-rel-url="ADVANCED%20TOPICS/EventLoop%20and%20thread%20model.html" data-book-page-id="759">EventLoop 和线程模型</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Thread%20model%20overview.html" title="线程模型的总览" data-book-page-rel-url="ADVANCED%20TOPICS/Thread%20model%20overview.html" data-book-page-id="760">线程模型的总览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/The%20EventLoop.html" title="EventLoop" data-book-page-rel-url="ADVANCED%20TOPICS/The%20EventLoop.html" data-book-page-id="761">EventLoop</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Scheduling%20tasks%20for%20later%20execution.html" title="EventLoop" data-book-page-rel-url="ADVANCED%20TOPICS/Scheduling%20tasks%20for%20later%20execution.html" data-book-page-id="762">EventLoop</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/IO%20EventLoop%20Thread%20allocation%20in%20detail.html" title="I/O EventLoop/Thread 分配细节" data-book-page-rel-url="ADVANCED%20TOPICS/IO%20EventLoop%20Thread%20allocation%20in%20detail.html" data-book-page-id="763">I/O EventLoop/Thread 分配细节</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/15.6%20Summary.html" title="总结" data-book-page-rel-url="ADVANCED%20TOPICS/15.6%20Summary.html" data-book-page-id="764">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Droplr%20Firebase%20and%20Urban%20Airship.html" title="用例1：Droplr Firebase 和 Urban Airship" data-book-page-rel-url="ADVANCED%20TOPICS/Droplr%20Firebase%20and%20Urban%20Airship.html" data-book-page-id="765">用例1：Droplr Firebase 和 Urban Airship</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/8/ADVANCED%20TOPICS/Facebook%20and%20Twitter.html" title="用例2：Facebook 和 Twitter" data-book-page-rel-url="ADVANCED%20TOPICS/Facebook%20and%20Twitter.html" data-book-page-id="766">用例2：Facebook 和 Twitter</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =8;var bookPageId =692;var bookPageRelUrl ='CORE%20FUNCTIONS/Byte-level%20Operations.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

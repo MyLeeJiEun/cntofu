@@ -1,0 +1,1504 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>優化多核處理器(SMP)下的Android程序-Android官方培訓課程中文版(Android Training Course in Chinese)</title>
+<meta content='優化多核處理器(SMP)下的Android程序,Android官方培訓課程中文版,Android Training Course in Chinese' name='keywords'>
+<meta content='優化多核處理器(SMP)下的Android程序,Android官方培訓課程中文版,Android Training Course in Chinese' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/41/performance/perf-jni/index.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">JNI使用指南</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/41/best-security.html">
+<span class="">Android安全與隱私</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/41/index.html">Android官方培訓課程中文版 (Android Training Course in Chinese)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/jasonblog/android-training-course-in-chinese" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="smpsymmetric-multi-processor-primer-for-android">SMP(Symmetric Multi-Processor) Primer for Android</h1>
+<blockquote>
+<p>編寫:<a href="https://github.com/kesenhoo">kesenhoo</a> - 原文:<a href="http://developer.android.com/training/articles/smp.html">http://developer.android.com/training/articles/smp.html</a></p>
+</blockquote>
+<p>從Android 3.0開始，系統針對多核CPU架構的機器做了優化支持。這份文檔介紹了針對多核系統應該如何編寫C，C++以及Java程序。這裡只是作為Android應用開發者的入門教程，並不會深入討論這個話題，並且我們會把討論範圍集中在ARM架構的CPU上。</p>
+<p>如果你並沒有時間學習整篇文章，你可以跳過前面的理論部分，直接查看實踐部分。但是我們並不建議這樣做。</p>
+<h2 id="0簡要介紹">0)簡要介紹</h2>
+<p><strong>SMP</strong> 的全稱是“<strong>Symmetric Multi-Processor</strong>”。 它表示的是一種雙核或者多核CPU的設計架構。在幾年前，所有的Android設備都還是單核的。</p>
+<p>大多數的Android設備已經有了多個CPU，但是通常來說，其中一個CPU負責執行程序，其他的CPU則處理設備硬件的相關事務（例如，音頻）。這些CPU可能有著不同的架構，運行在上面的程序無法在內存中彼此進行溝通交互。</p>
+<p>目前大多數售賣的Android設備都是SMP架構的，這使得軟件開發者處理問題更加複雜。對於多線程的程序，如果多個線程執行在不同的內核上，這會使得程序更加容易發生<strong>race conditions</strong>。 更糟糕的是，基於ARM架構的SMP比起x86架構來說，更加複雜，更難進行處理。那些在x86上測試通過的程序可能會在ARM上崩潰。</p>
+<p>下面我們會介紹為何會這樣以及如何做才能夠使得你的代碼行為正常。</p>
+<h2 id="1理論篇">1)理論篇</h2>
+<p>這裡會快速並且簡要的介紹這個複雜的主題。其中一些部分並不完整，但是並沒有出現錯誤或者誤導。</p>
+<p>查看文章末尾的<a href=""><strong>進一步閱讀</strong></a>可以瞭解這個主題的更多知識。</p>
+<h3 id="11內存一致性模型memory-consistency-models">1.1)內存一致性模型(Memory consistency models)</h3>
+<p>內存一致性模型(Memory consistency models)通常也被叫做“memory models”，描述了硬件架構如何確保內存訪問的一致性。例如，如果你對地址A進行了一個賦值，然後對地址B也進行了賦值，那麼內存一致性模型就需要確保每一個CPU都需要知道剛才的操作賦值與操作順序。</p>
+<p>這個模型通常被程序員稱為：<strong>順序一致性(sequential consistency)</strong>, 請從文章末尾的<strong>進一步閱讀</strong>查看<strong>Adve &amp; Gharachorloo</strong>這篇文章。</p>
+<ul>
+<li>所有的內存操作每次只能執行一個。</li>
+<li>所有的操作，在單核CPU上，都是順序執行的。</li>
+</ul>
+<p>如果你關注一段代碼在內存中的讀寫操作，在sequentially-consistent的CPU架構上，是按照期待的順序執行的。It’s possible that the CPU is actually reordering instructions and delaying reads and writes, but there is no way for code running on the device to tell that the CPU is doing anything other than execute instructions in a straightforward manner. (We’re ignoring memory-mapped device driver I/O for the moment.)</p>
+<p>To illustrate these points it’s useful to consider small snippets of code, commonly referred to as litmus tests. These are assumed to execute in program order, that is, the order in which the instructions appear here is the order in which the CPU will execute them. We don’t want to consider instruction reordering performed by compilers just yet.</p>
+<p>Here’s a simple example, with code running on two threads:</p>
+<p>Thread 1 Thread 2 A = 3 B = 5 reg0 = B reg1 = A</p>
+<p>| Thread 1 | Thread 2 | | -- | -- | | A = 3 B = 5 | reg0 = B reg1 = A |</p>
+<p>In this and all future litmus examples, memory locations are represented by capital letters (A, B, C) and CPU registers start with “reg”. All memory is initially zero. Instructions are executed from top to bottom. Here, thread 1 stores the value 3 at location A, and then the value 5 at location B. Thread 2 loads the value from location B into reg0, and then loads the value from location A into reg1. (Note that we’re writing in one order and reading in another.)</p>
+<p>Thread 1 and thread 2 are assumed to execute on different CPU cores. You should always make this assumption when thinking about multi-threaded code.</p>
+<p>Sequential consistency guarantees that, after both threads have finished executing, the registers will be in one of the following states:</p>
+<p>| Registers | States | | -- | -- | | reg0=5, reg1=3 | possible (thread 1 ran first) | | reg0=0, reg1=0 | possible (thread 2 ran first) | | reg0=0, reg1=3 | possible (concurrent execution) | | reg0=5, reg1=0 | never |</p>
+<p>To get into a situation where we see B=5 before we see the store to A, either the reads or the writes would have to happen out of order. On a sequentially-consistent machine, that can’t happen.</p>
+<p>Most uni-processors, including x86 and ARM, are sequentially consistent. Most SMP systems, including x86 and ARM, are not.</p>
+<h4 id="111processor-consistency">1.1.1)Processor consistency</h4>
+<h4 id="112cpu-cache-behavior">1.1.2)CPU cache behavior</h4>
+<h4 id="113observability">1.1.3)Observability</h4>
+<h4 id="114arms-weak-ordering">1.1.4)ARM’s weak ordering</h4>
+<h3 id="12data-memory-barriers">1.2)Data memory barriers</h3>
+<h4 id="121storestore-and-loadload">1.2.1)Store/store and load/load</h4>
+<h4 id="122loadstore-and-storeload">1.2.2)Load/store and store/load</h4>
+<h4 id="123barrier-instructions">1.2.3)Barrier instructions</h4>
+<h4 id="124address-dependencies-and-causal-consistency">1.2.4)Address dependencies and causal consistency</h4>
+<h4 id="125memory-barrier-summary">1.2.5)Memory barrier summary</h4>
+<h3 id="13atomic-operations">1.3)Atomic operations</h3>
+<h4 id="131atomic-essentials">1.3.1)Atomic essentials</h4>
+<h4 id="132atomic--barrier-pairing">1.3.2)Atomic + barrier pairing</h4>
+<h4 id="133acquire-and-release">1.3.3)Acquire and release</h4>
+<h2 id="2實踐篇">2)實踐篇</h2>
+<p>調試內存一致性(memory consistency)的問題非常困難。如果內存柵欄(memory barrier)導致一些代碼讀取到陳舊的數據，你將無法通過調試器檢查內存dumps文件來找出原因。By the time you can issue a debugger query, the CPU cores will have all observed the full set of accesses, and the contents of memory and the CPU registers will appear to be in an “impossible” state.</p>
+<h3 id="21what-not-to-do-in-c">2.1)What not to do in C</h3>
+<h4 id="211cc-and-volatile">2.1.1)C/C++ and “volatile”</h4>
+<h4 id="212examples">2.1.2)Examples</h4>
+<h3 id="22在java中不應該做的事">2.2)在Java中不應該做的事</h3>
+<p>我們沒有討論過Java語言的一些相關特性，因此我們首先來簡要的看下那些特性。</p>
+<h4 id="221java中的synchronized與volatile關鍵字">2.2.1)Java中的"synchronized"與"volatile"關鍵字</h4>
+<p>**“synchronized”**關鍵字提供了Java一種內置的鎖機制。每一個對象都有一個相對應的“monitor”，這個監聽器可以提供互斥的訪問。</p>
+<p>“synchronized”代碼段的實現機制與自旋鎖(spin lock)有著相同的基礎結構: 他們都是從獲取到CAS開始，以釋放CAS結束。這意味著編譯器(compilers)與代碼優化器(code optimizers)可以輕鬆的遷移代碼到“synchronized”代碼段中。一個實踐結果是：你<strong>不能</strong>判定synchronized代碼段是執行在這段代碼下面一部分的前面，還是這段代碼上面一部分的後面。更進一步，如果一個方法有兩個synchronized代碼段並且鎖住的是同一個對象，那麼在這兩個操作的中間代碼都無法被其他的線程所檢測到，編譯器可能會執行“鎖粗化lock coarsening”並且把這兩者綁定到同一個代碼塊上。</p>
+<p>另外一個相關的關鍵字是**“volatile”**。在Java 1.4以及之前的文檔中是這樣定義的：volatile聲明和對應的C語言中的一樣可不靠。從Java 1.5開始，提供了更有力的保障，甚至和synchronization一樣具備強同步的機制。</p>
+<p>volatile的訪問效果可以用下面這個例子來說明。如果線程1給volatile字段做了賦值操作，線程2緊接著讀取那個字段的值，那麼線程2是被確保能夠查看到之前線程1的任何寫操作。更通常的情況是，<strong>任何</strong>線程對那個字段的寫操作對於線程2來說都是可見的。實際上，寫volatile就像是釋放件監聽器，讀volatile就像是獲取監聽器。</p>
+<p>非volatile的訪問有可能因為照顧volatile的訪問而需要做順序的調整。例如編譯器可能會往上移動一個非volatile加載操作，但是不會往下移動。Volatile之間的訪問不會因為彼此而做出順序的調整。虛擬機會注意處理如何的內存柵欄(memory barriers)。</p>
+<p>當加載與保存大多數的基礎數據類型，他們都是原子的atomic, 對於long以及double類型的數據則不具備原子型，除非他們被聲明為volatile。即使是在單核處理器上，併發多線程更新非volatile字段值也還是不確定的。</p>
+<h4 id="222examples">2.2.2)Examples</h4>
+<p>下面是一個錯誤實現的單步計數器(monotonic counter)的示例: (<a href="smp.html#more">Java theory and practice: Managing volatility</a>).</p>
+<pre><code class="language-java">class Counter {
+    private int mValue;
+
+    public int get() {
+        return mValue;
+    }
+    public void incr() {
+        mValue++;
+    }
+}
+</code></pre>
+<p>假設get()與incr()方法是被多線程調用的。然後我們想確保當get()方法被調用時，每一個線程都能夠看到當前的數量。最引人注目的問題是mValue++實際上包含了下面三個操作。</p>
+<ol>
+<li>reg = mValue</li>
+<li>reg = reg + 1</li>
+<li>mValue = reg</li>
+</ol>
+<p>如果兩個線程同時在執行<code>incr()</code>方法，其中的一個更新操作會丟失。為了確保正確的執行<code>++</code>的操作，我們需要把<code>incr()</code>方法聲明為“synchronized”。這樣修改之後，這段代碼才能夠在單核多線程的環境中正確的執行。</p>
+<p>然而，在SMP的系統下還是會執行失敗。不同的線程通過<code>get()</code>方法獲取到得值可能是不一樣的。因為我們是使用通常的加載方式來讀取這個值的。我們可以通過聲明<code>get()</code>方法為synchronized的方式來修正這個錯誤。通過這些修改，這樣的代碼才是正確的了。</p>
+<p>不幸的是，我們有介紹過有可能發生的鎖競爭(lock contention)，這有可能會傷害到程序的性能。除了聲明<code>get()</code>方法為synchronized之外，我們可以聲明<code>mValue</code>為**“volatile”**. (請注意<code>incr()</code>必須使用synchronize) 現在我們知道volatile的mValue的寫操作對於後續的讀操作都是可見的。<code>incr()</code>將會稍稍有點變慢，但是<code>get()</code>方法將會變得更加快速。因此讀操作多於寫操作時，這會是一個比較好的方案。(請參考AtomicInteger.)</p>
+<p>下面是另外一個示例，和之前的C示例有點類似：</p>
+<pre><code class="language-java">class MyGoodies {
+    public int x, y;
+}
+class MyClass {
+    static MyGoodies sGoodies;
+
+    void initGoodies() {    // runs in thread 1
+        MyGoodies goods = new MyGoodies();
+        goods.x = 5;
+        goods.y = 10;
+        sGoodies = goods;
+    }
+
+    void useGoodies() {    // runs in thread 2
+        if (sGoodies != null) {
+            int i = sGoodies.x;    // could be 5 or 0
+            ....
+        }
+    }
+}
+</code></pre>
+<p>這段代碼同樣存在著問題，<code>sGoodies = goods</code>的賦值操作有可能在<code>goods</code>成員變量賦值之前被察覺到。如果你使用<code>volatile</code>聲明<code>sGoodies</code>變量，你可以認為load操作為<code>atomic_acquire_load()</code>，並且把store操作認為是<code>atomic_release_store()</code>。</p>
+<p>(請注意僅僅是<code>sGoodies</code>的引用本身為<code>volatile</code>，訪問它的內部字段並不是這樣的。賦值語句<code>z = sGoodies.x</code>會執行一個volatile load MyClass.sGoodies的操作，其後會伴隨一個non-volatile的load操作：：<code>sGoodies.x</code>。如果你設置了一個本地引用<code>MyGoodies localGoods = sGoodies, z = localGoods.x</code>，這將不會執行任何volatile loads.)</p>
+<p>另外一個在Java程序中更加常用的範式就是臭名昭著的**“double-checked locking”**:</p>
+<pre><code class="language-java">class MyClass {
+    private Helper helper = null;
+
+    public Helper getHelper() {
+        if (helper == null) {
+            synchronized (this) {
+                if (helper == null) {
+                    helper = new Helper();
+                }
+            }
+        }
+        return helper;
+    }
+}
+</code></pre>
+<p>上面的寫法是為了獲得一個MyClass的單例。我們只需要創建一次這個實例，通過<code>getHelper()</code>這個方法。為了避免兩個線程會同時創建這個實例。我們需要對創建的操作加synchronize機制。然而，我們不想要為了每次執行這段代碼的時候都為“synchronized”付出額外的代價，因此我們僅僅在helper對象為空的時候加鎖。</p>
+<p>在單核系統上，這是不能正常工作的。JIT編譯器會破壞這件事情。請查看<a href="#appendix">4)Appendix</a>的“‘Double Checked Locking is Broken’ Declaration”獲取更多的信息, 或者是Josh Bloch’s Effective Java書中的Item 71 (“Use lazy initialization judiciously”)。</p>
+<p>在SMP系統上執行這段代碼，引入了一個額外的方式會導致失敗。把上面那段代碼換成C的語言實現如下：</p>
+<pre><code class="language-c">if (helper == null) {
+    // acquire monitor using spinlock
+    while (atomic_acquire_cas(&amp;this.lock, 0, 1) != success)
+        ;
+    if (helper == null) {
+        newHelper = malloc(sizeof(Helper));
+        newHelper-&gt;x = 5;
+        newHelper-&gt;y = 10;
+        helper = newHelper;
+    }
+    atomic_release_store(&amp;this.lock, 0);
+}
+</code></pre>
+<p>此時問題就更加明顯了: <code>helper</code>的store操作發生在memory barrier之前，這意味著其他的線程能夠在store x/y之前觀察到非空的值。</p>
+<p>你應該嘗試確保store helper執行在<code>atomic_release_store()</code>方法之後。通過重新排序代碼進行加鎖，但是這是無效的，因為往上移動的代碼，編譯器可以把它移動回原來的位置：在<code>atomic_release_store()</code>前面。 (<em>這裡沒有讀懂，下次再回讀</em>)</p>
+<p>有2個方法可以解決這個問題：</p>
+<ul>
+<li>刪除外層的檢查。這確保了我們不會在synchronized代碼段之外做任何的檢查。</li>
+<li>聲明helper為volatile。僅僅這樣一個小小的修改，在前面示例中的代碼就能夠在Java 1.5及其以後的版本中正常工作。</li>
+</ul>
+<p>下面的示例演示了使用volatile的2各重要問題：</p>
+<pre><code class="language-java">class MyClass {
+    int data1, data2;
+    volatile int vol1, vol2;
+
+    void setValues() {    // runs in thread 1
+        data1 = 1;
+        vol1 = 2;
+        data2 = 3;
+    }
+
+    void useValues1() {    // runs in thread 2
+        if (vol1 == 2) {
+            int l1 = data1;    // okay
+            int l2 = data2;    // wrong
+        }
+    }
+    void useValues2() {    // runs in thread 2
+        int dummy = vol2;
+        int l1 = data1;    // wrong
+        int l2 = data2;    // wrong
+    }
+</code></pre>
+<p>請注意<code>useValues1()</code>，如果thread 2還沒有察覺到<code>vol1</code>的更新操作，那麼它也無法知道<code>data1</code>或者<code>data2</code>被設置的操作。一旦它觀察到了<code>vol1</code>的更新操作，那麼它也能夠知道data1的更新操作。然而，對於<code>data2</code>則無法做任何猜測，因為store操作是在volatile store之後發生的。</p>
+<p><code>useValues2()</code>使用了第2個volatile字段：vol2，這會強制VM生成一個memory barrier。這通常不會發生。為了建立一個恰當的“happens-before”關係，2個線程都需要使用同一個volatile字段。在thread 1中你需要知道vol2是在data1/data2之後被設置的。(The fact that this doesn’t work is probably obvious from looking at the code; the caution here is against trying to cleverly “cause” a memory barrier instead of creating an ordered series of accesses.)</p>
+<h3 id="23what-to-do">2.3)What to do</h3>
+<h4 id="231general-advice">2.3.1)General advice</h4>
+<p>在C/C++中，使用<code>pthread</code>操作，例如mutexes與semaphores。他們會使用合適的memory barriers，在所有的Android平臺上提供正確有效的行為。請確保正確這些技術，例如在沒有獲得對應的mutex的情況下賦值操作需要很謹慎。</p>
+<p>避免直接使用atomic方法。如果locking與unlocking之間沒有競爭，locking與unlocking一個pthread mutex 分別需要一個單獨的atomic操作。如果你需要一個lock-free的設計，你必須在開始寫代碼之前瞭解整篇文檔的要點。（或者是尋找一個已經為SMP ARM設計好的庫文件）。</p>
+<p>Be extremely circumspect with "volatile” in C/C++. It often indicates a concurrency problem waiting to happen.</p>
+<p>In Java, the best answer is usually to use an appropriate utility class from the java.util.concurrent package. The code is well written and well tested on SMP.</p>
+<p>Perhaps the safest thing you can do is make your class immutable. Objects from classes like String and Integer hold data that cannot be changed once the class is created, avoiding all synchronization issues. The book Effective Java, 2nd Ed. has specific instructions in “Item 15: Minimize Mutability”. Note in particular the importance of declaring fields “final" (Bloch).</p>
+<p>If neither of these options is viable, the Java “synchronized” statement should be used to guard any field that can be accessed by more than one thread. If mutexes won’t work for your situation, you should declare shared fields “volatile”, but you must take great care to understand the interactions between threads. The volatile declaration won’t save you from common concurrent programming mistakes, but it will help you avoid the mysterious failures associated with optimizing compilers and SMP mishaps.</p>
+<p>The Java Memory Model guarantees that assignments to final fields are visible to all threads once the constructor has finished — this is what ensures proper synchronization of fields in immutable classes. This guarantee does not hold if a partially-constructed object is allowed to become visible to other threads. It is necessary to follow safe construction practices.(Safe Construction Techniques in Java).</p>
+<h4 id="232synchronization-primitive-guarantees">2.3.2)Synchronization primitive guarantees</h4>
+<p>The pthread library and VM make a couple of useful guarantees: all accesses previously performed by a thread that creates a new thread are observable by that new thread as soon as it starts, and all accesses performed by a thread that is exiting are observable when a join() on that thread returns. This means you don’t need any additional synchronization when preparing data for a new thread or examining the results of a joined thread.</p>
+<p>Whether or not these guarantees apply to interactions with pooled threads depends on the thread pool implementation.</p>
+<p>In C/C++, the pthread library guarantees that any accesses made by a thread before it unlocks a mutex will be observable by another thread after it locks that same mutex. It also guarantees that any accesses made before calling signal() or broadcast() on a condition variable will be observable by the woken thread.</p>
+<p>Java language threads and monitors make similar guarantees for the comparable operations.</p>
+<h4 id="233upcoming-changes-to-cc">2.3.3)Upcoming changes to C/C++</h4>
+<p>The C and C++ language standards are evolving to include a sophisticated collection of atomic operations. A full matrix of calls for common data types is defined, with selectable memory barrier semantics (choose from relaxed, consume, acquire, release, acq_rel, seq_cst).</p>
+<p>See the Further Reading section for pointers to the specifications.</p>
+<h2 id="3closing-notes">3)Closing Notes</h2>
+<p>While this document does more than merely scratch the surface, it doesn’t manage more than a shallow gouge. This is a very broad and deep topic. Some areas for further exploration:</p>
+<ul>
+<li>Learn the definitions of <strong>happens-before</strong>, <strong>synchronizes-with</strong>, and other essential concepts from the Java Memory Model. (It’s hard to understand what “volatile” really means without getting into this.)</li>
+<li>Explore what compilers are and aren’t allowed to do when reordering code. (The JSR-133 spec has some great examples of legal transformations that lead to unexpected results.)</li>
+<li>Find out how to write immutable classes in Java and C++. (There’s more to it than just “don’t change anything after construction”.)</li>
+<li>Internalize the recommendations in the Concurrency section of <strong>Effective Java, 2nd Edition</strong>. (For example, you should avoid calling methods that are meant to be overridden while inside a synchronized block.)</li>
+<li>Understand what sorts of barriers you can use on x86 and ARM. (And other CPUs for that matter, for example Itanium’s acquire/release instruction modifiers.)</li>
+<li>Read through the <strong>java.util.concurrent</strong> and <strong>java.util.concurrent.atomic</strong> APIs to see what's available.</li>
+<li>Consider using concurrency annotations like <code>@ThreadSafe</code> and <code>@GuardedBy</code> (from net.jcip.annotations).</li>
+</ul>
+<p>The Further Reading section in the appendix has links to documents and web sites that will better illuminate these topics.</p>
+<p><a name="appendix"></a></p>
+<h2 id="4appendix">4)Appendix</h2>
+<h3 id="41smp-failure-example">4.1)SMP failure example</h3>
+<h3 id="42implementing-synchronization-stores">4.2)Implementing synchronization stores</h3>
+<p><a name="more"></a></p>
+<h3 id="43further-reading">4.3)Further reading</h3>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/37/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/37/index.html">安卓逆向系列教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 87个">87</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/26/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/26/index.html">安卓应用安全指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">77页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 11个">11</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/32/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/32/index.html">浅入浅出 Android 安全</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 59个">59</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/200/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/200/index.html">软件开发基础知识宝典</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/118/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/influxdb_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/118/index.html">Influxdb 简明手册 教程 入门 文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="influxdb">influxdb</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/125/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/125/index.html">前端早读课</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/41/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/README.html" title="序言" data-book-page-rel-url="README.html" data-book-page-id="2494">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/index.html" title="Android入門基礎：從這裡開始" data-book-page-rel-url="basics/index.html" data-book-page-id="2495">Android入門基礎：從這裡開始</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/firstapp/index.html" title="建立第一個App" data-book-page-rel-url="basics/firstapp/index.html" data-book-page-id="2496">建立第一個App</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/firstapp/creating-project.html" title="創建Android項目" data-book-page-rel-url="basics/firstapp/creating-project.html" data-book-page-id="2497">創建Android項目</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/firstapp/running-app.html" title="執行Android程序" data-book-page-rel-url="basics/firstapp/running-app.html" data-book-page-id="2498">執行Android程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/firstapp/building-ui.html" title="建立簡單的用戶界面" data-book-page-rel-url="basics/firstapp/building-ui.html" data-book-page-id="2499">建立簡單的用戶界面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/firstapp/starting-activity.html" title="啟動其他的Activity" data-book-page-rel-url="basics/firstapp/starting-activity.html" data-book-page-id="2500">啟動其他的Activity</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/actionbar/index.html" title="添加ActionBar" data-book-page-rel-url="basics/actionbar/index.html" data-book-page-id="2501">添加ActionBar</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/actionbar/setting-up.html" title="建立ActionBar" data-book-page-rel-url="basics/actionbar/setting-up.html" data-book-page-id="2502">建立ActionBar</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/actionbar/adding-buttons.html" title="添加Action按鈕" data-book-page-rel-url="basics/actionbar/adding-buttons.html" data-book-page-id="2503">添加Action按鈕</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/actionbar/styling.html" title="自定義ActionBar的風格" data-book-page-rel-url="basics/actionbar/styling.html" data-book-page-id="2504">自定義ActionBar的風格</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/actionbar/overlaying.html" title="ActionBar的覆蓋層疊" data-book-page-rel-url="basics/actionbar/overlaying.html" data-book-page-id="2505">ActionBar的覆蓋層疊</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/supporting-devices/index.html" title="兼容不同的設備" data-book-page-rel-url="basics/supporting-devices/index.html" data-book-page-id="2506">兼容不同的設備</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/supporting-devices/languages.html" title="適配不同的語言" data-book-page-rel-url="basics/supporting-devices/languages.html" data-book-page-id="2507">適配不同的語言</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/supporting-devices/screens.html" title="適配不同的屏幕" data-book-page-rel-url="basics/supporting-devices/screens.html" data-book-page-id="2508">適配不同的屏幕</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/supporting-devices/platforms.html" title="適配不同的系統版本" data-book-page-rel-url="basics/supporting-devices/platforms.html" data-book-page-id="2509">適配不同的系統版本</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/activity-lifecycle/index.html" title="管理Activity的生命週期" data-book-page-rel-url="basics/activity-lifecycle/index.html" data-book-page-id="2510">管理Activity的生命週期</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/activity-lifecycle/starting.html" title="啟動與銷燬Activity" data-book-page-rel-url="basics/activity-lifecycle/starting.html" data-book-page-id="2511">啟動與銷燬Activity</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/activity-lifecycle/pausing.html" title="暫停與恢復Activity" data-book-page-rel-url="basics/activity-lifecycle/pausing.html" data-book-page-id="2512">暫停與恢復Activity</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/activity-lifecycle/stopping.html" title="停止與重啟Activity" data-book-page-rel-url="basics/activity-lifecycle/stopping.html" data-book-page-id="2513">停止與重啟Activity</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/activity-lifecycle/recreating.html" title="重新創建Activity" data-book-page-rel-url="basics/activity-lifecycle/recreating.html" data-book-page-id="2514">重新創建Activity</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/fragments/index.html" title="使用Fragment建立動態的UI" data-book-page-rel-url="basics/fragments/index.html" data-book-page-id="2515">使用Fragment建立動態的UI</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/fragments/creating.html" title="創建一個Fragment" data-book-page-rel-url="basics/fragments/creating.html" data-book-page-id="2516">創建一個Fragment</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/fragments/fragment-ui.html" title="建立靈活動態的UI" data-book-page-rel-url="basics/fragments/fragment-ui.html" data-book-page-id="2517">建立靈活動態的UI</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/fragments/communicating.html" title="Fragments之間的交互" data-book-page-rel-url="basics/fragments/communicating.html" data-book-page-id="2518">Fragments之間的交互</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/data-storage/index.html" title="數據保存" data-book-page-rel-url="basics/data-storage/index.html" data-book-page-id="2519">數據保存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/data-storage/shared-preference.html" title="保存到Preference" data-book-page-rel-url="basics/data-storage/shared-preference.html" data-book-page-id="2520">保存到Preference</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/data-storage/files.html" title="保存到文件" data-book-page-rel-url="basics/data-storage/files.html" data-book-page-id="2521">保存到文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/data-storage/database.html" title="保存到數據庫" data-book-page-rel-url="basics/data-storage/database.html" data-book-page-id="2522">保存到數據庫</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/intents/index.html" title="與其他應用的交互" data-book-page-rel-url="basics/intents/index.html" data-book-page-id="2523">與其他應用的交互</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/basics/intents/sending.html" title="Intent的發送" data-book-page-rel-url="basics/intents/sending.html" data-book-page-id="2524">Intent的發送</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/intents/result.html" title="接收Activity返回的結果" data-book-page-rel-url="basics/intents/result.html" data-book-page-id="2525">接收Activity返回的結果</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/basics/intents/filters.html" title="Intent過濾" data-book-page-rel-url="basics/intents/filters.html" data-book-page-id="2526">Intent過濾</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-content-sharing.html" title="Android分享操作" data-book-page-rel-url="building-content-sharing.html" data-book-page-id="2527">Android分享操作</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/sharing/index.html" title="分享簡單的數據" data-book-page-rel-url="content-sharing/sharing/index.html" data-book-page-id="2528">分享簡單的數據</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/sharing/send.html" title="給其他App發送簡單的數據" data-book-page-rel-url="content-sharing/sharing/send.html" data-book-page-id="2529">給其他App發送簡單的數據</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/sharing/receive.html" title="接收從其他App返回的數據" data-book-page-rel-url="content-sharing/sharing/receive.html" data-book-page-id="2530">接收從其他App返回的數據</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/sharing/shareaction.html" title="給ActionBar增加分享功能" data-book-page-rel-url="content-sharing/sharing/shareaction.html" data-book-page-id="2531">給ActionBar增加分享功能</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/secure-file-sharing/index.html" title="分享文件" data-book-page-rel-url="content-sharing/secure-file-sharing/index.html" data-book-page-id="2532">分享文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/secure-file-sharing/setup-sharing.html" title="建立文件分享" data-book-page-rel-url="content-sharing/secure-file-sharing/setup-sharing.html" data-book-page-id="2533">建立文件分享</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/secure-file-sharing/sharing-file.html" title="分享文件" data-book-page-rel-url="content-sharing/secure-file-sharing/sharing-file.html" data-book-page-id="2534">分享文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/secure-file-sharing/request-file.html" title="請求分享一個文件" data-book-page-rel-url="content-sharing/secure-file-sharing/request-file.html" data-book-page-id="2535">請求分享一個文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/secure-file-sharing/retrieve-info.html" title="獲取文件信息" data-book-page-rel-url="content-sharing/secure-file-sharing/retrieve-info.html" data-book-page-id="2536">獲取文件信息</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/beam-files/index.html" title="使用NFC分享文件" data-book-page-rel-url="content-sharing/beam-files/index.html" data-book-page-id="2537">使用NFC分享文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/beam-files/sending-files.html" title="發送文件給其他設備" data-book-page-rel-url="content-sharing/beam-files/sending-files.html" data-book-page-id="2538">發送文件給其他設備</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/content-sharing/beam-files/receive-files.html" title="接收其他設備的文件" data-book-page-rel-url="content-sharing/beam-files/receive-files.html" data-book-page-id="2539">接收其他設備的文件</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-multimedia.html" title="Android多媒體" data-book-page-rel-url="building-multimedia.html" data-book-page-id="2540">Android多媒體</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/audio/index.html" title="管理音頻播放" data-book-page-rel-url="multimedia/audio/index.html" data-book-page-id="2541">管理音頻播放</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/audio/volume-playback.html" title="控制音量與音頻播放" data-book-page-rel-url="multimedia/audio/volume-playback.html" data-book-page-id="2542">控制音量與音頻播放</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/audio/audio-focus.html" title="管理音頻焦點" data-book-page-rel-url="multimedia/audio/audio-focus.html" data-book-page-id="2543">管理音頻焦點</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/audio/audio-output.html" title="兼容音頻輸出設備" data-book-page-rel-url="multimedia/audio/audio-output.html" data-book-page-id="2544">兼容音頻輸出設備</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/camera/index.html" title="拍照" data-book-page-rel-url="multimedia/camera/index.html" data-book-page-id="2545">拍照</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/camera/photobasics.html" title="簡單的拍照" data-book-page-rel-url="multimedia/camera/photobasics.html" data-book-page-id="2546">簡單的拍照</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/camera/videobasics.html" title="簡單的錄像" data-book-page-rel-url="multimedia/camera/videobasics.html" data-book-page-id="2547">簡單的錄像</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/camera/cameradirect.html" title="控制相機硬件" data-book-page-rel-url="multimedia/camera/cameradirect.html" data-book-page-id="2548">控制相機硬件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/printing/index.html" title="打印" data-book-page-rel-url="multimedia/printing/index.html" data-book-page-id="2549">打印</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/printing/photos.html" title="打印照片" data-book-page-rel-url="multimedia/printing/photos.html" data-book-page-id="2550">打印照片</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/printing/html-docs.html" title="打印HTML文檔" data-book-page-rel-url="multimedia/printing/html-docs.html" data-book-page-id="2551">打印HTML文檔</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/multimedia/printing/custom-docs.html" title="打印自定義文檔" data-book-page-rel-url="multimedia/printing/custom-docs.html" data-book-page-id="2552">打印自定義文檔</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-graphics.html" title="Android圖像與動畫" data-book-page-rel-url="building-graphics.html" data-book-page-id="2553">Android圖像與動畫</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/index.html" title="高效顯示Bitmap" data-book-page-rel-url="graphics/displaying-bitmaps/index.html" data-book-page-id="2554">高效顯示Bitmap</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/load-bitmap.html" title="高效加載大圖" data-book-page-rel-url="graphics/displaying-bitmaps/load-bitmap.html" data-book-page-id="2555">高效加載大圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/process-bitmap.html" title="非UI線程處理Bitmap" data-book-page-rel-url="graphics/displaying-bitmaps/process-bitmap.html" data-book-page-id="2556">非UI線程處理Bitmap</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/cache-bitmap.html" title="緩存Bitmap" data-book-page-rel-url="graphics/displaying-bitmaps/cache-bitmap.html" data-book-page-id="2557">緩存Bitmap</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/manage-memory.html" title="管理Bitmap的內存" data-book-page-rel-url="graphics/displaying-bitmaps/manage-memory.html" data-book-page-id="2558">管理Bitmap的內存</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/displaying-bitmaps/display-bitmap.html" title="在UI上顯示Bitmap" data-book-page-rel-url="graphics/displaying-bitmaps/display-bitmap.html" data-book-page-id="2559">在UI上顯示Bitmap</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/index.html" title="使用OpenGL ES顯示圖像" data-book-page-rel-url="graphics/opengl/index.html" data-book-page-id="2560">使用OpenGL ES顯示圖像</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/environment.html" title="建立OpenGL ES的環境" data-book-page-rel-url="graphics/opengl/environment.html" data-book-page-id="2561">建立OpenGL ES的環境</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/shapes.html" title="定義Shapes" data-book-page-rel-url="graphics/opengl/shapes.html" data-book-page-id="2562">定義Shapes</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/draw.html" title="繪製Shapes" data-book-page-rel-url="graphics/opengl/draw.html" data-book-page-id="2563">繪製Shapes</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/projection.html" title="運用投影與相機視圖" data-book-page-rel-url="graphics/opengl/projection.html" data-book-page-id="2564">運用投影與相機視圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/motion.html" title="添加移動" data-book-page-rel-url="graphics/opengl/motion.html" data-book-page-id="2565">添加移動</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/graphics/opengl/touch.html" title="響應觸摸事件" data-book-page-rel-url="graphics/opengl/touch.html" data-book-page-id="2566">響應觸摸事件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/animations/index.html" title="添加動畫" data-book-page-rel-url="animations/index.html" data-book-page-id="2567">添加動畫</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/animations/crossfade.html" title="View間漸變" data-book-page-rel-url="animations/crossfade.html" data-book-page-id="2568">View間漸變</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/animations/screen-slide.html" title="使用ViewPager實現屏幕滑動" data-book-page-rel-url="animations/screen-slide.html" data-book-page-id="2569">使用ViewPager實現屏幕滑動</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/animations/cardflip.html" title="展示Card翻轉動畫" data-book-page-rel-url="animations/cardflip.html" data-book-page-id="2570">展示Card翻轉動畫</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/animations/zoom.html" title="縮放View" data-book-page-rel-url="animations/zoom.html" data-book-page-id="2571">縮放View</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/animations/layout.html" title="佈局變更動畫" data-book-page-rel-url="animations/layout.html" data-book-page-id="2572">佈局變更動畫</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-connectivity.html" title="Android網絡連接與雲服務" data-book-page-rel-url="building-connectivity.html" data-book-page-id="2573">Android網絡連接與雲服務</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/connect-devices-wireless/index.html" title="無線連接設備" data-book-page-rel-url="connectivity/connect-devices-wireless/index.html" data-book-page-id="2574">無線連接設備</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/connect-devices-wireless/nsd.html" title="使用網絡服務發現" data-book-page-rel-url="connectivity/connect-devices-wireless/nsd.html" data-book-page-id="2575">使用網絡服務發現</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/connect-devices-wireless/wifi-direct.html" title="使用WiFi建立P2P連接" data-book-page-rel-url="connectivity/connect-devices-wireless/wifi-direct.html" data-book-page-id="2576">使用WiFi建立P2P連接</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/connect-devices-wireless/nsd-wifi-index.html" title="使用WiFi P2P服務" data-book-page-rel-url="connectivity/connect-devices-wireless/nsd-wifi-index.html" data-book-page-id="2577">使用WiFi P2P服務</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/network-ops/index.html" title="執行網絡操作" data-book-page-rel-url="connectivity/network-ops/index.html" data-book-page-id="2578">執行網絡操作</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/network-ops/connecting.html" title="連接到網絡" data-book-page-rel-url="connectivity/network-ops/connecting.html" data-book-page-id="2579">連接到網絡</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/network-ops/managing.html" title="管理網絡的使用情況" data-book-page-rel-url="connectivity/network-ops/managing.html" data-book-page-id="2580">管理網絡的使用情況</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/network-ops/xml.html" title="解析XML數據" data-book-page-rel-url="connectivity/network-ops/xml.html" data-book-page-id="2581">解析XML數據</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/efficient-downloads/index.html" title="傳輸數據時避免消耗大量電量" data-book-page-rel-url="connectivity/efficient-downloads/index.html" data-book-page-id="2582">傳輸數據時避免消耗大量電量</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/efficient-downloads/efficient-network-access.html" title="優化下載以高效地訪問網絡" data-book-page-rel-url="connectivity/efficient-downloads/efficient-network-access.html" data-book-page-id="2583">優化下載以高效地訪問網絡</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/efficient-downloads/regular-update.html" title="最小化定期更新造成的影響" data-book-page-rel-url="connectivity/efficient-downloads/regular-update.html" data-book-page-id="2584">最小化定期更新造成的影響</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/efficient-downloads/redundant-redundant.html" title="重複的下載是冗餘的" data-book-page-rel-url="connectivity/efficient-downloads/redundant-redundant.html" data-book-page-id="2585">重複的下載是冗餘的</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/efficient-downloads/connectivity-patterns.html" title="根據網絡連接類型來調整下載模式" data-book-page-rel-url="connectivity/efficient-downloads/connectivity-patterns.html" data-book-page-id="2586">根據網絡連接類型來調整下載模式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/cloudsync/index.html" title="雲同步" data-book-page-rel-url="connectivity/cloudsync/index.html" data-book-page-id="2587">雲同步</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/cloudsync/backupapi.html" title="使用備份API" data-book-page-rel-url="connectivity/cloudsync/backupapi.html" data-book-page-id="2588">使用備份API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/cloudsync/gcm.html" title="使用Google Cloud Messaging" data-book-page-rel-url="connectivity/cloudsync/gcm.html" data-book-page-id="2589">使用Google Cloud Messaging</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/cloudsave/index.html" title="解決雲同步的保存衝突" data-book-page-rel-url="connectivity/cloudsave/index.html" data-book-page-id="2590">解決雲同步的保存衝突</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/sync-adapters/index.html" title="使用Sync Adapter傳輸數據" data-book-page-rel-url="connectivity/sync-adapters/index.html" data-book-page-id="2591">使用Sync Adapter傳輸數據</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/sync-adapters/create-authenticator.html" title="創建Stub授權器" data-book-page-rel-url="connectivity/sync-adapters/create-authenticator.html" data-book-page-id="2592">創建Stub授權器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/sync-adapters/create-stub-provider.html" title="創建Stub Content Provider" data-book-page-rel-url="connectivity/sync-adapters/create-stub-provider.html" data-book-page-id="2593">創建Stub Content Provider</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/sync-adapters/create-sync-adapter.html" title="創建Sync Adpater" data-book-page-rel-url="connectivity/sync-adapters/create-sync-adapter.html" data-book-page-id="2594">創建Sync Adpater</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/sync-adapters/running-sync-adapter.html" title="執行Sync Adpater" data-book-page-rel-url="connectivity/sync-adapters/running-sync-adapter.html" data-book-page-id="2595">執行Sync Adpater</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/volley/index.html" title="使用Volley執行網絡數據傳輸" data-book-page-rel-url="connectivity/volley/index.html" data-book-page-id="2596">使用Volley執行網絡數據傳輸</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/volley/simple.html" title="發送簡單的網絡請求" data-book-page-rel-url="connectivity/volley/simple.html" data-book-page-id="2597">發送簡單的網絡請求</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/volley/request-queue.html" title="建立請求隊列" data-book-page-rel-url="connectivity/volley/request-queue.html" data-book-page-id="2598">建立請求隊列</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/volley/request.html" title="創建標準的網絡請求" data-book-page-rel-url="connectivity/volley/request.html" data-book-page-id="2599">創建標準的網絡請求</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/connectivity/volley/request-custom.html" title="實現自定義的網絡請求" data-book-page-rel-url="connectivity/volley/request-custom.html" data-book-page-id="2600">實現自定義的網絡請求</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-userinfo.html" title="Android聯繫人與位置信息" data-book-page-rel-url="building-userinfo.html" data-book-page-id="2601">Android聯繫人與位置信息</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/contacts-provider/index.html" title="Android聯繫人信息" data-book-page-rel-url="contacts-provider/index.html" data-book-page-id="2602">Android聯繫人信息</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/contacts-provider/retrieve-names.html" title="獲取聯繫人列表" data-book-page-rel-url="contacts-provider/retrieve-names.html" data-book-page-id="2603">獲取聯繫人列表</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/contacts-provider/retrieve-detail.html" title="獲取聯繫人詳情" data-book-page-rel-url="contacts-provider/retrieve-detail.html" data-book-page-id="2604">獲取聯繫人詳情</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/contacts-provider/modify-data.html" title="使用Intents修改聯繫人信息" data-book-page-rel-url="contacts-provider/modify-data.html" data-book-page-id="2605">使用Intents修改聯繫人信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/contacts-provider/display-badge.html" title="顯示聯繫人頭像" data-book-page-rel-url="contacts-provider/display-badge.html" data-book-page-id="2606">顯示聯繫人頭像</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/location/index.html" title="Android位置信息" data-book-page-rel-url="location/index.html" data-book-page-id="2607">Android位置信息</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/location/retrieve-current.html" title="獲取最後可知位置" data-book-page-rel-url="location/retrieve-current.html" data-book-page-id="2608">獲取最後可知位置</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/location/retrieve-location-updates.html" title="獲取位置更新" data-book-page-rel-url="location/retrieve-location-updates.html" data-book-page-id="2609">獲取位置更新</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/location/display-address.html" title="顯示位置地址" data-book-page-rel-url="location/display-address.html" data-book-page-id="2610">顯示位置地址</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/location/geofencing.html" title="創建和監視地理圍欄" data-book-page-rel-url="location/geofencing.html" data-book-page-id="2611">創建和監視地理圍欄</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-wearables.html" title="Android可穿戴應用" data-book-page-rel-url="building-wearables.html" data-book-page-id="2612">Android可穿戴應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/notifications/index.html" title="賦予Notification可穿戴特性" data-book-page-rel-url="wearables/notifications/index.html" data-book-page-id="2613">賦予Notification可穿戴特性</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/notifications/creating.html" title="創建Notification" data-book-page-rel-url="wearables/notifications/creating.html" data-book-page-id="2614">創建Notification</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/notifications/voice-input.html" title="在Notifcation中接收語音輸入" data-book-page-rel-url="wearables/notifications/voice-input.html" data-book-page-id="2615">在Notifcation中接收語音輸入</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/notifications/pages.html" title="為Notification添加顯示頁面" data-book-page-rel-url="wearables/notifications/pages.html" data-book-page-id="2616">為Notification添加顯示頁面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/notifications/stacks.html" title="以Stack的方式顯示Notifications" data-book-page-rel-url="wearables/notifications/stacks.html" data-book-page-id="2617">以Stack的方式顯示Notifications</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/index.html" title="創建可穿戴的應用" data-book-page-rel-url="wearables/apps/index.html" data-book-page-id="2618">創建可穿戴的應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/creating.html" title="創建並運行可穿戴應用" data-book-page-rel-url="wearables/apps/creating.html" data-book-page-id="2619">創建並運行可穿戴應用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/layouts.html" title="創建自定義的佈局" data-book-page-rel-url="wearables/apps/layouts.html" data-book-page-id="2620">創建自定義的佈局</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/voice.html" title="添加語音功能" data-book-page-rel-url="wearables/apps/voice.html" data-book-page-id="2621">添加語音功能</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/packaging.html" title="打包可穿戴應用" data-book-page-rel-url="wearables/apps/packaging.html" data-book-page-id="2622">打包可穿戴應用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/apps/bt-debugging.html" title="通過藍牙進行調試" data-book-page-rel-url="wearables/apps/bt-debugging.html" data-book-page-id="2623">通過藍牙進行調試</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/index.html" title="創建自定義的UI" data-book-page-rel-url="wearables/ui/index.html" data-book-page-id="2624">創建自定義的UI</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/layouts.html" title="定義Layouts" data-book-page-rel-url="wearables/ui/layouts.html" data-book-page-id="2625">定義Layouts</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/cards.html" title="創建Card" data-book-page-rel-url="wearables/ui/cards.html" data-book-page-id="2626">創建Card</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/lists.html" title="創建List" data-book-page-rel-url="wearables/ui/lists.html" data-book-page-id="2627">創建List</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/2d-picker.html" title="創建2D Picker" data-book-page-rel-url="wearables/ui/2d-picker.html" data-book-page-id="2628">創建2D Picker</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/confirm.html" title="創建確認界面" data-book-page-rel-url="wearables/ui/confirm.html" data-book-page-id="2629">創建確認界面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/ui/exit.html" title="退出全屏的Activity" data-book-page-rel-url="wearables/ui/exit.html" data-book-page-id="2630">退出全屏的Activity</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/index.html" title="發送並同步數據" data-book-page-rel-url="wearables/data-layer/index.html" data-book-page-id="2631">發送並同步數據</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/accessing.html" title="訪問可穿戴數據層" data-book-page-rel-url="wearables/data-layer/accessing.html" data-book-page-id="2632">訪問可穿戴數據層</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/data-items.html" title="同步數據單元" data-book-page-rel-url="wearables/data-layer/data-items.html" data-book-page-id="2633">同步數據單元</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/assets.html" title="傳輸資源" data-book-page-rel-url="wearables/data-layer/assets.html" data-book-page-id="2634">傳輸資源</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/messages.html" title="發送與接收消息" data-book-page-rel-url="wearables/data-layer/messages.html" data-book-page-id="2635">發送與接收消息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/data-layer/events.html" title="處理數據層的事件" data-book-page-rel-url="wearables/data-layer/events.html" data-book-page-id="2636">處理數據層的事件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/index.html" title="創建錶盤" data-book-page-rel-url="wearables/watch-faces/index.html" data-book-page-id="2637">創建錶盤</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/designing.html" title="設計錶盤" data-book-page-rel-url="wearables/watch-faces/designing.html" data-book-page-id="2638">設計錶盤</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/service.html" title="構建錶盤服務" data-book-page-rel-url="wearables/watch-faces/service.html" data-book-page-id="2639">構建錶盤服務</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/drawing.html" title="繪製錶盤" data-book-page-rel-url="wearables/watch-faces/drawing.html" data-book-page-id="2640">繪製錶盤</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/information.html" title="在錶盤上顯示信息" data-book-page-rel-url="wearables/watch-faces/information.html" data-book-page-id="2641">在錶盤上顯示信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/configuration.html" title="提供配置 Activity" data-book-page-rel-url="wearables/watch-faces/configuration.html" data-book-page-id="2642">提供配置 Activity</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/issues.html" title="定位常見的問題" data-book-page-rel-url="wearables/watch-faces/issues.html" data-book-page-id="2643">定位常見的問題</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/watch-faces/performance.html" title="優化性能和電池使用時間" data-book-page-rel-url="wearables/watch-faces/performance.html" data-book-page-id="2644">優化性能和電池使用時間</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/wearables/location/wear-location-detection.html" title="位置檢測" data-book-page-rel-url="wearables/location/wear-location-detection.html" data-book-page-id="2645">位置檢測</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/building-tv.html" title="Android TV應用" data-book-page-rel-url="building-tv.html" data-book-page-id="2646">Android TV應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/tv/start/index.html" title="創建TV應用" data-book-page-rel-url="tv/start/index.html" data-book-page-id="2647">創建TV應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/tv/start/start.html" title="創建TV應用的第一步" data-book-page-rel-url="tv/start/start.html" data-book-page-id="2648">創建TV應用的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/start/hardware.html" title="處理TV硬件部分" data-book-page-rel-url="tv/start/hardware.html" data-book-page-id="2649">處理TV硬件部分</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/start/layouts.html" title="創建TV的佈局文件" data-book-page-rel-url="tv/start/layouts.html" data-book-page-id="2650">創建TV的佈局文件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/start/navigation.html" title="創建TV的導航欄" data-book-page-rel-url="tv/start/navigation.html" data-book-page-id="2651">創建TV的導航欄</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/playback/index.html" title="創建TV播放應用" data-book-page-rel-url="tv/playback/index.html" data-book-page-id="2652">創建TV播放應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/tv/playback/browse.html" title="創建目錄瀏覽器" data-book-page-rel-url="tv/playback/browse.html" data-book-page-id="2653">創建目錄瀏覽器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/playback/card.html" title="提供一個Card視圖" data-book-page-rel-url="tv/playback/card.html" data-book-page-id="2654">提供一個Card視圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/playback/details.html" title="創建詳情頁" data-book-page-rel-url="tv/playback/details.html" data-book-page-id="2655">創建詳情頁</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/playback/now-playing.html" title="顯示正在播放卡片" data-book-page-rel-url="tv/playback/now-playing.html" data-book-page-id="2656">顯示正在播放卡片</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/discovery/index.html" title="幫助用戶在TV上探索內容" data-book-page-rel-url="tv/discovery/index.html" data-book-page-id="2657">幫助用戶在TV上探索內容</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/tv/discovery/recommendations.html" title="TV上的推薦內容" data-book-page-rel-url="tv/discovery/recommendations.html" data-book-page-id="2658">TV上的推薦內容</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/discovery/searchable.html" title="使得TV App能夠被搜索" data-book-page-rel-url="tv/discovery/searchable.html" data-book-page-id="2659">使得TV App能夠被搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/discovery/in-app-search.html" title="使用TV應用進行搜索" data-book-page-rel-url="tv/discovery/in-app-search.html" data-book-page-id="2660">使用TV應用進行搜索</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/games/index.html" title="創建TV遊戲應用" data-book-page-rel-url="tv/games/index.html" data-book-page-id="2661">創建TV遊戲應用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/tif/index.html" title="創建TV直播應用" data-book-page-rel-url="tv/tif/index.html" data-book-page-id="2662">創建TV直播應用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/tv/publishing/checklist.html" title="TV Apps Checklist" data-book-page-rel-url="tv/publishing/checklist.html" data-book-page-id="2663">TV Apps Checklist</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/enterprise/index.html" title="Android企業級應用" data-book-page-rel-url="enterprise/index.html" data-book-page-id="2664">Android企業級應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/enterprise/app-compatibility.html" title="Ensuring Compatibility with Managed Profiles" data-book-page-rel-url="enterprise/app-compatibility.html" data-book-page-id="2665">Ensuring Compatibility with Managed Profiles</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/enterprise/app-restrictions.html" title="Implementing App Restrictions" data-book-page-rel-url="enterprise/app-restrictions.html" data-book-page-id="2666">Implementing App Restrictions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/enterprise/work-policy-ctrl.html" title="Building a Work Policy Controller" data-book-page-rel-url="enterprise/work-policy-ctrl.html" data-book-page-id="2667">Building a Work Policy Controller</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-ux.html" title="Android交互設計" data-book-page-rel-url="best-ux.html" data-book-page-id="2668">Android交互設計</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/index.html" title="設計高效的導航" data-book-page-rel-url="ux/design-nav/index.html" data-book-page-id="2669">設計高效的導航</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/screen-planning.html" title="規劃屏幕界面與他們之間的關係" data-book-page-rel-url="ux/design-nav/screen-planning.html" data-book-page-id="2670">規劃屏幕界面與他們之間的關係</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/multi-sizes.html" title="為多種大小的屏幕進行規劃" data-book-page-rel-url="ux/design-nav/multi-sizes.html" data-book-page-id="2671">為多種大小的屏幕進行規劃</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/descendant-lateral.html" title="提供向下和橫向導航" data-book-page-rel-url="ux/design-nav/descendant-lateral.html" data-book-page-id="2672">提供向下和橫向導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/ancestral-temporal.html" title="提供向上和歷史導航" data-book-page-rel-url="ux/design-nav/ancestral-temporal.html" data-book-page-id="2673">提供向上和歷史導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/design-nav/wireframing.html" title="綜合：設計樣例 App" data-book-page-rel-url="ux/design-nav/wireframing.html" data-book-page-id="2674">綜合：設計樣例 App</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/index.html" title="實現高效的導航" data-book-page-rel-url="ux/implement-nav/index.html" data-book-page-id="2675">實現高效的導航</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/lateral.html" title="使用Tabs創建Swipe視圖" data-book-page-rel-url="ux/implement-nav/lateral.html" data-book-page-id="2676">使用Tabs創建Swipe視圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/nav-drawer.html" title="創建抽屜導航" data-book-page-rel-url="ux/implement-nav/nav-drawer.html" data-book-page-id="2677">創建抽屜導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/ancestral.html" title="提供向上的導航" data-book-page-rel-url="ux/implement-nav/ancestral.html" data-book-page-id="2678">提供向上的導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/temporal.html" title="提供向後的導航" data-book-page-rel-url="ux/implement-nav/temporal.html" data-book-page-id="2679">提供向後的導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/implement-nav/descendant.html" title="實現向下的導航" data-book-page-rel-url="ux/implement-nav/descendant.html" data-book-page-id="2680">實現向下的導航</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/index.html" title="通知提示用戶" data-book-page-rel-url="ux/notify-user/index.html" data-book-page-id="2681">通知提示用戶</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/build-notification.html" title="建立Notification" data-book-page-rel-url="ux/notify-user/build-notification.html" data-book-page-id="2682">建立Notification</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/nav.html" title="當啟動Activity時保留導航" data-book-page-rel-url="ux/notify-user/nav.html" data-book-page-id="2683">當啟動Activity時保留導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/update-notification.html" title="更新Notification" data-book-page-rel-url="ux/notify-user/update-notification.html" data-book-page-id="2684">更新Notification</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/expand-notification.html" title="使用BigView風格" data-book-page-rel-url="ux/notify-user/expand-notification.html" data-book-page-id="2685">使用BigView風格</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/notify-user/progess-notification.html" title="顯示Notification進度" data-book-page-rel-url="ux/notify-user/progess-notification.html" data-book-page-id="2686">顯示Notification進度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/search/index.html" title="增加搜索功能" data-book-page-rel-url="ux/search/index.html" data-book-page-id="2687">增加搜索功能</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/search/setup.html" title="建立搜索界面" data-book-page-rel-url="ux/search/setup.html" data-book-page-id="2688">建立搜索界面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/search/search.html" title="保存並搜索數據" data-book-page-rel-url="ux/search/search.html" data-book-page-id="2689">保存並搜索數據</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/search/back-compat.html" title="保持向下兼容" data-book-page-rel-url="ux/search/back-compat.html" data-book-page-id="2690">保持向下兼容</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/app-indexing/index.html" title="使得你的App內容可被Google搜索" data-book-page-rel-url="ux/app-indexing/index.html" data-book-page-id="2691">使得你的App內容可被Google搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ux/app-indexing/deep-linking.html" title="為App內容開啟深度鏈接" data-book-page-rel-url="ux/app-indexing/deep-linking.html" data-book-page-id="2692">為App內容開啟深度鏈接</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ux/app-indexing/enable-app-indexing.html" title="為索引指定App內容" data-book-page-rel-url="ux/app-indexing/enable-app-indexing.html" data-book-page-id="2693">為索引指定App內容</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-ui.html" title="Android界面設計" data-book-page-rel-url="best-ui.html" data-book-page-id="2694">Android界面設計</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/multiscreen/index.html" title="為多屏幕設計" data-book-page-rel-url="ui/multiscreen/index.html" data-book-page-id="2695">為多屏幕設計</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/multiscreen/screen-sizes.html" title="兼容不同的屏幕大小" data-book-page-rel-url="ui/multiscreen/screen-sizes.html" data-book-page-id="2696">兼容不同的屏幕大小</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/multiscreen/screen-desities.html" title="兼容不同的屏幕密度" data-book-page-rel-url="ui/multiscreen/screen-desities.html" data-book-page-id="2697">兼容不同的屏幕密度</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/multiscreen/adapt-ui.html" title="實現可適應的UI" data-book-page-rel-url="ui/multiscreen/adapt-ui.html" data-book-page-id="2698">實現可適應的UI</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/custom-view/index.html" title="創建自定義View" data-book-page-rel-url="ui/custom-view/index.html" data-book-page-id="2699">創建自定義View</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/custom-view/create-view.html" title="創建自定義的View類" data-book-page-rel-url="ui/custom-view/create-view.html" data-book-page-id="2700">創建自定義的View類</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/custom-view/custom-draw.html" title="實現自定義View的繪製" data-book-page-rel-url="ui/custom-view/custom-draw.html" data-book-page-id="2701">實現自定義View的繪製</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/custom-view/make-interactive.html" title="使得View可交互" data-book-page-rel-url="ui/custom-view/make-interactive.html" data-book-page-id="2702">使得View可交互</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/custom-view/optimize-view.html" title="優化自定義View" data-book-page-rel-url="ui/custom-view/optimize-view.html" data-book-page-id="2703">優化自定義View</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/backward-compatible-ui/index.html" title="創建向後兼容的UI" data-book-page-rel-url="ui/backward-compatible-ui/index.html" data-book-page-id="2704">創建向後兼容的UI</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/backward-compatible-ui/abstract.html" title="抽象新的APIs" data-book-page-rel-url="ui/backward-compatible-ui/abstract.html" data-book-page-id="2705">抽象新的APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/backward-compatible-ui/new-impl.html" title="代理至新的APIs" data-book-page-rel-url="ui/backward-compatible-ui/new-impl.html" data-book-page-id="2706">代理至新的APIs</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/backward-compatible-ui/older-impl.html" title="使用舊的APIs實現新API的效果" data-book-page-rel-url="ui/backward-compatible-ui/older-impl.html" data-book-page-id="2707">使用舊的APIs實現新API的效果</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/backward-compatible-ui/using-component.html" title="使用版本敏感的組件" data-book-page-rel-url="ui/backward-compatible-ui/using-component.html" data-book-page-id="2708">使用版本敏感的組件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/accessibility/index.html" title="實現輔助功能" data-book-page-rel-url="ui/accessibility/index.html" data-book-page-id="2709">實現輔助功能</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/accessibility/accessible-app.html" title="開發輔助程序" data-book-page-rel-url="ui/accessibility/accessible-app.html" data-book-page-id="2710">開發輔助程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/accessibility/accessible-service.html" title="開發輔助服務" data-book-page-rel-url="ui/accessibility/accessible-service.html" data-book-page-id="2711">開發輔助服務</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/index.html" title="管理系統UI" data-book-page-rel-url="ui/system-ui/index.html" data-book-page-id="2712">管理系統UI</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/dim.html" title="淡化系統Bar" data-book-page-rel-url="ui/system-ui/dim.html" data-book-page-id="2713">淡化系統Bar</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/hide-ui.html" title="隱藏系統Bar" data-book-page-rel-url="ui/system-ui/hide-ui.html" data-book-page-id="2714">隱藏系統Bar</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/hide-nav.html" title="隱藏導航Bar" data-book-page-rel-url="ui/system-ui/hide-nav.html" data-book-page-id="2715">隱藏導航Bar</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/immersive.html" title="全屏沉浸式應用" data-book-page-rel-url="ui/system-ui/immersive.html" data-book-page-id="2716">全屏沉浸式應用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/ui/system-ui/visibility.html" title="響應UI可見性的變化" data-book-page-rel-url="ui/system-ui/visibility.html" data-book-page-id="2717">響應UI可見性的變化</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/index.html" title="創建使用Material Design的應用" data-book-page-rel-url="material/index.html" data-book-page-id="2718">創建使用Material Design的應用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/material/get-started.html" title="開始使用Material Design" data-book-page-rel-url="material/get-started.html" data-book-page-id="2719">開始使用Material Design</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/theme.html" title="使用Material的主題" data-book-page-rel-url="material/theme.html" data-book-page-id="2720">使用Material的主題</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/lists-cards.html" title="創建Lists與Cards" data-book-page-rel-url="material/lists-cards.html" data-book-page-id="2721">創建Lists與Cards</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/shadows-clipping.html" title="定義Shadows與Clipping視圖" data-book-page-rel-url="material/shadows-clipping.html" data-book-page-id="2722">定義Shadows與Clipping視圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/drawables.html" title="使用Drawables" data-book-page-rel-url="material/drawables.html" data-book-page-id="2723">使用Drawables</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/animations.html" title="自定義動畫" data-book-page-rel-url="material/animations.html" data-book-page-id="2724">自定義動畫</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/material/compatibility.html" title="維護兼容性" data-book-page-rel-url="material/compatibility.html" data-book-page-id="2725">維護兼容性</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-user-input.html" title="Android用戶輸入" data-book-page-rel-url="best-user-input.html" data-book-page-id="2726">Android用戶輸入</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/index.html" title="使用觸摸手勢" data-book-page-rel-url="input/gestures/index.html" data-book-page-id="2727">使用觸摸手勢</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/detector.html" title="檢測常用的手勢" data-book-page-rel-url="input/gestures/detector.html" data-book-page-id="2728">檢測常用的手勢</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/movement.html" title="跟蹤手勢移動" data-book-page-rel-url="input/gestures/movement.html" data-book-page-id="2729">跟蹤手勢移動</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/scroll.html" title="滾動手勢動畫" data-book-page-rel-url="input/gestures/scroll.html" data-book-page-id="2730">滾動手勢動畫</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/multi.html" title="處理多點觸控手勢" data-book-page-rel-url="input/gestures/multi.html" data-book-page-id="2731">處理多點觸控手勢</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/scale.html" title="拖拽與縮放" data-book-page-rel-url="input/gestures/scale.html" data-book-page-id="2732">拖拽與縮放</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/gestures/viewgroup.html" title="管理ViewGroup中的觸摸事件" data-book-page-rel-url="input/gestures/viewgroup.html" data-book-page-id="2733">管理ViewGroup中的觸摸事件</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/keyboard-input/index.html" title="處理鍵盤輸入" data-book-page-rel-url="input/keyboard-input/index.html" data-book-page-id="2734">處理鍵盤輸入</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/input/keyboard-input/type.html" title="指定輸入法類型" data-book-page-rel-url="input/keyboard-input/type.html" data-book-page-id="2735">指定輸入法類型</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/keyboard-input/visibility.html" title="處理輸入法可見性" data-book-page-rel-url="input/keyboard-input/visibility.html" data-book-page-id="2736">處理輸入法可見性</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/keyboard-input/navigation.html" title="支持鍵盤導航" data-book-page-rel-url="input/keyboard-input/navigation.html" data-book-page-id="2737">支持鍵盤導航</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/keyboard-input/commands.html" title="處理按鍵動作" data-book-page-rel-url="input/keyboard-input/commands.html" data-book-page-id="2738">處理按鍵動作</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/game-controller/index.html" title="支持遊戲控制器" data-book-page-rel-url="input/game-controller/index.html" data-book-page-id="2739">支持遊戲控制器</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/input/game-controller/controller-inputs.html" title="處理控制器輸入動作" data-book-page-rel-url="input/game-controller/controller-inputs.html" data-book-page-id="2740">處理控制器輸入動作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/game-controller/compatibility.html" title="在不同的 Android 系統版本支持控制器" data-book-page-rel-url="input/game-controller/compatibility.html" data-book-page-id="2741">在不同的 Android 系統版本支持控制器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/input/game-controller/multi-controller.html" title="支持多個控制器" data-book-page-rel-url="input/game-controller/multi-controller.html" data-book-page-id="2742">支持多個控制器</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-background.html" title="Android後臺任務" data-book-page-rel-url="best-background.html" data-book-page-id="2743">Android後臺任務</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/run-background-service/index.html" title="在IntentService中執行後臺任務" data-book-page-rel-url="background-jobs/run-background-service/index.html" data-book-page-id="2744">在IntentService中執行後臺任務</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/run-background-service/create-service.html" title="創建IntentService" data-book-page-rel-url="background-jobs/run-background-service/create-service.html" data-book-page-id="2745">創建IntentService</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/run-background-service/send-request.html" title="發送工作任務到IntentService" data-book-page-rel-url="background-jobs/run-background-service/send-request.html" data-book-page-id="2746">發送工作任務到IntentService</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/run-background-service/report-status.html" title="報告後臺任務執行狀態" data-book-page-rel-url="background-jobs/run-background-service/report-status.html" data-book-page-id="2747">報告後臺任務執行狀態</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/load-data-background/index.html" title="使用CursorLoader在後臺加載數據" data-book-page-rel-url="background-jobs/load-data-background/index.html" data-book-page-id="2748">使用CursorLoader在後臺加載數據</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/load-data-background/setup-loader.html" title="使用CursorLoader執行查詢任務" data-book-page-rel-url="background-jobs/load-data-background/setup-loader.html" data-book-page-id="2749">使用CursorLoader執行查詢任務</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/load-data-background/handle-result.html" title="處理CursorLoader查詢的結果" data-book-page-rel-url="background-jobs/load-data-background/handle-result.html" data-book-page-id="2750">處理CursorLoader查詢的結果</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/scheduling/index.html" title="管理設備的喚醒狀態" data-book-page-rel-url="background-jobs/scheduling/index.html" data-book-page-id="2751">管理設備的喚醒狀態</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/scheduling/wake-lock.html" title="保持設備的喚醒" data-book-page-rel-url="background-jobs/scheduling/wake-lock.html" data-book-page-id="2752">保持設備的喚醒</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/background-jobs/scheduling/alarms.html" title="制定重複定時的任務" data-book-page-rel-url="background-jobs/scheduling/alarms.html" data-book-page-id="2753">制定重複定時的任務</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-performance.html" title="Android性能優化" data-book-page-rel-url="best-performance.html" data-book-page-id="2754">Android性能優化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/performance/memory.html" title="管理應用的內存" data-book-page-rel-url="performance/memory.html" data-book-page-id="2755">管理應用的內存</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/performance-tips.html" title="代碼性能優化建議" data-book-page-rel-url="performance/performance-tips.html" data-book-page-id="2756">代碼性能優化建議</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/improving-layouts/index.html" title="提升Layout的性能" data-book-page-rel-url="performance/improving-layouts/index.html" data-book-page-id="2757">提升Layout的性能</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/performance/improving-layouts/optimizing-layout.html" title="優化layout的層級" data-book-page-rel-url="performance/improving-layouts/optimizing-layout.html" data-book-page-id="2758">優化layout的層級</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/improving-layouts/reuse-layouts.html" title="使用include標籤重用layouts" data-book-page-rel-url="performance/improving-layouts/reuse-layouts.html" data-book-page-id="2759">使用include標籤重用layouts</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/improving-layouts/loading-ondemand.html" title="按需加載視圖" data-book-page-rel-url="performance/improving-layouts/loading-ondemand.html" data-book-page-id="2760">按需加載視圖</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/improving-layouts/smooth-scrolling.html" title="使得ListView滑動順暢" data-book-page-rel-url="performance/improving-layouts/smooth-scrolling.html" data-book-page-id="2761">使得ListView滑動順暢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/monitor-device-state/index.html" title="優化電池壽命" data-book-page-rel-url="performance/monitor-device-state/index.html" data-book-page-id="2762">優化電池壽命</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/performance/monitor-device-state/battery-monitor.html" title="監測電量與充電狀態" data-book-page-rel-url="performance/monitor-device-state/battery-monitor.html" data-book-page-id="2763">監測電量與充電狀態</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/monitor-device-state/docking-monitor.html" title="判斷與監測Docking狀態" data-book-page-rel-url="performance/monitor-device-state/docking-monitor.html" data-book-page-id="2764">判斷與監測Docking狀態</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/monitor-device-state/connectivity-monitor.html" title="判斷與監測網絡連接狀態" data-book-page-rel-url="performance/monitor-device-state/connectivity-monitor.html" data-book-page-id="2765">判斷與監測網絡連接狀態</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/monitor-device-state/manifest-receivers.html" title="根據需要操作Broadcast接受者" data-book-page-rel-url="performance/monitor-device-state/manifest-receivers.html" data-book-page-id="2766">根據需要操作Broadcast接受者</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/multi-threads/index.html" title="多線程操作" data-book-page-rel-url="performance/multi-threads/index.html" data-book-page-id="2767">多線程操作</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/performance/multi-threads/define-runnable.html" title="在一個線程中執行一段特定的代碼" data-book-page-rel-url="performance/multi-threads/define-runnable.html" data-book-page-id="2768">在一個線程中執行一段特定的代碼</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/multi-threads/create-threadpool.html" title="為多線程創建線程池" data-book-page-rel-url="performance/multi-threads/create-threadpool.html" data-book-page-id="2769">為多線程創建線程池</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/multi-threads/run-code.html" title="啟動與停止線程池中的線程" data-book-page-rel-url="performance/multi-threads/run-code.html" data-book-page-id="2770">啟動與停止線程池中的線程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/multi-threads/communicate-ui.html" title="與UI線程通信" data-book-page-rel-url="performance/multi-threads/communicate-ui.html" data-book-page-id="2771">與UI線程通信</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/perf-anr/index.html" title="避免出現程序無響應ANR" data-book-page-rel-url="performance/perf-anr/index.html" data-book-page-id="2772">避免出現程序無響應ANR</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/perf-jni/index.html" title="JNI使用指南" data-book-page-rel-url="performance/perf-jni/index.html" data-book-page-id="2773">JNI使用指南</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/performance/smp/index.html" title="優化多核處理器(SMP)下的Android程序" data-book-page-rel-url="performance/smp/index.html" data-book-page-id="2774">優化多核處理器(SMP)下的Android程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-security.html" title="Android安全與隱私" data-book-page-rel-url="best-security.html" data-book-page-id="2775">Android安全與隱私</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/security/security-tips.html" title="Security Tips" data-book-page-rel-url="security/security-tips.html" data-book-page-id="2776">Security Tips</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/security/security-ssl.html" title="使用HTTPS與SSL" data-book-page-rel-url="security/security-ssl.html" data-book-page-id="2777">使用HTTPS與SSL</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/security/security-gms-provider.html" title="為防止SSL漏洞而更新Security" data-book-page-rel-url="security/security-gms-provider.html" data-book-page-id="2778">為防止SSL漏洞而更新Security</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/security/device-management-policy.html" title="使用設備管理條例增強安全性" data-book-page-rel-url="security/device-management-policy.html" data-book-page-id="2779">使用設備管理條例增強安全性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/best-testing.html" title="Android測試程序" data-book-page-rel-url="best-testing.html" data-book-page-id="2780">Android測試程序</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/index.html" title="測試你的Activity" data-book-page-rel-url="testing/activity-testing/index.html" data-book-page-id="2781">測試你的Activity</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/prepare-activity-testing.html" title="建立測試環境" data-book-page-rel-url="testing/activity-testing/prepare-activity-testing.html" data-book-page-id="2782">建立測試環境</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/activity-basic-testing.html" title="創建與執行測試用例" data-book-page-rel-url="testing/activity-testing/activity-basic-testing.html" data-book-page-id="2783">創建與執行測試用例</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/activity-ui-testing.html" title="測試UI組件" data-book-page-rel-url="testing/activity-testing/activity-ui-testing.html" data-book-page-id="2784">測試UI組件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/activity-unit-testing.html" title="創建單元測試" data-book-page-rel-url="testing/activity-testing/activity-unit-testing.html" data-book-page-id="2785">創建單元測試</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/41/testing/activity-testing/activity-function-testing.html" title="創建功能測試" data-book-page-rel-url="testing/activity-testing/activity-function-testing.html" data-book-page-id="2786">創建功能測試</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =41;var bookPageId =2774;var bookPageRelUrl ='performance/smp/index.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,395 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Writing a Time Server 写个时间服务器-Netty 4.x 用户指南(Netty 4.x User Guide)</title>
+<meta content='Writing a Time Server 写个时间服务器,Netty 4.x 用户指南,Netty 4.x User Guide' name='keywords'>
+<meta content='Writing a Time Server 写个时间服务器,Netty 4.x 用户指南,Netty 4.x User Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/7/Getting%20Started/Writing%20an%20Echo%20Server.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Writing an ..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Client.html">
+<span class="">Writing a T..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/7/index.html">Netty 4.x 用户指南 (Netty 4.x User Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/waylau/netty-4-user-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="writing-a-time-server-写个时间服务器">Writing a Time Server 写个时间服务器</h1>
+<p>在这个部分被实现的协议是 <a href="http://tools.ietf.org/html/rfc868">TIME</a> 协议。和之前的例子不同的是在不接受任何请求时他会发送一个含32位的整数的消息，并且一旦消息发送就会立即关闭连接。在这个例子中，你会学习到如何构建和发送一个消息，然后在完成时关闭连接。</p>
+<p>因为我们将会忽略任何接收到的数据，而只是在连接被创建发送一个消息，所以这次我们不能使用 channelRead() 方法了，代替他的是，我们需要覆盖 channelActive() 方法，下面的就是实现的内容：</p>
+<pre><code>public class TimeServerHandler extends ChannelInboundHandlerAdapter {
+	
+	@Override
+    public void channelActive(final ChannelHandlerContext ctx) { // (1)
+        final ByteBuf time = ctx.alloc().buffer(4); // (2)
+        time.writeInt((int) (System.currentTimeMillis() / 1000L + 2208988800L));
+
+        final ChannelFuture f = ctx.writeAndFlush(time); // (3)
+        f.addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) {
+                assert f == future;
+                ctx.close();
+            }
+        }); // (4)
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        cause.printStackTrace();
+        ctx.close();
+    }
+}
+</code></pre>
+<p>1.channelActive() 方法将会在连接被建立并且准备进行通信时被调用。因此让我们在这个方法里完成一个代表当前时间的32位整数消息的构建工作。</p>
+<p>2.为了发送一个新的消息，我们需要分配一个包含这个消息的新的缓冲。因为我们需要写入一个32位的整数，因此我们需要一个至少有4个字节的 <a href="http://netty.io/4.0/api/io/netty/buffer/ByteBuf.html">ByteBuf</a>。通过 ChannelHandlerContext.alloc() 得到一个当前的<a href="http://netty.io/4.0/api/io/netty/buffer/ByteBufAllocator.html">ByteBufAllocator</a>，然后分配一个新的缓冲。</p>
+<p>3.和往常一样我们需要编写一个构建好的消息。但是等一等，flip 在哪？难道我们使用 NIO 发送消息时不是调用 java.nio.ByteBuffer.flip() 吗？ByteBuf 之所以没有这个方法因为有两个指针，一个对应读操作一个对应写操作。当你向 ByteBuf 里写入数据的时候写指针的索引就会增加，同时读指针的索引没有变化。读指针索引和写指针索引分别代表了消息的开始和结束。</p>
+<p>比较起来，NIO 缓冲并没有提供一种简洁的方式来计算出消息内容的开始和结尾，除非你调用 flip 方法。当你忘记调用 flip 方法而引起没有数据或者错误数据被发送时，你会陷入困境。这样的一个错误不会发生在 Netty 上，因为我们对于不同的操作类型有不同的指针。你会发现这样的使用方法会让你过程变得更加的容易，因为你已经习惯一种没有使用 flip 的方式。</p>
+<p>另外一个点需要注意的是 ChannelHandlerContext.write() (和 writeAndFlush() )方法会返回一个 <a href="http://netty.io/4.0/api/io/netty/channel/ChannelFuture.html">ChannelFuture</a> 对象，一个 ChannelFuture 代表了一个还没有发生的 I/O 操作。这意味着任何一个请求操作都不会马上被执行，因为在 Netty 里所有的操作都是异步的。举个例子下面的代码中在消息被发送之前可能会先关闭连接。</p>
+<pre><code class="language-java">
+	Channel ch = ...;
+	ch.writeAndFlush(message);
+	ch.close();
+
+</code></pre>
+<p>因此你需要在 write() 方法返回的 ChannelFuture 完成后调用 close() 方法，然后当他的写操作已经完成他会通知他的监听者。请注意,close() 方法也可能不会立马关闭，他也会返回一个ChannelFuture。</p>
+<p>4.当一个写请求已经完成是如何通知到我们？这个只需要简单地在返回的 ChannelFuture 上增加一个<a href="http://netty.io/4.0/api/io/netty/channel/ChannelFutureListener.html">ChannelFutureListener</a>。这里我们构建了一个匿名的 ChannelFutureListener 类用来在操作完成时关闭 Channel。</p>
+<p>或者，你可以使用简单的预定义监听器代码:</p>
+<pre><code>f.addListener(ChannelFutureListener.CLOSE);
+</code></pre>
+<p>为了测试我们的time服务如我们期望的一样工作，你可以使用 UNIX 的 rdate 命令</p>
+<pre><code>$ rdate -o &lt;port&gt; -p &lt;host&gt;
+</code></pre>
+<p>Port 是你在main()函数中指定的端口，host 使用 localhost 就可以了。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/8/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/8/index.html">Netty 实战(精髓)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">101页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 817个">817</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/177/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/177/index.html">30秒学会常用React代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/98.html">30 seconds</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1894个">1894</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/168/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/159/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/159/index.html">im-service 简介</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/91.html">yu000hong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/97/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/97/index.html">Twisted与异步编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 158个">158</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/7/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Preface 前言" disabled data-book-page-rel-url="" data-book-page-id="643">Preface 前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Problem.html" title="The Problem 问题" data-book-page-rel-url="Preface/The%20Problem.html" data-book-page-id="644">The Problem 问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Solution.html" title="The Solution 解决" data-book-page-rel-url="Preface/The%20Solution.html" data-book-page-id="645">The Solution 解决</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Getting%20Started.html" title="Getting Started 开始" data-book-page-rel-url="Getting%20Started/Getting%20Started.html" data-book-page-id="646">Getting Started 开始</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Before%20Getting%20Started.html" title="Before Getting Started 开始之前" data-book-page-rel-url="Getting%20Started/Before%20Getting%20Started.html" data-book-page-id="647">Before Getting Started 开始之前</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Discard%20Server.html" title="Writing a Discard Server 写个抛弃服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Discard%20Server.html" data-book-page-id="648">Writing a Discard Server 写个抛弃服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Looking%20into%20the%20Received%20Data.html" title="Looking into the Received Data 查看收到的数据" data-book-page-rel-url="Getting%20Started/Looking%20into%20the%20Received%20Data.html" data-book-page-id="649">Looking into the Received Data 查看收到的数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20an%20Echo%20Server.html" title="Writing an Echo Server 写个应答服务器" data-book-page-rel-url="Getting%20Started/Writing%20an%20Echo%20Server.html" data-book-page-id="650">Writing an Echo Server 写个应答服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Server.html" title="Writing a Time Server 写个时间服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Server.html" data-book-page-id="651">Writing a Time Server 写个时间服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Client.html" title="Writing a Time Client 写个时间客户端" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Client.html" data-book-page-id="652">Writing a Time Client 写个时间客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" title="Dealing with a Stream-based Transport 处理一个基于流的传输" data-book-page-rel-url="Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" data-book-page-id="653">Dealing with a Stream-based Transport 处理一个基于流的传输</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" title="Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf" data-book-page-rel-url="Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" data-book-page-id="654">Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Shutting%20Down%20Your%20Application.html" title="Shutting Down Your Application 关闭你的应用" data-book-page-rel-url="Getting%20Started/Shutting%20Down%20Your%20Application.html" data-book-page-id="655">Shutting Down Your Application 关闭你的应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Summary.html" title="Summary 总结" data-book-page-rel-url="Getting%20Started/Summary.html" data-book-page-id="656">Summary 总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Architectural%20Overview.html" title="Architectural Overview 架构总览" data-book-page-rel-url="Architectural%20Overview/Architectural%20Overview.html" data-book-page-id="657">Architectural Overview 架构总览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" title="Rich Buffer Data Structure 丰富的缓冲实现" data-book-page-rel-url="Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" data-book-page-id="658">Rich Buffer Data Structure 丰富的缓冲实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" title="Universal Asynchronous I/O API 统一的异步 I/O API" data-book-page-rel-url="Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" data-book-page-id="659">Universal Asynchronous I/O API 统一的异步 I/O API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" title="Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型" data-book-page-rel-url="Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" data-book-page-id="660">Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" title="Advanced Components for More Rapid Development 适用快速开发的高级组件" data-book-page-rel-url="Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" data-book-page-id="661">Advanced Components for More Rapid Development 适用快速开发的高级组件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Summary.html" title="Summary 总结" data-book-page-rel-url="Architectural%20Overview/Summary.html" data-book-page-id="662">Summary 总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =7;var bookPageId =651;var bookPageRelUrl ='Getting%20Started/Writing%20a%20Time%20Server.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

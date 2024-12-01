@@ -1,0 +1,1504 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>扩容设计-Elasticsearch权威指南(Elasticsearch Definitive Guide)</title>
+<meta content='扩容设计,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='keywords'>
+<meta content='扩容设计,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/asciidoc.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/40/parent-child.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">父-子关系文档</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/40/administration.html">
+<span class="">管理、监控和部署</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/40/index.html">Elasticsearch权威指南 (Elasticsearch Definitive Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/elasticsearch-cn/elasticsearch-definitive-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  asc-content-section  uk-margin-bottom">
+<h2 id="scale">扩容设计</h2>
+<div class="paragraph">
+<p>一些公司每天使用 Elasticsearch 索引检索 PB 级数据， 但我们中的大多数都起步于规模稍逊的项目。即使我们立志成为下一个 Facebook，我们的银行卡余额却也跟不上梦想的脚步。 我们需要为今日所需而构建，但也要允许我们可以灵活而又快速地进行水平扩展。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 为了可扩展性而生。它可以良好地运行于你的笔记本电脑又或者一个拥有数百节点的集群，同时用户体验基本相同。 由小规模集群增长为大规模集群的过程几乎完全自动化并且无痛。由大规模集群增长为超大规模集群需要一些规划和设计，但还是相对地无痛。</p>
+</div>
+<div class="paragraph">
+<p>当然这一切并不是魔法。Elasticsearch 也有它的局限性。如果你了解这些局限性并能够与之相处，集群扩容的过程将会是愉快的。 如果你对 Elasticsearch 处理不当，那么你将处于一个充满痛苦的世界。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 的默认设置会伴你走过很长的一段路，但为了发挥它最大的效用，你需要考虑数据是如何流经你的系统的。 我们将讨论两种常见的数据流：时序数据（时间驱动相关性，例如日志或社交网络数据流），以及基于用户的数据（拥有很大的文档集但可以按用户或客户细分）。</p>
+</div>
+<div class="paragraph">
+<p>这一章将帮助你在遇到不愉快之前做出正确的选择。</p>
+</div>
+<div class="sect2">
+<h3 id="shard-scale">扩容的单元</h3>
+<div class="paragraph">
+<p>在 <a href="#dynamic-indices">动态更新索引</a>，我们介绍了一个分片即一个 <em>Lucene 索引</em> ，一个 Elasticsearch 索引即一系列分片的集合。 你的应用程序与索引进行交互，Elasticsearch 帮助你将请求路由至相应的分片。</p>
+</div>
+<div class="paragraph">
+<p>一个分片即为 <em>扩容的单元</em> 。一个最小的索引拥有一个分片。 这可能已经完全满足你的需求了 — 单个分片即可存储大量的数据 — 但这限制了你的可扩展性。</p>
+</div>
+<div class="paragraph">
+<p>想象一下我们的集群由一个节点组成，在集群内我们拥有一个索引，这个索引只含一个分片：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "settings": {
+    "number_of_shards":   1, <b class="conum">(1)</b>
+    "number_of_replicas": 0
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>创建一个拥有 1 主分片 0 个副本分片的索引.</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个设置值也许很小，但它满足我们当前的需求而且运行代价低。</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>当前我们只讨论 <em>主</em> 分片。我们将在 <a href="#replica-shards">副本分片</a> 讨论 <em>副本</em> 分片。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>在美好的一天，互联网发现了我们，一个节点再也承受不了我们的流量。 我们决定根据 <a href="#img-one-shard">一个只有一个分片的索引无扩容因子</a> 添加一个节点。这将会发生什么呢？</p>
+</div>
+<div id="img-one-shard" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4401.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4401.png" alt="一个只有一个分片的索引无扩容因子"></a>
+</div>
+<div class="title">
+Figure 49. 一个只有一个分片的索引无扩容因子
+</div>
+</div>
+<div class="paragraph">
+<p>答案是：什么都不会发生。因为我们只有一个分片，已经没有什么可以放在第二个节点上的了。 我们不能增加索引的分片数因为它是 <a href="#routing-value">route documents to shards</a> 算法中的重要元素：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>shard = hash(routing) % number_of_primary_shards</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>我们当前的选择只有一个就是将数据重新索引至一个拥有更多分片的一个更大的索引，但这样做将消耗的时间是我们无法提供的。 通过事先规划，我们可以使用 <em>预分配</em> 的方式来完全避免这个问题。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="overallocation">分片预分配</h3>
+<div class="paragraph">
+<p>一个分片存在于单个节点，但一个节点可以持有多个分片。想象一下我们创建拥有两个主分片的索引而不是一个：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "settings": {
+    "number_of_shards":   2, <b class="conum">(1)</b>
+    "number_of_replicas": 0
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>创建拥有两个主分片无副本分片的索引。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>当只有一个节点时，两个分片都将被分配至相同的节点。 从我们应用程序的角度来看，一切都和之前一样运作着。应用程序和索引进行通讯，而不是分片，现在还是只有一个索引。</p>
+</div>
+<div class="paragraph">
+<p>这时，我们加入第二个节点，Elasticsearch 会自动将其中一个分片移动至第二个节点，如 <a href="#img-two-shard">一个拥有两个分片的索引可以利用第二个节点</a> 描绘的那样， 当重新分配完成后，每个分片都将接近至两倍于之前的计算能力。</p>
+</div>
+<div id="img-two-shard" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4402.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4402.png" alt="一个拥有两个分片的索引可以利用第二个节点"></a>
+</div>
+<div class="title">
+Figure 50. 一个拥有两个分片的索引可以利用第二个节点
+</div>
+</div>
+<div class="paragraph">
+<p>我们已经可以通过简单地将一个分片通过网络复制到一个新的节点来加倍我们的处理能力。 最棒的是，我们零停机地做到了这一点。在分片移动过程中，所有的索引搜索请求均在正常运行。</p>
+</div>
+<div class="paragraph">
+<p>在 Elasticsearch 中新添加的索引默认被指定了五个主分片。 这意味着我们最多可以将那个索引分散到五个节点上，每个节点一个分片。 它具有很高的处理能力，还未等你去思考这一切就已经做到了！</p>
+</div>
+<div class="sidebarblock">
+<div class="content">
+<div class="title">
+分片分裂
+</div>
+<div class="paragraph">
+<p>用户经常在问，为什么 Elasticsearch 不支持 <em>分片分裂（shard-splitting）</em>— 将每个分片分裂为两个或更多部分的能力。 原因就是分片分裂是一个糟糕的想法：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>分裂一个分片几乎等于重新索引你的数据。它是一个比仅仅将分片从一个节点复制到另一个节点更重量级的操作。</p> </li>
+<li> <p>分裂是指数的。起初你你有一个分片，然后分裂为两个，然后四个，八个，十六个，等等。分裂并不会刚好地把你的处理能力提升 50%。</p> </li>
+<li> <p>分片分裂需要你拥有足够的能力支撑另一份索引的拷贝。通常来说，当你意识到你需要横向扩展时，你已经没有足够的剩余空间来做分裂了。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 通过另一种方式来支持分片分裂。你总是可以把你的数据重新索引至一个拥有适当分片个数的新索引（参阅 <a href="#reindex">重新索引你的数据</a>）。 和移动分片比起来这依然是一个更加密集的操作，依然需要足够的剩余空间来完成，但至少你可以控制新索引的分片个数了。</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="kagillion-shards">海量分片</h3>
+<div class="paragraph">
+<p>当新手们在了解过 <a href="#overallocation">分片预分配</a> 之后做的第一件事就是对自己说：</p>
+</div>
+<div class="quoteblock">
+<blockquote>
+<div class="paragraph alignmeright">
+<p>我不知道这个索引将来会变得多大，并且过后我也不能更改索引的大小，所以为了保险起见，还是给它设为 1000 个分片吧…​</p>
+</div>
+</blockquote>
+<div class="attribution">
+— 一个新手的话
+</div>
+</div>
+<div class="paragraph">
+<p>一千个分片——当真？在你买来 <em>一千个节点</em> 之前，你不觉得你可能需要再三思考你的数据模型然后将它们重新索引吗？</p>
+</div>
+<div class="paragraph">
+<p>一个分片并不是没有代价的。记住：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>一个分片的底层即为一个 Lucene 索引，会消耗一定文件句柄、内存、以及 CPU 运转。</p> </li>
+<li> <p>每一个搜索请求都需要命中索引中的每一个分片，如果每一个分片都处于不同的节点还好， 但如果多个分片都需要在同一个节点上竞争使用相同的资源就有些糟糕了。</p> </li>
+<li> <p>用于计算相关度的词项统计信息是基于分片的。如果有许多分片，每一个都只有很少的数据会导致很低的相关度。</p> </li>
+</ul>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>适当的预分配是好的。但上千个分片就有些糟糕。我们很难去定义分片是否过多了，这取决于它们的大小以及如何去使用它们。 一百个分片但很少使用还好，两个分片但非常频繁地使用有可能就有点多了。 监控你的节点保证它们留有足够的空闲资源来处理一些特殊情况。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>横向扩展应当分阶段进行。为下一阶段准备好足够的资源。 只有当你进入到下一个阶段，你才有时间思考需要作出哪些改变来达到这个阶段。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="capacity-planning">容量规划</h3>
+<div class="paragraph">
+<p>如果一个分片太少而 1000 个又太多，那么我怎么知道我需要多少分片呢？ 一般情况下这是一个无法回答的问题。因为实在有太多相关的因素了：你使用的硬件、文档的大小和复杂度、文档的索引分析方式、运行的查询类型、执行的聚合以及你的数据模型等等。</p>
+</div>
+<div class="paragraph">
+<p>幸运的是，在特定场景下这是一个容易回答的问题，尤其是你自己的场景：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>基于你准备用于生产环境的硬件创建一个拥有单个节点的集群。</p> </li>
+<li> <p>创建一个和你准备用于生产环境相同配置和分析器的索引，但让它只有一个主分片无副本分片。</p> </li>
+<li> <p>索引实际的文档（或者尽可能接近实际）。</p> </li>
+<li> <p>运行实际的查询和聚合（或者尽可能接近实际）。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>基本来说，你需要复制真实环境的使用方式并将它们全部压缩到单个分片上直到它``挂掉。'' 实际上 <em>挂掉</em> 的定义也取决于你：一些用户需要所有响应在 50 毫秒内返回；另一些则乐于等上 5 秒钟。</p>
+</div>
+<div class="paragraph">
+<p>一旦你定义好了单个分片的容量，很容易就可以推算出整个索引的分片数。 用你需要索引的数据总数加上一部分预期的增长，除以单个分片的容量，结果就是你需要的主分片个数。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>容量规划不应当作为你的第一步。</p>
+</div>
+<div class="paragraph">
+<p>先看看有没有办法优化你对 Elasticsearch 的使用方式。也许你有低效的查询，缺少足够的内存，又或者你开启了 swap？</p>
+</div>
+<div class="paragraph">
+<p>我们见过一些新手对于初始性能感到沮丧，立即就着手调优垃圾回收又或者是线程数，而不是处理简单问题例如去掉通配符查询。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="replica-shards">副本分片</h3>
+<div class="paragraph">
+<p>目前为止我们只讨论过主分片，但我们身边还有另一个工具：副本分片。 副本分片的主要目的就是为了故障转移，正如在 <a href="#distributed-cluster">集群内的原理</a> 中讨论的：如果持有主分片的节点挂掉了，一个副本分片就会晋升为主分片的角色。</p>
+</div>
+<div class="paragraph">
+<p>在索引写入时，副本分片做着与主分片相同的工作。新文档首先被索引进主分片然后再同步到其它所有的副本分片。增加副本数并不会增加索引容量。</p>
+</div>
+<div class="paragraph">
+<p>无论如何，副本分片可以服务于读请求，如果你的索引也如常见的那样是偏向查询使用的，那你可以通过增加副本的数目来提升查询性能，但也要为此 <em>增加额外的硬件资源</em>。</p>
+</div>
+<div class="paragraph">
+<p>让我们回到那个有着两个主分片索引的例子。我通过增加第二个节点来提升索引容量。 增加额外的节点不会帮助我们提升索引写入能力，但我们可以通过增加副本数在搜索时利用额外的硬件：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index/_settings
+{
+  "number_of_replicas": 1
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>拥有两个主分片，加上每个主分片的一个副本，总共给予我们四个分片：每个节点一个，如图所示 <a href="#img-four-nodes">一个拥有两个主分片一份副本的索引可以在四个节点中横向扩展</a>。</p>
+</div>
+<div id="img-four-nodes" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4403.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4403.png" alt="一个拥有两个主分片一份副本的索引可以在四个节点中横向扩展"></a>
+</div>
+<div class="title">
+Figure 51. 一个拥有两个主分片一份副本的索引可以在四个节点中横向扩展
+</div>
+</div>
+<div class="sect3">
+<h4 id="_通过副本进行负载均衡">通过副本进行负载均衡</h4>
+<div class="paragraph">
+<p>搜索性能取决于最慢的节点的响应时间，所以尝试均衡所有节点的负载是一个好想法。 如果我们只是增加一个节点而不是两个，最终我们会有两个节点各持有一个分片，而另一个持有两个分片做着两倍的工作。</p>
+</div>
+<div class="paragraph">
+<p>我们可以通过调整副本数量来平衡这些。通过分配两份副本而不是一个，最终我们会拥有六个分片，刚好可以平均分给三个节点，如图所示 <a href="#img-three-nodes">通过调整副本数来均衡节点负载</a>：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index/_settings
+{
+  "number_of_replicas": 2
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>作为奖励，我们同时提升了我们的可用性。我们可以容忍丢失两个节点而仍然保持一份完整数据的拷贝。</p>
+</div>
+<div id="img-three-nodes" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4404.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_4404.png" alt="通过调整副本数来均衡节点负载"></a>
+</div>
+<div class="title">
+Figure 52. 通过调整副本数来均衡节点负载
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content"> 事实上节点 3 持有两个副本分片，然而没有主分片并不重要。副本分片与主分片做着相同的工作；它们只是扮演着略微不同的角色。没有必要确保主分片均匀地分布在所有节点中。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="multiple-indices">多索引</h3>
+<div class="paragraph">
+<p>最后，记住没有任何规则限制你的应用程序只使用一个索引。 当我们发起一个搜索请求时，它被转发至索引中每个分片的一份拷贝（一个主分片或一个副本分片），如果我们向多个索引发出同样的请求，会发生完全相同的事情——只不过会涉及更多的分片。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content"> 搜索 1 个有着 50 个分片的索引与搜索 50 个每个都有 1 个分片的索引完全等价：搜索请求均命中 50 个分片。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>当你需要在不停服务的情况下增加容量时，下面有一些有用的建议。相较于将数据迁移到更大的索引中，你可以仅仅做下面这些操作：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>创建一个新的索引来存储新的数据。</p> </li>
+<li> <p>同时搜索两个索引来获取新数据和旧数据。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>实际上，通过一点预先计划，添加一个新索引可以通过一种完全透明的方式完成，你的应用程序根本不会察觉到任何的改变。</p>
+</div>
+<div class="paragraph">
+<p>在 <a href="#index-aliases">索引别名和零停机</a>，我们提到过使用索引别名来指向当前版本的索引。 举例来说，给你的索引命名为 <code>tweets_v1</code> 而不是 <code>tweets</code> 。你的应用程序会与 <code>tweets</code> 进行交互，但事实上它是一个指向 <code>tweets_v1</code> 的别名。 这允许你将别名切换至一个更新版本的索引而保持服务运转。</p>
+</div>
+<div class="paragraph">
+<p>我们可以使用一个类似的技术通过增加一个新索引来扩展容量。这需要一点点规划，因为你需要两个别名：一个用于搜索另一个用于索引数据：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /tweets_1/_alias/tweets_search <b class="conum">(1)</b>
+PUT /tweets_1/_alias/tweets_index <b class="conum">(1)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>tweets_search</code> 与 <code>tweets_index</code> 这两个别名都指向索引 <code>tweets_1</code> 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>新文档应当索引至 <code>tweets_index</code> ，同时，搜索请求应当对别名 <code>tweets_search</code> 发出。目前，这两个别名指向同一个索引。</p>
+</div>
+<div class="paragraph">
+<p>当我们需要额外容量时，我们可以创建一个名为 <code>tweets_2</code> 的索引，并且像这样更新别名：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /_aliases
+{
+  "actions": [
+    { "add":    { "index": "tweets_2", "alias": "tweets_search" }}, <b class="conum">(1)</b>
+    { "remove": { "index": "tweets_1", "alias": "tweets_index"  }}, <b class="conum">(2)</b>
+    { "add":    { "index": "tweets_2", "alias": "tweets_index"  }}  <b class="conum">(2)</b>
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>添加索引 <code>tweets_2</code> 到别名 <code>tweets_search</code> 。</p> </li>
+<li> <p>将别名 <code>tweets_index</code> 由 <code>tweets_1</code> 切换至 <code>tweets_2</code> 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>一个搜索请求可以以多个索引为目标，所以将搜索别名指向 <code>tweets_1</code> 以及 <code>tweets_2</code> 是完全有效的。 然而，索引写入请求只能以单个索引为目标。因此，我们必须将索引写入的别名只指向新的索引。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>一个文档 <code>GET</code> 请求，像一个索引写入请求那样，只能以单个索引为目标。 这导致在通过ID获取文档这样的场景下有一点复杂。作为代替，你可以对 <code>tweets_1</code> 以及 <code>tweets_2</code> 运行一个 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-ids-query.html"><code>ids</code> 查询</a> 搜索请求， 或者 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/docs-multi-get.html"><code>multi-get</code></a> 请求。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>在服务运行中使用多索引来扩展索引容量对于一些使用场景有着特别的好处，像我们将在下一节中讨论的基于时间的数据例如日志或社交事件流。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="time-based">基于时间的数据</h3>
+<div class="paragraph">
+<p>Elasticsearch 的常用案例之一便是日志记录， 它实在太常见了以至于 Elasticsearch 提供了一个集成的日志平台叫做 <em>ELK stack</em>— Elasticsearch，Logstash，以及 Kibana ——来让这项工作变得简单。</p>
+</div>
+<div class="paragraph">
+<p><a href="https://www.elastic.co/guide/en/logstash/current/index.html">Logstash</a> 采集、解析日志并在将它们写入Elasticsearch之前格式化。 Elasticsearch 扮演了一个集中式的日志服务角色， <a href="https://www.elastic.co/guide/en/kibana/current/index.html">Kibana</a> 是一个 图形化前端可以很容易地实时查询以及可视化你的网络变化。</p>
+</div>
+<div class="paragraph">
+<p>搜索引擎中大多数使用场景都是增长缓慢相对稳定的文档集合。搜索查找最相关的文档，而不关心它是何时创建的。</p>
+</div>
+<div class="paragraph">
+<p>日志——以及其他基于时间的数据流例如社交网络活动——实际上有很大不同。 索引中文档数量迅速增长，通常随时间加速。 文档几乎不会更新，基本以最近文档为搜索目标。随着时间推移，文档逐渐失去价值。</p>
+</div>
+<div class="paragraph">
+<p>我们需要调整索引设计使其能够工作于这种基于时间的数据流。</p>
+</div>
+<div class="sect3">
+<h4 id="index-per-timeframe">按时间范围索引</h4>
+<div class="paragraph">
+<p>如果我们为此种类型的文档建立一个超大索引，我们可能会很快耗尽存储空间。日志事件会不断的进来，不会停顿也不会中断。 我们可以使用 <a href="#scroll"><code>scroll</code></a> 查询和批量删除来删除旧的事件。但这种方法 <em>非常低效</em> 。当你删除一个文档，它只会被 <em>标记</em> 为被删除（参见 <a href="#deletes-and-updates">删除和更新</a>）。 在包含它的段被合并之前不会被物理删除。</p>
+</div>
+<div class="paragraph">
+<p>替代方案是，我们使用一个 <em>时间范围索引</em>。你可以着手于一个按年的索引 (<code>logs_2014</code>) 或按月的索引 (<code>logs_2014-10</code>) 。 也许当你的网页变得十分繁忙时，你需要切换到一个按天的索引 (<code>logs_2014-10-24</code>) 。删除旧数据十分简单：只需要删除旧的索引。</p>
+</div>
+<div class="paragraph">
+<p>这种方法有这样的优点，允许你在需要的时候进行扩容。你不需要预先做任何艰难的决定。每天都是一个新的机会来调整你的索引时间范围来适应当前需求。 应用相同的逻辑到决定每个索引的大小上。起初也许你需要的仅仅是每周一个主分片。过一阵子，也许你需要每天五个主分片。这都不重要——任何时间你都可以调整到新的环境。</p>
+</div>
+<div class="paragraph">
+<p>别名可以帮助我们更加透明地在索引间切换。 当创建索引时，你可以将 <code>logs_current</code> 指向当前索引来接收新的日志事件， 当检索时，更新 <code>last_3_months</code> 来指向所有最近三个月的索引：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /_aliases
+{
+  "actions": [
+    { "add":    { "alias": "logs_current",  "index": "logs_2014-10" }}, <b class="conum">(1)</b>
+    { "remove": { "alias": "logs_current",  "index": "logs_2014-09" }}, <b class="conum">(1)</b>
+    { "add":    { "alias": "last_3_months", "index": "logs_2014-10" }}, <b class="conum">(2)</b>
+    { "remove": { "alias": "last_3_months", "index": "logs_2014-07" }}  <b class="conum">(2)</b>
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>将 <code>logs_current</code> 由九月切换至十月。</p> </li>
+<li> <p>将十月添加到 <code>last_3_months</code> 并且删掉七月。</p> </li>
+</ol>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="index-templates">索引模板</h3>
+<div class="paragraph">
+<p>Elasticsearch 不要求你在使用一个索引前创建它。 对于日志记录类应用，依赖于自动创建索引比手动创建要更加方便。</p>
+</div>
+<div class="paragraph">
+<p>Logstash 使用事件中的时间戳来生成索引名。 默认每天被索引至不同的索引中，因此一个 <code>@timestamp</code> 为 <code>2014-10-01 00:00:01</code> 的事件将被发送至索引 <code>logstash-2014.10.01</code> 中。 如果那个索引不存在，它将被自动创建。</p>
+</div>
+<div class="paragraph">
+<p>通常我们想要控制一些新建索引的设置（settings）和映射（mappings）。也许我们想要限制分片数为 <code>1</code> ，并且禁用 <code>_all</code> 域。 索引模板可以用于控制何种设置（settings）应当被应用于新创建的索引：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /_template/my_logs <b class="conum">(1)</b>
+{
+  "template": "logstash-*", <b class="conum">(2)</b>
+  "order":    1, <b class="conum">(3)</b>
+  "settings": {
+    "number_of_shards": 1 <b class="conum">(4)</b>
+  },
+  "mappings": {
+    "_default_": { <b class="conum">(5)</b>
+      "_all": {
+        "enabled": false
+      }
+    }
+  },
+  "aliases": {
+    "last_3_months": {} <b class="conum">(6)</b>
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>创建一个名为 <code>my_logs</code> 的模板。</p> </li>
+<li> <p>将这个模板应用于所有以 <code>logstash-</code> 为起始的索引。</p> </li>
+<li> <p>这个模板将会覆盖默认的 <code>logstash</code> 模板，因为默认模板的 <code>order</code> 更低。</p> </li>
+<li> <p>限制主分片数量为 <code>1</code> 。</p> </li>
+<li> <p>为所有类型禁用 <code>_all</code> 域。</p> </li>
+<li> <p>添加这个索引至 <code>last_3_months</code> 别名中。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个模板指定了所有名字以 <code>logstash-</code> 为起始的索引的默认设置，不论它是手动还是自动创建的。 如果我们认为明天的索引需要比今天更大的容量，我们可以更新这个索引以使用更多的分片。</p>
+</div>
+<div class="paragraph">
+<p>这个模板还将新建索引添加至了 <code>last_3_months</code> 别名中，然而从那个别名中删除旧的索引则需要手动执行。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="retiring-data">数据过期</h3>
+<div class="paragraph">
+<p>随着时间推移，基于时间数据的相关度逐渐降低。 有可能我们会想要查看上周、上个月甚至上一年度发生了什么，但是大多数情况，我们只关心当前发生的。</p>
+</div>
+<div class="paragraph">
+<p>按时间范围索引带来的一个好处是可以方便地删除旧数据：只需要删除那些变得不重要的索引就可以了。</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">DELETE /logs_2013*</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>删除整个索引比删除单个文档要更加高效：Elasticsearch 只需要删除整个文件夹。</p>
+</div>
+<div class="paragraph">
+<p>但是删除索引是 <em>终极手段</em> 。在我们决定完全删除它之前还有一些事情可以做来帮助数据更加优雅地过期。</p>
+</div>
+<div class="sect3">
+<h4 id="migrate-indices">迁移旧索引</h4>
+<div class="paragraph">
+<p>随着数据被记录，很有可能存在一个 <em>热点</em> 索引——今日的索引。 所有新文档都会被加到那个索引，几乎所有查询都以它为目标。那个索引应当使用你最好的硬件。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 是如何得知哪台是你最好的服务器呢？你可以通过给每台服务器指定任意的标签来告诉它。 例如，你可以像这样启动一个节点：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>./bin/elasticsearch --node.box_type strong</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>box_type</code> 参数是完全随意的——你可以将它随意命名只要你喜欢——但你可以用这些任意的值来告诉 Elasticsearch 将一个索引分配至何处。</p>
+</div>
+<div class="paragraph">
+<p>我们可以通过按以下配置创建今日的索引来确保它被分配到我们最好的服务器上：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /logs_2014-10-01
+{
+  "settings": {
+    "index.routing.allocation.include.box_type" : "strong"
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>昨日的索引不再需要我们最好的服务器了，我们可以通过更新索引设置将它移动到标记为 <code>medium</code> 的节点上：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /logs_2014-09-30/_settings
+{
+  "index.routing.allocation.include.box_type" : "medium"
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="optimize-indices">索引优化（Optimize）</h4>
+<div class="paragraph">
+<p>昨日的索引不大可能会改变。 日志事件是静态的：已经发生的过往不会再改变了。如果我们将每个分片合并至一个段（Segment），它会占用更少的资源更快地响应查询。 我们可以通过<a href="#optimize-api">optimize API</a>来做到。</p>
+</div>
+<div class="paragraph">
+<p>对还分配在 <code>strong</code> 主机上的索引进行优化（Optimize）操作将会是一个糟糕的想法， 因为优化操作将消耗节点上大量 I/O 并对索引今日日志造成冲击。但是 <code>medium</code> 的节点没有做太多类似的工作，我们可以安全地在上面进行优化。</p>
+</div>
+<div class="paragraph">
+<p>昨日的索引有可能拥有副本分片。如果我们下发一个优化（Optimize）请求， 它会优化主分片和副本分片，这有些浪费。然而，我们可以临时移除副本分片，进行优化，然后再恢复副本分片：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /logs_2014-09-30/_settings
+{ "number_of_replicas": 0 }
+
+POST /logs_2014-09-30/_optimize?max_num_segments=1
+
+POST /logs_2014-09-30/_settings
+{ "number_of_replicas": 1 }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>当然，没有副本我们将面临磁盘故障而导致丢失数据的风险。你可能想要先通过https://www.elastic.co/guide/en/elasticsearch/reference/5.6/modules-snapshots.html[<code>snapshot-restore</code> API]备份数据。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="close-indices">关闭旧索引</h4>
+<div class="paragraph">
+<p>当索引变得更“老”，它们到达一个几乎不会再被访问的时间点。 我们可以在这个阶段删除它们，但也许你想将它们留在这里以防万一有人在半年后还想要访问它们。</p>
+</div>
+<div class="paragraph">
+<p>这些索引可以被关闭。它们还会存在于集群中，但它们不会消耗磁盘空间以外的资源。重新打开一个索引要比从备份中恢复快得多。</p>
+</div>
+<div class="paragraph">
+<p>在关闭之前，值得我们去刷写索引来确保没有事务残留在事务日志中。一个空白的事务日志会使得索引在重新打开时恢复得更快：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /logs_2014-01-*/_flush <b class="conum">(1)</b>
+POST /logs_2014-01-*/_close <b class="conum">(2)</b>
+POST /logs_2014-01-*/_open <b class="conum">(3)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>刷写（Flush）所有一月的索引来清空事务日志。</p> </li>
+<li> <p>关闭所有一月的索引.</p> </li>
+<li> <p>当你需要再次访问它们时，使用 <code>open</code> API 来重新打开它们。</p> </li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="archive-indices">归档旧索引</h4>
+<div class="paragraph">
+<p>最后，非常旧的索引可以通过https://www.elastic.co/guide/en/elasticsearch/reference/5.6/modules-snapshots.html[<code>snapshot-restore</code> API]归档至长期存储例如共享磁盘或者 Amazon S3，以防日后你可能需要访问它们。 当存在备份时我们就可以将索引从集群中删除了。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="user-based">基于用户的数据</h3>
+<div class="paragraph">
+<p>通常来说，用户使用 Elasticsearch 的原因是他们需要添加全文检索或者需要分析一个已经存在的应用。 他们创建一个索引来存储所有文档。公司里的其他人也逐渐发现了 Elasticsearch 带来的好处，也想把他们的数据添加到 Elasticsearch 中去。</p>
+</div>
+<div class="paragraph">
+<p>幸运的是，Elasticsearch 支持http://en.wikipedia.org/wiki/Multitenancy[多租户]所以每个用户可以在相同的集群中拥有自己的索引。 有人偶尔会想要搜索所有用户的文档，这种情况可以通过搜索所有索引实现，但大多数情况下用户只关心它们自己的文档。</p>
+</div>
+<div class="paragraph">
+<p>一些用户有着比其他人更多的文档，一些用户可能有比其他人更多的搜索次数， 所以这种对指定每个索引主分片和副本分片数量能力的需要应该很适合使用“一个用户一个索引”的模式。 类似地，较为繁忙的索引可以通过分片分配过滤指定到高配的节点。（参见 <a href="#migrate-indices">迁移旧索引</a>。）</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content"> 不要为每个索引都使用默认的主分片数。想想看它需要存储多少数据。有可能你仅需要一个分片——再多的都只是浪费资源。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>大多数 Elasticsearch 的用户读到这里就已经够了。简单的“一个用户一个索引”对大多数场景都可以满足了。</p>
+</div>
+<div class="paragraph">
+<p>对于例外的场景，你可能会发现需要支持很大数量的用户，都是相似的需求。一个例子可能是为一个拥有几千个邮箱账户的论坛提供搜索服务。 一些论坛可能有巨大的流量，但大多数都很小。将一个有着单个分片的索引用于一个小规模论坛已经是足够的了——一个分片可以承载很多个论坛的数据。</p>
+</div>
+<div class="paragraph">
+<p>我们需要的是一种可以在用户间共享资源的方法，给每个用户他们拥有自己的索引这种印象，而不在小用户上浪费资源。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="shared-index">共享索引</h3>
+<div class="paragraph">
+<p>我们可以为许多的小论坛使用一个大的共享的索引， 将论坛标识索引进一个字段并且将它用作一个过滤器：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /forums
+{
+  "settings": {
+    "number_of_shards": 10 <b class="conum">(1)</b>
+  },
+  "mappings": {
+    "post": {
+      "properties": {
+        "forum_id": { <b class="conum">(2)</b>
+    &nbsp;     "type":  "string",
+          "index": "not_analyzed"
+        }
+      }
+    }
+  }
+}
+
+PUT /forums/post/1
+{
+  "forum_id": "baking", <b class="conum">(2)</b>
+  "title":    "Easy recipe for ginger nuts",
+  ...
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>创建一个足够大的索引来存储数千个小论坛的数据。</p> </li>
+<li> <p>每个帖子都必须包含一个 <code>forum_id</code> 来标识它属于哪个论坛。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>我们可以把 <code>forum_id</code> 用作一个过滤器来针对单个论坛进行搜索。这个过滤器可以排除索引中绝大部分的数据（属于其它论坛的数据），缓存会保证快速的响应：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /forums/post/_search
+{
+  "query": {
+    "bool": {
+      "must": {
+        "match": {
+          "title": "ginger nuts"
+        }
+      },
+      "filter": {
+        "term": {
+          "forum_id": {
+            "baking"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这个办法行得通，但我们可以做得更好。 来自于同一个论坛的帖子可以简单地容纳于单个分片，但它们现在被打散到了这个索引的所有十个分片中。 这意味着每个搜索请求都必须被转发至所有十个分片的一个主分片或者副本分片。 如果能够保证所有来自于同一个论坛的所有帖子都被存储于同一个分片可能会是个好想法。</p>
+</div>
+<div class="paragraph">
+<p>在 <a href="#routing-value">路由一个文档到一个分片中</a>，我们说过一个文档将通过使用如下公式来分配到一个指定分片：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>shard = hash(routing) % number_of_primary_shards</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>routing</code> 的值默认为文档的 <code>_id</code> ，但我们可以覆盖它并且提供我们自己自定义的路由值，例如 <code>forum_id</code> 。 所有有着相同 <code>routing</code> 值的文档都将被存储于相同的分片：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /forums/post/1?routing=baking <b class="conum">(1)</b>
+{
+  "forum_id": "baking", <b class="conum">(1)</b>
+  "title":    "Easy recipe for ginger nuts",
+  ...
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>将 <code>forum_id</code> 用于路由值保证所有来自相同论坛的帖子都存储于相同的分片。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>当我们搜索一个指定论坛的帖子时，我们可以传递相同的 <code>routing</code> 值来保证搜索请求仅在存有我们文档的分片上执行：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /forums/post/_search?routing=baking <b class="conum">(1)</b>
+{
+  "query": {
+    "bool": {
+      "must": {
+        "match": {
+          "title": "ginger nuts"
+        }
+      },
+      "filter": {
+        "term": { <b class="conum">(2)</b>
+          "forum_id": {
+            "baking"
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>查询请求仅在对应于 <code>routing</code> 值的分片上执行。</p> </li>
+<li> <p>我们还是需要过滤（Filter）查询，因为一个分片可以存储来自于很多论坛的帖子。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>多个论坛可以通过传递一个逗号分隔的列表来指定 <code>routing</code> 值，然后将每个 <code>forum_id</code> 包含于一个 <code>terms</code> 查询：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /forums/post/_search?routing=baking,cooking,recipes
+{
+  "query": {
+    "bool": {
+      "must": {
+        "match": {
+          "title": "ginger nuts"
+        }
+      },
+      "filter": {
+        "terms": {
+          "forum_id": {
+            [ "baking", "cooking", "recipes" ]
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这种方式从技术上来说比较高效，由于要为每一个查询或者索引请求指定 <code>routing</code> 和 <code>terms</code> 的值看起来有一点的笨拙。 索引别名可以帮你解决这些！</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="faking-it">利用别名实现一个用户一个索引</h3>
+<div class="paragraph">
+<p>为了保持设计的简洁，我们想让我们的应用认为我们为每个用户都有一个专门的索引——或者按照我们的例子每个论坛一个——尽管实际上我们用的是一个大的<a href="#shared-index">shared index</a>。 因此，我们需要一种方式将 <code>routing</code> 值及过滤器隐含于 <code>forum_id</code> 中。</p>
+</div>
+<div class="paragraph">
+<p>索引别名可以帮你做到这些。当你将一个别名与一个索引关联起来，你可以指定一个过滤器和一个路由值：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /forums/_alias/baking
+{
+  "routing": "baking",
+  "filter": {
+    "term": {
+      "forum_id": "baking"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>现在我们可以将 <code>baking</code> 别名视为一个单独的索引。索引至 <code>baking</code> 别名的文档会自动地应用我们自定义的路由值：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /baking/post/1 <b class="conum">(1)</b>
+{
+  "forum_id": "baking", <b class="conum">(1)</b>
+  "title":    "Easy recipe for ginger nuts",
+  ...
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>我们还是需要为过滤器指定 <code>forumn_id</code> 字段，但自定义路由值已经是隐含的了。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>对 <code>baking</code> 别名上的查询只会在自定义路由值关联的分片上运行，并且结果也自动按照我们指定的过滤器进行了过滤：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /baking/post/_search
+{
+  "query": {
+    "match": {
+      "title": "ginger nuts"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>当对多个论坛进行搜索时可以指定多个别名：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /baking,recipes/post/_search <b class="conum">(1)</b>
+{
+  "query": {
+    "match": {
+      "title": "ginger nuts"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>两个 <code>routing</code> 的值都会应用，返回对结果会匹配任意一个过滤器。</p> </li>
+</ol>
+</div>
+</div>
+<div class="sect2">
+<h3 id="one-big-user">一个大的用户</h3>
+<div class="paragraph">
+<p>大规模流行论坛都是从小论坛起步的。 有一天我们会发现我们共享索引中的一个分片要比其它分片更加繁忙，因为这个分片中一个论坛的文档变得更加热门。 这时，那个论坛需要属于它自己的索引。</p>
+</div>
+<div class="paragraph">
+<p>我们用来提供一个用户一个索引的索引别名给了我们一个简洁的迁移论坛方式。</p>
+</div>
+<div class="paragraph">
+<p>第一步就是为那个论坛创建一个新的索引，并为其分配合理的分片数，可以满足一定预期的数据增长：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /baking_v1
+{
+  "settings": {
+    "number_of_shards": 3
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>第二步就是将共享的索引中的数据迁移到专用的索引中，可以通过<a href="#scroll"><code>scroll</code></a>查询和<a href="#bulk"><code>bulk</code> API</a>来实现。 当迁移完成时，可以更新索引别名指向那个新的索引：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /_aliases
+{
+  "actions": [
+    { "remove": { "alias": "baking", "index": "forums"    }},
+    { "add":    { "alias": "baking", "index": "baking_v1" }}
+  ]
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>更新索引别名的操作是原子性的；就像在拨动一个开关。你的应用程序还是在与 <code>baking</code> API 交互并且对于它已经指向一个专用的索引毫无感知。</p>
+</div>
+<div class="paragraph">
+<p>专用的索引不再需要过滤器或者自定义的路由值了。我们可以依赖于 Elasticsearch 默认使用的 <code>_id</code> 字段来做分区。</p>
+</div>
+<div class="paragraph">
+<p>最后一步是从共享的索引中删除旧的文档，可以通过搜索之前的路由值以及论坛 ID 然后进行批量删除操作来实现。</p>
+</div>
+<div class="paragraph">
+<p>一个用户一个索引模型的优雅之处在于它允许你减少资源消耗，保持快速的响应时间，同时拥有在需要时零宕机时间扩容的能力。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="finite-scale">扩容并不是无限的</h3>
+<div class="paragraph">
+<p>贯彻整个章节我们讨论了多种 Elasticsearch 可以做到的扩容方式。 大多数的扩容问题可以通过添加节点来解决。但有一种资源是有限制的，因此值得我们认真对待：集群状态。</p>
+</div>
+<div class="paragraph">
+<p><em>集群状态</em> 是一种数据结构，贮存下列集群级别的信息：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>集群级别的设置</p> </li>
+<li> <p>集群中的节点</p> </li>
+<li> <p>索引以及它们的设置、映射、分析器、预热器（Warmers）和别名</p> </li>
+<li> <p>与每个索引关联的分片以及它们分配到的节点</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>你可以通过如下请求查看当前的集群状态：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_cluster/state</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>集群状态存在于集群中的每个节点，包括客户端节点。 这就是为什么任何一个节点都可以将请求直接转发至被请求数据的节点——每个节点都知道每个文档应该在哪里。</p>
+</div>
+<div class="paragraph">
+<p>只有主节点被允许更新集群状态。想象一下一个索引请求引入了一个之前未知的字段。持有那个文档的主分片所在的节点必须将新的映射转发到主节点上。 主节点把更改合并到集群状态中，然后向所有集群中的所有节点发布一个新的版本。</p>
+</div>
+<div class="paragraph">
+<p>搜索请求 <em>使用</em> 集群状态，但它们不会产生修改。同样，文档级别的增删改查请求也不会对集群状态产生修改。当然，除非它们引入了一个需要更新映射的新的字段了。 总的来说，集群状态是静态的不会成为瓶颈。</p>
+</div>
+<div class="paragraph">
+<p>然而，需要记住的是相同的数据结构需要在每个节点的内存中保存，并且当它发生更改时必须发布到每一个节点。 集群状态的数据量越大，这个操作就会越久。</p>
+</div>
+<div class="paragraph">
+<p>我们见过最常见的集群状态问题就是引入了太多的字段。一个用户可能会决定为每一个 IP 地址或者每个 referer URL 使用一个单独的字段。 下面这个例子通过为每一个唯一的 referer 使用一个不同的字段名来保持对页面浏览量的计数：</p>
+</div>
+<div class="listingblock pagebreak-before">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">POST /counters/pageview/home_page/_update
+{
+  "script": "ctx._source[referer]++",
+  "params": {
+    "referer": "http://www.foo.com/links?bar=baz"
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这种方式十分的糟糕！它会生成数百万个字段，这些都需要被存储在集群状态中。 每当见到一个新的 referer ，都有一个新的字段需要加入那个已经膨胀的集群状态中，这都需要被发布到集群的每个节点中去。</p>
+</div>
+<div class="paragraph">
+<p>更好的方式是使用<a href="#nested-objects">nested objects</a>， 它使用一个字段作为参数名—`referer`—另一个字段作为关联的值—`count` ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">    "counters": [
+      { "referer": "http://www.foo.com/links?bar=baz",  "count": 2 },
+      { "referer": "http://www.linkbait.com/article_3", "count": 10 },
+      ...
+    ]</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这种嵌套的方式有可能会增加文档数量，但 Elasticsearch 生来就是为了解决它的。重要的是保持集群状态小而敏捷。</p>
+</div>
+<div class="paragraph">
+<p>最终，不管你的初衷有多好，你可能会发现集群节点数量、索引、映射对于一个集群来说还是太大了。 此时，可能有必要将这个问题拆分到多个集群中了。感谢https://www.elastic.co/guide/en/elasticsearch/reference/5.6/modules-tribe.html[<code>tribe</code> nodes]， 你甚至可以向多个集群发出搜索请求，就好像我们有一个巨大的集群那样。</p>
+</div>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/110/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/react_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/110/index.html">React 学习之道</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="react">react</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/184/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/20/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/20/index.html">Java 8 简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 133个">133</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/188/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/200/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/200/index.html">软件开发基础知识宝典</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/36/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/40/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/foreword_id.html" title="序言" data-book-page-rel-url="foreword_id.html" data-book-page-id="9242">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="9243">前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/_who_should_read_this_book.html" title="谁应该读这本书" data-book-page-rel-url="_who_should_read_this_book.html" data-book-page-id="9244">谁应该读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_why_we_wrote_this_book.html" title="为什么我们要写这本书" data-book-page-rel-url="_why_we_wrote_this_book.html" data-book-page-id="9245">为什么我们要写这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_elasticsearch_version.html" title="Elasticsearch 版本" data-book-page-rel-url="_elasticsearch_version.html" data-book-page-id="9246">Elasticsearch 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_how_to_read_this_book.html" title="如何读这本书" data-book-page-rel-url="_how_to_read_this_book.html" data-book-page-id="9247">如何读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_navigating_this_book.html" title="本书导航" data-book-page-rel-url="_navigating_this_book.html" data-book-page-id="9248">本书导航</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_online_resources.html" title="在线资源" data-book-page-rel-url="_online_resources.html" data-book-page-id="9249">在线资源</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_conventions_used_in_this_book.html" title="本书协议约定" data-book-page-rel-url="_conventions_used_in_this_book.html" data-book-page-id="9250">本书协议约定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_using_code_examples.html" title="使用代码示例" data-book-page-rel-url="_using_code_examples.html" data-book-page-id="9251">使用代码示例</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_acknowledgments.html" title="鸣谢" data-book-page-rel-url="_acknowledgments.html" data-book-page-id="9252">鸣谢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/getting-started.html" title="基础入门" data-book-page-rel-url="getting-started.html" data-book-page-id="9253">基础入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/intro.html" title="你知道的, 为了搜索&#8230;&#8203;" data-book-page-rel-url="intro.html" data-book-page-id="9254">你知道的, 为了搜索&#8230;&#8203;</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-cluster.html" title="集群内的原理" data-book-page-rel-url="distributed-cluster.html" data-book-page-id="9255">集群内的原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/data-in-data-out.html" title="数据输入和输出" data-book-page-rel-url="data-in-data-out.html" data-book-page-id="9256">数据输入和输出</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-docs.html" title="分布式文档存储" data-book-page-rel-url="distributed-docs.html" data-book-page-id="9257">分布式文档存储</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search.html" title="搜索——最基本的工具" data-book-page-rel-url="search.html" data-book-page-id="9258">搜索——最基本的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/mapping-analysis.html" title="映射和分析" data-book-page-rel-url="mapping-analysis.html" data-book-page-id="9259">映射和分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-body-search.html" title="请求体查询" data-book-page-rel-url="full-body-search.html" data-book-page-id="9260">请求体查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/sorting.html" title="排序与相关性" data-book-page-rel-url="sorting.html" data-book-page-id="9261">排序与相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-search.html" title="执行分布式检索" data-book-page-rel-url="distributed-search.html" data-book-page-id="9262">执行分布式检索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/index-management.html" title="索引管理" data-book-page-rel-url="index-management.html" data-book-page-id="9263">索引管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/inside-a-shard.html" title="分片内部原理" data-book-page-rel-url="inside-a-shard.html" data-book-page-id="9264">分片内部原理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search-in-depth.html" title="深入搜索" data-book-page-rel-url="search-in-depth.html" data-book-page-id="9265">深入搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/structured-search.html" title="结构化搜索" data-book-page-rel-url="structured-search.html" data-book-page-id="9266">结构化搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-text-search.html" title="全文搜索" data-book-page-rel-url="full-text-search.html" data-book-page-id="9267">全文搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/multi-field-search.html" title="多字段搜索" data-book-page-rel-url="multi-field-search.html" data-book-page-id="9268">多字段搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/proximity-matching.html" title="近似匹配" data-book-page-rel-url="proximity-matching.html" data-book-page-id="9269">近似匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/partial-matching.html" title="部分匹配" data-book-page-rel-url="partial-matching.html" data-book-page-id="9270">部分匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/controlling-relevance.html" title="控制相关度" data-book-page-rel-url="controlling-relevance.html" data-book-page-id="9271">控制相关度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/languages.html" title="处理人类语言" data-book-page-rel-url="languages.html" data-book-page-id="9272">处理人类语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/language-intro.html" title="开始处理各种语言" data-book-page-rel-url="language-intro.html" data-book-page-id="9273">开始处理各种语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/identifying-words.html" title="词汇识别" data-book-page-rel-url="identifying-words.html" data-book-page-id="9274">词汇识别</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/token-normalization.html" title="归一化词元" data-book-page-rel-url="token-normalization.html" data-book-page-id="9275">归一化词元</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stemming.html" title="将单词还原为词根" data-book-page-rel-url="stemming.html" data-book-page-id="9276">将单词还原为词根</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stopwords.html" title="停用词: 性能与精度" data-book-page-rel-url="stopwords.html" data-book-page-id="9277">停用词: 性能与精度</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/synonyms.html" title="同义词" data-book-page-rel-url="synonyms.html" data-book-page-id="9278">同义词</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/fuzzy-matching.html" title="拼写错误" data-book-page-rel-url="fuzzy-matching.html" data-book-page-id="9279">拼写错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/aggregations.html" title="聚合" data-book-page-rel-url="aggregations.html" data-book-page-id="9280">聚合</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/aggs-high-level.html" title="高阶概念" data-book-page-rel-url="aggs-high-level.html" data-book-page-id="9281">高阶概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_aggregation_test_drive.html" title="尝试聚合" data-book-page-rel-url="_aggregation_test_drive.html" data-book-page-id="9282">尝试聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_building_bar_charts.html" title="条形图" data-book-page-rel-url="_building_bar_charts.html" data-book-page-id="9283">条形图</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_looking_at_time.html" title="按时间统计" data-book-page-rel-url="_looking_at_time.html" data-book-page-id="9284">按时间统计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_scoping_aggregations.html" title="范围限定的聚合" data-book-page-rel-url="_scoping_aggregations.html" data-book-page-id="9285">范围限定的聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_filtering_queries_and_aggregations.html" title="过滤和聚合" data-book-page-rel-url="_filtering_queries_and_aggregations.html" data-book-page-id="9286">过滤和聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_sorting_multivalue_buckets.html" title="多桶排序" data-book-page-rel-url="_sorting_multivalue_buckets.html" data-book-page-id="9287">多桶排序</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_approximate_aggregations.html" title="近似聚合" data-book-page-rel-url="_approximate_aggregations.html" data-book-page-id="9288">近似聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/significant-terms.html" title="通过聚合发现异常指标" data-book-page-rel-url="significant-terms.html" data-book-page-id="9289">通过聚合发现异常指标</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/docvalues-and-fielddata.html" title="Doc Values and Fielddata" data-book-page-rel-url="docvalues-and-fielddata.html" data-book-page-id="9290">Doc Values and Fielddata</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_closing_thoughts.html" title="总结" data-book-page-rel-url="_closing_thoughts.html" data-book-page-id="9291">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geoloc.html" title="地理位置" data-book-page-rel-url="geoloc.html" data-book-page-id="9292">地理位置</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/geopoints.html" title="地理坐标点" data-book-page-rel-url="geopoints.html" data-book-page-id="9293">地理坐标点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geohashes.html" title="Geohashes" data-book-page-rel-url="geohashes.html" data-book-page-id="9294">Geohashes</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-aggs.html" title="地理位置聚合" data-book-page-rel-url="geo-aggs.html" data-book-page-id="9295">地理位置聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-shapes.html" title="地理形状" data-book-page-rel-url="geo-shapes.html" data-book-page-id="9296">地理形状</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/modeling-your-data.html" title="数据建模" data-book-page-rel-url="modeling-your-data.html" data-book-page-id="9297">数据建模</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/relations.html" title="关联关系处理" data-book-page-rel-url="relations.html" data-book-page-id="9298">关联关系处理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/nested-objects.html" title="嵌套对象" data-book-page-rel-url="nested-objects.html" data-book-page-id="9299">嵌套对象</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/parent-child.html" title="父-子关系文档" data-book-page-rel-url="parent-child.html" data-book-page-id="9300">父-子关系文档</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/scale.html" title="扩容设计" data-book-page-rel-url="scale.html" data-book-page-id="9301">扩容设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/administration.html" title="管理、监控和部署" data-book-page-rel-url="administration.html" data-book-page-id="9302">管理、监控和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/cluster-admin.html" title="监控" data-book-page-rel-url="cluster-admin.html" data-book-page-id="9303">监控</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/deploy.html" title="部署" data-book-page-rel-url="deploy.html" data-book-page-id="9304">部署</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/post_deploy.html" title="部署后" data-book-page-rel-url="post_deploy.html" data-book-page-id="9305">部署后</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =40;var bookPageId =9301;var bookPageRelUrl ='scale.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,792 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>在 C++ 中加载 PYTORCH 模型-PyTorch 1.0 中文文档 & 教程</title>
+<meta content='在 C++ 中加载 PYTORCH 模型,PyTorch 1.0 中文文档 & 教程' name='keywords'>
+<meta content='在 C++ 中加载 PYTORCH 模型,PyTorch 1.0 中文文档 & 教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/169/docs/1.0/ONNXLive.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">ONNX 现场演示教程</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/169/docs/1.0/tut_other_language.html">
+<span class="">其它语言中的 PyTo..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/169/index.html">PyTorch 1.0 中文文档 & 教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/apachecn/pytorch-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="在c中加载pytorch模型">在C++中加载PYTORCH模型</h1>
+<blockquote>
+<p>译者：<a href="https://github.com/talengu">talengu</a></p>
+</blockquote>
+<p>PyTorch的主要接口为Python。虽然Python有动态编程和易于迭代的优势，但在很多情况下，正是Python的这些属性会带来不利。我们经常遇到的生产环境，要满足低延迟和严格部署要求。对于生产场景而言，C<ins>通常是首选语言，也能很方便的将其绑定到另一种语言，如Java，Rust或Go。本教程将介绍从将PyTorch训练的模型序列化表示，到C</ins>语言_加载_和_执行_的过程。</p>
+<h2 id="第一步将pytorch模型转换为torch-script">第一步：将PyTorch模型转换为Torch Script</h2>
+<p>PyTorch模型从Python到C++的转换由<a href="https://pytorch.org/docs/master/jit.html">Torch Script</a>实现。Torch Script是PyTorch模型的一种表示，可由Torch Script编译器理解，编译和序列化。如果使用基础的“eager”API编写的PyTorch模型，则必须先将模型转换为Torch Script，当然这也是比较容易的。如果已有模型的Torch Script，则可以跳到本教程的下一部分。</p>
+<p>将PyTorch模型转换为Torch Script有两种方法。 第一种方法是Tracing。该方法通过将样本输入到模型中一次来对该过程进行评估从而捕获模型结构.并记录该样本在模型中的flow。该方法适用于模型中很少使用控制flow的模型。 第二个方法就是向模型添加显式注释(Annotation)，通知Torch Script编译器它可以直接解析和编译模型代码，受Torch Script语言强加的约束。</p>
+<blockquote>
+<p>小贴士 可以在官方的<a href="https://pytorch.org/docs/master/jit.html">Torch Script 参考</a>中找到这两种方法的完整文档，以及有关使用哪个方法的细节指导。</p>
+</blockquote>
+<h3 id="利用tracing将模型转换为torch-script">利用Tracing将模型转换为Torch Script</h3>
+<p>要通过tracing来将PyTorch模型转换为Torch脚本,必须将模型的实例以及样本输入传递给<code>torch.jit.trace</code>函数。这将生成一个 <code>torch.jit.ScriptModule</code>对象，并在模块的<code>forward</code>方法中嵌入模型评估的跟踪：</p>
+<pre><code class="language-py">import torch
+import torchvision
+
+# 获取模型实例
+model = torchvision.models.resnet18()
+
+# 生成一个样本供网络前向传播 forward()
+example = torch.rand(1, 3, 224, 224)
+
+# 使用 torch.jit.trace 生成 torch.jit.ScriptModule 来跟踪
+traced_script_module = torch.jit.trace(model, example)
+
+</code></pre>
+<p>现在，跟踪的<code>ScriptModule</code>可以与常规PyTorch模块进行相同的计算：</p>
+<pre><code class="language-py">In[1]: output = traced_script_module(torch.ones(1, 3, 224, 224))
+In[2]: output[0, :5]
+Out[2]: tensor([-0.2698, -0.0381,  0.4023, -0.3010, -0.0448], grad_fn=&lt;SliceBackward&gt;)
+
+</code></pre>
+<h3 id="通过annotation将model转换为torch-script">通过Annotation将Model转换为Torch Script</h3>
+<p>在某些情况下，例如，如果模型使用特定形式的控制流，如果想要直接在Torch Script中编写模型并相应地标注(annotate)模型。例如，假设有以下普通的 Pytorch模型：</p>
+<pre><code class="language-py">import torch
+
+class MyModule(torch.nn.Module):
+    def __init__(self, N, M):
+        super(MyModule, self).__init__()
+        self.weight = torch.nn.Parameter(torch.rand(N, M))
+
+    def forward(self, input):
+        if input.sum() &gt; 0:
+          output = self.weight.mv(input)
+        else:
+          output = self.weight + input
+        return output
+
+</code></pre>
+<p>由于此模块的<code>forward</code>方法使用依赖于输入的控制流，因此它不适合利用Tracing的方法生成Torch Script。为此,可以通过继承<code>torch.jit.ScriptModule</code>并将<code>@ torch.jit.script_method</code>标注添加到模型的<code>forward</code>中的方法，来将model转换为<code>ScriptModule</code>：</p>
+<pre><code class="language-py">import torch
+
+class MyModule(torch.jit.ScriptModule):
+    def __init__(self, N, M):
+        super(MyModule, self).__init__()
+        self.weight = torch.nn.Parameter(torch.rand(N, M))
+
+    @torch.jit.script_method
+    def forward(self, input):
+        if input.sum() &gt; 0:
+          output = self.weight.mv(input)
+        else:
+          output = self.weight + input
+        return output
+
+my_script_module = MyModule()
+
+</code></pre>
+<p>现在，创建一个新的<code>MyModule</code>对象会直接生成一个可序列化的<code>ScriptModule</code>实例了。</p>
+<h2 id="第二步将script-module序列化为一个文件">第二步：将Script Module序列化为一个文件</h2>
+<p>不论是从上面两种方法的哪一种方法获得了<code>ScriptModule</code>,都可以将得到的<code>ScriptModule</code>序列化为一个文件,然后C++就可以不依赖任何Python代码来执行该Script所对应的Pytorch模型。 假设我们想要序列化前面trace示例中显示的<code>ResNet18</code>模型。要执行此序列化，只需在模块上调用 <a href="https://pytorch.org/docs/master/jit.html#torch.jit.ScriptModule.save">save</a>并给个文件名：</p>
+<pre><code class="language-py">traced_script_module.save("model.pt")
+
+</code></pre>
+<p>这将在工作目录中生成一个<code>model.pt</code>文件。现在可以离开Python，并准备跨越到C ++语言调用。</p>
+<h2 id="第三步在c中加载你的script-module">第三步:在C++中加载你的Script Module</h2>
+<p>要在C <ins>中加载序列化的PyTorch模型，应用程序必须依赖于<code>PyTorch C ++ API</code> - 也称为_LibTorch_。_LibTorch发行版_包含一组共享库，头文件和<code>CMake</code>构建配置文件。虽然CMake不是依赖LibTorch的要求，但它是推荐的方法，并且将来会得到很好的支持。在本教程中，我们将使用CMake和LibTorch构建一个最小的C</ins>应用程序，加载并执行序列化的PyTorch模型。</p>
+<h3 id="最小的c应用程序">最小的C++应用程序</h3>
+<p>以下内容可以做到加载模块：</p>
+<pre><code class="language-py">#include &lt;torch/script.h&gt; // One-stop header.
+
+#include &lt;iostream&gt;
+#include &lt;memory&gt;
+
+int main(int argc, const char* argv[]) {
+  if (argc != 2) {
+    std::cerr &lt;&lt; "usage: example-app &lt;path-to-exported-script-module&gt;\n";
+    return -1;
+  }
+
+  // Deserialize the ScriptModule from a file using torch::jit::load().
+  std::shared_ptr&lt;torch::jit::script::Module&gt; module = torch::jit::load(argv[1]);
+
+  assert(module != nullptr);
+  std::cout &lt;&lt; "ok\n";
+}
+
+</code></pre>
+<p><code>&lt;torch/script.h&gt;</code>头文件包含运行该示例所需的LibTorch库中的所有相关<code>include</code>。main函数接受序列化<code>ScriptModule</code>的文件路径作为其唯一的命令行参数，然后使用<code>torch::jit::load()</code>函数反序列化模块，得到一个指向<code>torch::jit::script::Module</code>的共享指针，相当于C ++中的<code>torch.jit.ScriptModule</code>对象。最后，我们只验证此指针不为null。我们展示如何在接下来执行它。</p>
+<h3 id="依赖库libtorch和构建应用程序">依赖库LibTorch和构建应用程序</h3>
+<p>我们将上面的代码保存到名为<code>example-app.cpp</code>的文件中。对应的构建它的简单<code>CMakeLists.txt</code>为：</p>
+<pre><code class="language-py">cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
+project(custom_ops)
+
+find_package(Torch REQUIRED)
+
+add_executable(example-app example-app.cpp)
+target_link_libraries(example-app "${TORCH_LIBRARIES}")
+set_property(TARGET example-app PROPERTY CXX_STANDARD 11)
+
+</code></pre>
+<p>我们构建示例应用程序的最后一件事是下载LibTorch发行版。从PyTorch网站的下载页面获取最新的稳定版本 <a href="https://pytorch.org/">download page</a>。如果下载并解压缩最新存档，则有以下目录结构：</p>
+<pre><code class="language-py">libtorch/
+  bin/
+  include/
+  lib/
+  share/
+
+</code></pre>
+<ul>
+<li><code>lib/</code> 包含含链接的共享库,</li>
+<li><code>include/</code> 包含程序需要<code>include</code>的头文件,</li>
+<li><code>share/</code>包含必要的CMake配置文件使得 <code>find_package(Torch)</code> 。</li>
+</ul>
+<blockquote>
+<p>小贴士 在Windows平台上, debug and release builds are not ABI-compatible. 如果要使用debug, 要使用 <a href="https://github.com/pytorch/pytorch#from-source">源码编译 PyTorch</a>方法。</p>
+</blockquote>
+<p>最后一步是构建应用程序。为此，假设我们的示例目录布局如下：</p>
+<pre><code class="language-py">example-app/
+  CMakeLists.txt
+  example-app.cpp
+
+</code></pre>
+<p>我们现在可以运行以下命令从<code>example-app/</code>文件夹中构建应用程序：</p>
+<pre><code class="language-py">mkdir build
+cd build
+cmake -DCMAKE_PREFIX_PATH=/path/to/libtorch ..
+make
+
+</code></pre>
+<p>其中 <code>/path/to/libtorch</code> 应该是解压缩的LibTorch发行版的完整路径。如果一切顺利，它将看起来像这样：</p>
+<pre><code class="language-py">root@4b5a67132e81:/example-app# mkdir build
+root@4b5a67132e81:/example-app# cd build
+root@4b5a67132e81:/example-app/build# cmake -DCMAKE_PREFIX_PATH=/path/to/libtorch ..
+-- The C compiler identification is GNU 5.4.0
+-- The CXX compiler identification is GNU 5.4.0
+-- Check for working C compiler: /usr/bin/cc
+-- Check for working C compiler: /usr/bin/cc -- works
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Check for working CXX compiler: /usr/bin/c++
+-- Check for working CXX compiler: /usr/bin/c++ -- works
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Looking for pthread.h
+-- Looking for pthread.h - found
+-- Looking for pthread_create
+-- Looking for pthread_create - not found
+-- Looking for pthread_create in pthreads
+-- Looking for pthread_create in pthreads - not found
+-- Looking for pthread_create in pthread
+-- Looking for pthread_create in pthread - found
+-- Found Threads: TRUE
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /example-app/build
+root@4b5a67132e81:/example-app/build# make
+Scanning dependencies of target example-app
+[ 50%] Building CXX object CMakeFiles/example-app.dir/example-app.cpp.o
+[100%] Linking CXX executable example-app
+[100%] Built target example-app
+
+</code></pre>
+<p>如果我们提供前面的序列化<code>ResNet18</code>模型的路径给<code>example-app</code>，C++输出的结果应该是 OK:</p>
+<pre><code class="language-py">root@4b5a67132e81:/example-app/build# ./example-app model.pt
+ok
+
+</code></pre>
+<h2 id="在c代码中运行script-module">在C++代码中运行Script Module</h2>
+<p>在C <ins>中成功加载了我们的序列化<code>ResNet18</code>后，我们再加几行执行代码，添加到C</ins>应用程序的<code>main()</code>函数中：</p>
+<pre><code class="language-py">// Create a vector of inputs.
+std::vector&lt;torch::jit::IValue&gt; inputs;
+inputs.push_back(torch::ones({1, 3, 224, 224}));
+
+// Execute the model and turn its output into a tensor.
+at::Tensor output = module-&gt;forward(inputs).toTensor();
+
+std::cout &lt;&lt; output.slice(/*dim=*/1, /*start=*/0, /*end=*/5) &lt;&lt; '\n';
+
+</code></pre>
+<p>前两行设置我们模型的输入。 创建了一个 <code>torch::jit::IValue</code> (<code>script::Module</code> 对象可接受和返回的一种数据类型) 的向量和添加一个输入。要创建输入张量，我们使用<code>torch::ones()</code>（C++ API）和python中的<code>torch.ones</code> 一样。 然后我们运行<code>script::Module</code>的<code>forward</code>方法，传入我们创建的输入向量，返回一个新的<code>IValue</code>，通过调用<code>toTensor()</code>可将其转换为张量。</p>
+<blockquote>
+<p>小贴士 更多关于<code>torch::ones</code> 和 PyTorch的对应 C++ API的内容 <a href="https://pytorch.org/cppdocs">https://pytorch.org/cppdocs</a>。PyTorch C++ API 和Python API差不多，可以使你像python 中一样操作处理tensors。</p>
+</blockquote>
+<p>在最后一行中，我们打印输出的前五个条目。由于我们在本教程前面的Python中为我们的模型提供了相同的输入，因此理想情况下我们应该看到相同的输出。让我们通过重新编译我们的应用程序并使用相同的序列化模型运行它来尝试：</p>
+<pre><code class="language-py">root@4b5a67132e81:/example-app/build# make
+Scanning dependencies of target example-app
+[ 50%] Building CXX object CMakeFiles/example-app.dir/example-app.cpp.o
+[100%] Linking CXX executable example-app
+[100%] Built target example-app
+root@4b5a67132e81:/example-app/build# ./example-app model.pt
+-0.2698 -0.0381  0.4023 -0.3010 -0.0448
+[ Variable[CPUFloatType]{1,5} ]
+
+</code></pre>
+<p>作为参考，之前Python代码的输出是：</p>
+<pre><code class="language-py">tensor([-0.2698, -0.0381,  0.4023, -0.3010, -0.0448], grad_fn=&lt;SliceBackward&gt;)
+
+</code></pre>
+<p>由此可见,C++的输出与Python的输出是一样的,成功啦!</p>
+<blockquote>
+<p>小贴士 将你的模型放到GPU上，可以写成<code>model-&gt;to(at::kCUDA);</code>。确保你的输入也在CUDA的存储空间里面，可以使用<code>tensor.to(at::kCUDA)</code>检查，这个函数返回一个新的在CUDA里面的tensor。</p>
+</blockquote>
+<h2 id="第五步进阶教程和详细api">第五步:进阶教程和详细API</h2>
+<p>本教程希望能使你理解PyTorch模型从python到c<ins>的调用过程。通过上述教程，你能够通过“eager” PyTorch做一个简单模型，转成<code>ScriptModule</code>，并序列化保存。然后在C</ins>里面通过 <code>script::Module</code>加载运行模型。</p>
+<p>当然，还有好多内容我们没有涉及。举个例子，你希望在C<ins>或者CUDA中实现<code>ScriptModule</code>中的自定义操作，然后就可以在C</ins>调用运行<code>ScriptModule</code>模型。这种是可以做到的，可以参考<a href="https://github.com/pytorch/pytorch/tree/master/test/custom_operator">this</a>。下面还有一些文档可以参考，比较有帮助：</p>
+<ul>
+<li>Torch Script 参考: <a href="https://pytorch.org/docs/master/jit.html">https://pytorch.org/docs/master/jit.html</a></li>
+<li>PyTorch C++ API 文档: <a href="https://pytorch.org/cppdocs/">https://pytorch.org/cppdocs/</a></li>
+<li>PyTorch Python API 文档: <a href="https://pytorch.org/docs/">https://pytorch.org/docs/</a></li>
+</ul>
+<p>如果有任何bug或者问题，可以向社区 <a href="https://discuss.pytorch.org/">Pytorch forum</a> 或者 <a href="https://github.com/pytorch/pytorch/issues">Pytorch GitHub issues</a> 寻求帮助。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/165/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/165/index.html">Python学习知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/94.html">coco369</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">85页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 190个">190</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/170/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/170/index.html">scikit-learn (sklearn) 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2022个">2022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/21/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/9/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/9/index.html">分布式 Java</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">27页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 176个">176</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/127/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/127/index.html">aiohttp 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/68.html">HuberTRoy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">124页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 34个">34</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/169/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_getting_started.html" title="起步" data-book-page-rel-url="docs/1.0/tut_getting_started.html" data-book-page-id="11555">起步</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_60min_blitz.html" title="PyTorch 深度学习: 60 分钟极速入门" data-book-page-rel-url="docs/1.0/deep_learning_60min_blitz.html" data-book-page-id="11556">PyTorch 深度学习: 60 分钟极速入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_tensor_tutorial.html" title="什么是 PyTorch？" data-book-page-rel-url="docs/1.0/blitz_tensor_tutorial.html" data-book-page-id="11557">什么是 PyTorch？</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_autograd_tutorial.html" title="Autograd：自动求导" data-book-page-rel-url="docs/1.0/blitz_autograd_tutorial.html" data-book-page-id="11558">Autograd：自动求导</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_neural_networks_tutorial.html" title="神经网络" data-book-page-rel-url="docs/1.0/blitz_neural_networks_tutorial.html" data-book-page-id="11559">神经网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_cifar10_tutorial.html" title="训练分类器" data-book-page-rel-url="docs/1.0/blitz_cifar10_tutorial.html" data-book-page-id="11560">训练分类器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_data_parallel_tutorial.html" title="可选：数据并行处理" data-book-page-rel-url="docs/1.0/blitz_data_parallel_tutorial.html" data-book-page-id="11561">可选：数据并行处理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data_loading_tutorial.html" title="数据加载和处理教程" data-book-page-rel-url="docs/1.0/data_loading_tutorial.html" data-book-page-id="11562">数据加载和处理教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/pytorch_with_examples.html" title="用例子学习 PyTorch" data-book-page-rel-url="docs/1.0/pytorch_with_examples.html" data-book-page-id="11563">用例子学习 PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/transfer_learning_tutorial.html" title="迁移学习教程" data-book-page-rel-url="docs/1.0/transfer_learning_tutorial.html" data-book-page-id="11564">迁移学习教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" title="混合前端的 seq2seq 模型部署" data-book-page-rel-url="docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" data-book-page-id="11565">混合前端的 seq2seq 模型部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/saving_loading_models.html" title="Saving and Loading Models" data-book-page-rel-url="docs/1.0/saving_loading_models.html" data-book-page-id="11566">Saving and Loading Models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_tutorial.html" title="What is `torch.nn` _really_?" data-book-page-rel-url="docs/1.0/nn_tutorial.html" data-book-page-id="11567">What is `torch.nn` _really_?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_image.html" title="图像" data-book-page-rel-url="docs/1.0/tut_image.html" data-book-page-id="11568">图像</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/finetuning_torchvision_models_tutorial.html" title="Torchvision 模型微调" data-book-page-rel-url="docs/1.0/finetuning_torchvision_models_tutorial.html" data-book-page-id="11569">Torchvision 模型微调</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/spatial_transformer_tutorial.html" title="空间变换器网络教程" data-book-page-rel-url="docs/1.0/spatial_transformer_tutorial.html" data-book-page-id="11570">空间变换器网络教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/neural_style_tutorial.html" title="使用 PyTorch 进行图像风格转换" data-book-page-rel-url="docs/1.0/neural_style_tutorial.html" data-book-page-id="11571">使用 PyTorch 进行图像风格转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/fgsm_tutorial.html" title="对抗性示例生成" data-book-page-rel-url="docs/1.0/fgsm_tutorial.html" data-book-page-id="11572">对抗性示例生成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/super_resolution_with_caffe2.html" title="使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端" data-book-page-rel-url="docs/1.0/super_resolution_with_caffe2.html" data-book-page-id="11573">使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_text.html" title="文本" data-book-page-rel-url="docs/1.0/tut_text.html" data-book-page-id="11574">文本</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/chatbot_tutorial.html" title="聊天机器人教程" data-book-page-rel-url="docs/1.0/chatbot_tutorial.html" data-book-page-id="11575">聊天机器人教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_generation_tutorial.html" title="使用字符级别特征的 RNN 网络生成姓氏" data-book-page-rel-url="docs/1.0/char_rnn_generation_tutorial.html" data-book-page-id="11576">使用字符级别特征的 RNN 网络生成姓氏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_classification_tutorial.html" title="使用字符级别特征的 RNN 网络进行姓氏分类" data-book-page-rel-url="docs/1.0/char_rnn_classification_tutorial.html" data-book-page-id="11577">使用字符级别特征的 RNN 网络进行姓氏分类</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_nlp_tutorial.html" title="Deep Learning for NLP with Pytorch" data-book-page-rel-url="docs/1.0/deep_learning_nlp_tutorial.html" data-book-page-id="11578">Deep Learning for NLP with Pytorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_pytorch_tutorial.html" title="PyTorch 介绍" data-book-page-rel-url="docs/1.0/nlp_pytorch_tutorial.html" data-book-page-id="11579">PyTorch 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_deep_learning_tutorial.html" title="使用 PyTorch 进行深度学习" data-book-page-rel-url="docs/1.0/nlp_deep_learning_tutorial.html" data-book-page-id="11580">使用 PyTorch 进行深度学习</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_word_embeddings_tutorial.html" title="Word Embeddings: Encoding Lexical Semantics" data-book-page-rel-url="docs/1.0/nlp_word_embeddings_tutorial.html" data-book-page-id="11581">Word Embeddings: Encoding Lexical Semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_sequence_models_tutorial.html" title="序列模型和 LSTM 网络" data-book-page-rel-url="docs/1.0/nlp_sequence_models_tutorial.html" data-book-page-id="11582">序列模型和 LSTM 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_advanced_tutorial.html" title="Advanced: Making Dynamic Decisions and the Bi-LSTM CRF" data-book-page-rel-url="docs/1.0/nlp_advanced_tutorial.html" data-book-page-id="11583">Advanced: Making Dynamic Decisions and the Bi-LSTM CRF</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/seq2seq_translation_tutorial.html" title="基于注意力机制的 seq2seq 神经网络翻译" data-book-page-rel-url="docs/1.0/seq2seq_translation_tutorial.html" data-book-page-id="11584">基于注意力机制的 seq2seq 神经网络翻译</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_generative.html" title="生成" data-book-page-rel-url="docs/1.0/tut_generative.html" data-book-page-id="11585">生成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dcgan_faces_tutorial.html" title="DCGAN Tutorial" data-book-page-rel-url="docs/1.0/dcgan_faces_tutorial.html" data-book-page-id="11586">DCGAN Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_reinforcement_learning.html" title="强化学习" data-book-page-rel-url="docs/1.0/tut_reinforcement_learning.html" data-book-page-id="11587">强化学习</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/reinforcement_q_learning.html" title="Reinforcement Learning (DQN) Tutorial" data-book-page-rel-url="docs/1.0/reinforcement_q_learning.html" data-book-page-id="11588">Reinforcement Learning (DQN) Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_extending_pytorch.html" title="扩展 PyTorch" data-book-page-rel-url="docs/1.0/tut_extending_pytorch.html" data-book-page-id="11589">扩展 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/numpy_extensions_tutorial.html" title="用 numpy 和 scipy 创建扩展" data-book-page-rel-url="docs/1.0/numpy_extensions_tutorial.html" data-book-page-id="11590">用 numpy 和 scipy 创建扩展</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_extension.html" title="Custom C++   and CUDA Extensions" data-book-page-rel-url="docs/1.0/cpp_extension.html" data-book-page-id="11591">Custom C++ and CUDA Extensions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch_script_custom_ops.html" title="Extending TorchScript with Custom C++   Operators" data-book-page-rel-url="docs/1.0/torch_script_custom_ops.html" data-book-page-id="11592">Extending TorchScript with Custom C++ Operators</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_production_usage.html" title="生产性使用" data-book-page-rel-url="docs/1.0/tut_production_usage.html" data-book-page-id="11593">生产性使用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dist_tuto.html" title="Writing Distributed Applications with PyTorch" data-book-page-rel-url="docs/1.0/dist_tuto.html" data-book-page-id="11594">Writing Distributed Applications with PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/aws_distributed_training_tutorial.html" title="使用 Amazon AWS 进行分布式训练" data-book-page-rel-url="docs/1.0/aws_distributed_training_tutorial.html" data-book-page-id="11595">使用 Amazon AWS 进行分布式训练</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/ONNXLive.html" title="ONNX 现场演示教程" data-book-page-rel-url="docs/1.0/ONNXLive.html" data-book-page-id="11596">ONNX 现场演示教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_export.html" title="在 C++ 中加载 PYTORCH 模型" data-book-page-rel-url="docs/1.0/cpp_export.html" data-book-page-id="11597">在 C++ 中加载 PYTORCH 模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_other_language.html" title="其它语言中的 PyTorch" data-book-page-rel-url="docs/1.0/tut_other_language.html" data-book-page-id="11598">其它语言中的 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_frontend.html" title="使用 PyTorch C++ 前端" data-book-page-rel-url="docs/1.0/cpp_frontend.html" data-book-page-id="11599">使用 PyTorch C++ 前端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_notes.html" title="注解" data-book-page-rel-url="docs/1.0/docs_notes.html" data-book-page-id="11600">注解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_autograd.html" title="自动求导机制" data-book-page-rel-url="docs/1.0/notes_autograd.html" data-book-page-id="11601">自动求导机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_broadcasting.html" title="广播语义" data-book-page-rel-url="docs/1.0/notes_broadcasting.html" data-book-page-id="11602">广播语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_cuda.html" title="CUDA 语义" data-book-page-rel-url="docs/1.0/notes_cuda.html" data-book-page-id="11603">CUDA 语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_extending.html" title="Extending PyTorch" data-book-page-rel-url="docs/1.0/notes_extending.html" data-book-page-id="11604">Extending PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_faq.html" title="Frequently Asked Questions" data-book-page-rel-url="docs/1.0/notes_faq.html" data-book-page-id="11605">Frequently Asked Questions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_multiprocessing.html" title="Multiprocessing best practices" data-book-page-rel-url="docs/1.0/notes_multiprocessing.html" data-book-page-id="11606">Multiprocessing best practices</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_randomness.html" title="Reproducibility" data-book-page-rel-url="docs/1.0/notes_randomness.html" data-book-page-id="11607">Reproducibility</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_serialization.html" title="Serialization semantics" data-book-page-rel-url="docs/1.0/notes_serialization.html" data-book-page-id="11608">Serialization semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_windows.html" title="Windows FAQ" data-book-page-rel-url="docs/1.0/notes_windows.html" data-book-page-id="11609">Windows FAQ</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_package_ref.html" title="包参考" data-book-page-rel-url="docs/1.0/docs_package_ref.html" data-book-page-id="11610">包参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch.html" title="torch" data-book-page-rel-url="docs/1.0/torch.html" data-book-page-id="11611">torch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensors.html" title="torch.Tensor" data-book-page-rel-url="docs/1.0/tensors.html" data-book-page-id="11612">torch.Tensor</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensor_attributes.html" title="Tensor Attributes" data-book-page-rel-url="docs/1.0/tensor_attributes.html" data-book-page-id="11613">Tensor Attributes</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/type_info.html" title="数据类型信息" data-book-page-rel-url="docs/1.0/type_info.html" data-book-page-id="11614">数据类型信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/sparse.html" title="torch.sparse" data-book-page-rel-url="docs/1.0/sparse.html" data-book-page-id="11615">torch.sparse</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cuda.html" title="torch.cuda" data-book-page-rel-url="docs/1.0/cuda.html" data-book-page-id="11616">torch.cuda</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/storage.html" title="torch.Storage" data-book-page-rel-url="docs/1.0/storage.html" data-book-page-id="11617">torch.Storage</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn.html" title="torch.nn" data-book-page-rel-url="docs/1.0/nn.html" data-book-page-id="11618">torch.nn</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_functional.html" title="torch.nn.functional" data-book-page-rel-url="docs/1.0/nn_functional.html" data-book-page-id="11619">torch.nn.functional</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_init.html" title="torch.nn.init" data-book-page-rel-url="docs/1.0/nn_init.html" data-book-page-id="11620">torch.nn.init</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/optim.html" title="torch.optim" data-book-page-rel-url="docs/1.0/optim.html" data-book-page-id="11621">torch.optim</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/autograd.html" title="Automatic differentiation package - torch.autograd" data-book-page-rel-url="docs/1.0/autograd.html" data-book-page-id="11622">Automatic differentiation package - torch.autograd</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed.html" title="Distributed communication package - torch.distributed" data-book-page-rel-url="docs/1.0/distributed.html" data-book-page-id="11623">Distributed communication package - torch.distributed</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributions.html" title="Probability distributions - torch.distributions" data-book-page-rel-url="docs/1.0/distributions.html" data-book-page-id="11624">Probability distributions - torch.distributions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/jit.html" title="Torch Script" data-book-page-rel-url="docs/1.0/jit.html" data-book-page-id="11625">Torch Script</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/multiprocessing.html" title="多进程包 - torch.multiprocessing" data-book-page-rel-url="docs/1.0/multiprocessing.html" data-book-page-id="11626">多进程包 - torch.multiprocessing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/bottleneck.html" title="torch.utils.bottleneck" data-book-page-rel-url="docs/1.0/bottleneck.html" data-book-page-id="11627">torch.utils.bottleneck</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/checkpoint.html" title="torch.utils.checkpoint" data-book-page-rel-url="docs/1.0/checkpoint.html" data-book-page-id="11628">torch.utils.checkpoint</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_cpp_extension.html" title="torch.utils.cpp_extension" data-book-page-rel-url="docs/1.0/docs_cpp_extension.html" data-book-page-id="11629">torch.utils.cpp_extension</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data.html" title="torch.utils.data" data-book-page-rel-url="docs/1.0/data.html" data-book-page-id="11630">torch.utils.data</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dlpack.html" title="torch.utils.dlpack" data-book-page-rel-url="docs/1.0/dlpack.html" data-book-page-id="11631">torch.utils.dlpack</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/hub.html" title="torch.hub" data-book-page-rel-url="docs/1.0/hub.html" data-book-page-id="11632">torch.hub</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/model_zoo.html" title="torch.utils.model_zoo" data-book-page-rel-url="docs/1.0/model_zoo.html" data-book-page-id="11633">torch.utils.model_zoo</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/onnx.html" title="torch.onnx" data-book-page-rel-url="docs/1.0/onnx.html" data-book-page-id="11634">torch.onnx</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed_deprecated.html" title="Distributed communication package (deprecated) - torch.distributed.deprecated" data-book-page-rel-url="docs/1.0/distributed_deprecated.html" data-book-page-id="11635">Distributed communication package (deprecated) - torch.distributed.deprecated</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_torchvision_ref.html" title="torchvision 参考" data-book-page-rel-url="docs/1.0/docs_torchvision_ref.html" data-book-page-id="11636">torchvision 参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_datasets.html" title="torchvision.datasets" data-book-page-rel-url="docs/1.0/torchvision_datasets.html" data-book-page-id="11637">torchvision.datasets</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_models.html" title="torchvision.models" data-book-page-rel-url="docs/1.0/torchvision_models.html" data-book-page-id="11638">torchvision.models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_transforms.html" title="torchvision.transforms" data-book-page-rel-url="docs/1.0/torchvision_transforms.html" data-book-page-id="11639">torchvision.transforms</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_utils.html" title="torchvision.utils" data-book-page-rel-url="docs/1.0/torchvision_utils.html" data-book-page-id="11640">torchvision.utils</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =169;var bookPageId =11597;var bookPageRelUrl ='docs/1.0/cpp_export.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

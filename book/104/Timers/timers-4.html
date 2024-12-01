@@ -1,0 +1,834 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>定时器介绍-Linux 内核揭密</title>
+<meta content='定时器介绍,Linux 内核揭密' name='keywords'>
+<meta content='定时器介绍,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Timers/timers-3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">The tick br..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Timers/timers-5.html">
+<span class="">Clockevents..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="timers-and-time-management-in-the-linux-kernel-part-4">Timers and time management in the Linux kernel. Part 4.</h1>
+<h2 id="timers">Timers</h2>
+<p>This is fourth part of the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/index.html">chapter</a> which describes timers and time management related stuff in the Linux kernel and in the previous <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-3.html">part</a> we knew about the <code>tick broadcast</code> framework and <code>NO_HZ</code> mode in the Linux kernel. We will continue to dive into the time management related stuff in the Linux kernel in this part and will be acquainted with yet another concept in the Linux kernel - <code>timers</code>. Before we will look at timers in the Linux kernel, we have to learn some theory about this concept. Note that we will consider software timers in this part.</p>
+<p>The Linux kernel provides a <code>software timer</code> concept to allow to kernel functions could be invoked at future moment. Timers are widely used in the Linux kernel. For example, look in the <a href="https://github.com/torvalds/linux/blob/master/net/netfilter/ipset/ip_set_list_set.c">net/netfilter/ipset/ip_set_list_set.c</a> source code file. This source code file provides implementation of the framework for the managing of groups of <a href="https://en.wikipedia.org/wiki/Internet_Protocol">IP</a> addresses.</p>
+<p>We can find the <code>list_set</code> structure that contains <code>gc</code> filed in this source code file:</p>
+<pre><code class="language-C">struct list_set {
+	...
+	struct timer_list gc;
+	...
+};
+</code></pre>
+<p>Not that the <code>gc</code> filed has <code>timer_list</code> type. This structure defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/timer.h">include/linux/timer.h</a> header file and main point of this structure is to store <code>dynamic</code> timers in the Linux kernel. Actually, the Linux kernel provides two types of timers called dynamic timers and interval timers. First type of timers is used by the kernel, and the second can be used by user mode. The <code>timer_list</code> structure contains actual <code>dynamic</code> timers. The <code>list_set</code> contains <code>gc</code> timer in our example represents timer for garbage collection. This timer will be initialized in the <code>list_set_gc_init</code> function:</p>
+<pre><code class="language-C">static void
+list_set_gc_init(struct ip_set *set, void (*gc)(unsigned long ul_set))
+{
+	struct list_set *map = set-&gt;data;
+	...
+	...
+	...
+	map-&gt;gc.function = gc;
+	map-&gt;gc.expires = jiffies + IPSET_GC_PERIOD(set-&gt;timeout) * HZ;
+	...
+	...
+	...
+}
+</code></pre>
+<p>A function that is pointed by the <code>gc</code> pointer, will be called after timeout which is equal to the <code>map-&gt;gc.expires</code>.</p>
+<p>Ok, we will not dive into this example with the <a href="https://en.wikipedia.org/wiki/Netfilter">netfilter</a>, because this chapter is not about <a href="https://en.wikipedia.org/wiki/Computer_network">network</a> related stuff. But we saw that timers are widely used in the Linux kernel and learned that they represent concept which allows to functions to be called in future.</p>
+<p>Now let's continue to research source code of Linux kernel which is related to the timers and time management stuff as we did it in all previous chapters.</p>
+<h2 id="introduction-to-dynamic-timers-in-the-linux-kernel">Introduction to dynamic timers in the Linux kernel</h2>
+<p>As I already wrote, we knew about the <code>tick broadcast</code> framework and <code>NO_HZ</code> mode in the previous <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-3.html">part</a>. They will be initialized in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> source code file by the call of the <code>tick_init</code> function. If we will look at this source code file, we will see that the next time management related function is:</p>
+<pre><code class="language-C">init_timers();
+</code></pre>
+<p>This function defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">kernel/time/timer.c</a> source code file and contains calls of four functions:</p>
+<pre><code class="language-C">void __init init_timers(void)
+{
+	init_timer_cpus();
+	init_timer_stats();
+	timer_register_cpu_notifier();
+	open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+}
+</code></pre>
+<p>Let's look on implementation of each function. The first function is <code>init_timer_cpus</code> defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">same</a> source code file and just calls the <code>init_timer_cpu</code> function for each possible processor in the system:</p>
+<pre><code class="language-C">static void __init init_timer_cpus(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		init_timer_cpu(cpu);
+}
+</code></pre>
+<p>If you do not know or do not remember what is it a <code>possible</code> cpu, you can read the special <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">part</a> of this book which describes <code>cpumask</code> concept in the Linux kernel. In short words, a <code>possible</code> processor is a processor which can be plugged in anytime during the life of the system.</p>
+<p>The <code>init_timer_cpu</code> function does main work for us, namely it executes initialization of the <code>tvec_base</code> structure for each processor. This structure defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">kernel/time/timer.c</a> source code file and stores data related to a <code>dynamic</code> timer for a certain processor. Let's look on the definition of this structure:</p>
+<pre><code class="language-C">struct tvec_base {
+	spinlock_t lock;
+	struct timer_list *running_timer;
+	unsigned long timer_jiffies;
+	unsigned long next_timer;
+	unsigned long active_timers;
+	unsigned long all_timers;
+	int cpu;
+	bool migration_enabled;
+	bool nohz_active;
+	struct tvec_root tv1;
+	struct tvec tv2;
+	struct tvec tv3;
+	struct tvec tv4;
+	struct tvec tv5;
+} ____cacheline_aligned;
+</code></pre>
+<p>The <code>thec_base</code> structure contains following fields: The <code>lock</code> for <code>tvec_base</code> protection, the next <code>running_timer</code> field points to the currently running timer for the certain processor, the <code>timer_jiffies</code> fields represents the earliest expiration time (it will be used by the Linux kernel to find already expired timers). The next field - <code>next_timer</code> contains the next pending timer for a next timer <a href="https://en.wikipedia.org/wiki/Interrupt">interrupt</a> in a case when a processor goes to sleep and the <code>NO_HZ</code> mode is enabled in the Linux kernel. The <code>active_timers</code> field provides accounting of non-deferrable timers or in other words all timers that will not be stopped during a processor will go to sleep. The <code>all_timers</code> field tracks total number of timers or <code>active_timers</code> + deferrable timers. The <code>cpu</code> field represents number of a processor which owns timers. The <code>migration_enabled</code> and <code>nohz_active</code> fields are represent opportunity of timers migration to another processor and status of the <code>NO_HZ</code> mode respectively.</p>
+<p>The last five fields of the <code>tvec_base</code> structure represent lists of dynamic timers. The first <code>tv1</code> field has:</p>
+<pre><code class="language-C">#define TVR_SIZE (1 &lt;&lt; TVR_BITS)
+#define TVR_BITS (CONFIG_BASE_SMALL ? 6 : 8)
+
+...
+...
+...
+
+struct tvec_root {
+	struct hlist_head vec[TVR_SIZE];
+};
+</code></pre>
+<p>type. Note that the value of the <code>TVR_SIZE</code> depends on the <code>CONFIG_BASE_SMALL</code> kernel configuration option:</p>
+<p><a href="http://s17.postimg.org/db3towlu7/base_small.png" data-uk-lightbox><img src="http://s17.postimg.org/db3towlu7/base_small.png" alt="base small"></a></p>
+<p>that reduces size of the kernel data structures if disabled. The <code>v1</code> is array that may contain <code>64</code> or <code>256</code> elements where an each element represents a dynamic timer that will decay within the next <code>255</code> system timer interrupts. Next three fields: <code>tv2</code>, <code>tv3</code> and <code>tv4</code> are lists with dynamic timers too, but they store dynamic timers which will decay the next <code>2^14 - 1</code>, <code>2^20 - 1</code> and <code>2^26</code> respectively. The last <code>tv5</code> field represents list which stores dynamic timers with a large expiring period.</p>
+<p>So, now we saw the <code>tvec_base</code> structure and description of its fields and we can look on the implementation of the <code>init_timer_cpu</code> function. As I already wrote, this function defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">kernel/time/timer.c</a> source code file and executes initialization of the <code>tvec_bases</code>:</p>
+<pre><code class="language-C">static void __init init_timer_cpu(int cpu)
+{
+	struct tvec_base *base = per_cpu_ptr(&amp;tvec_bases, cpu);
+
+	base-&gt;cpu = cpu;
+	spin_lock_init(&amp;base-&gt;lock);
+
+	base-&gt;timer_jiffies = jiffies;
+	base-&gt;next_timer = base-&gt;timer_jiffies;
+}
+</code></pre>
+<p>The <code>tvec_bases</code> represents <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a> variable which represents main data structure for a dynamic timer for a given processor. This <code>per-cpu</code> variable defined in the same source code file:</p>
+<pre><code class="language-C">static DEFINE_PER_CPU(struct tvec_base, tvec_bases);
+</code></pre>
+<p>First of all we're getting the address of the <code>tvec_bases</code> for the given processor to <code>base</code> variable and as we got it, we are starting to initialize some of the <code>tvec_base</code> fields in the <code>init_timer_cpu</code> function. After initialization of the <code>per-cpu</code> dynamic timers with the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-1.html">jiffies</a> and the number of a possible processor, we need to initialize a <code>tstats_lookup_lock</code> <a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a> in the <code>init_timer_stats</code> function:</p>
+<pre><code class="language-C">void __init init_timer_stats(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		raw_spin_lock_init(&amp;per_cpu(tstats_lookup_lock, cpu));
+}
+</code></pre>
+<p>The <code>tstats_lookcup_lock</code> variable represents <code>per-cpu</code> raw spinlock:</p>
+<pre><code class="language-C">static DEFINE_PER_CPU(raw_spinlock_t, tstats_lookup_lock);
+</code></pre>
+<p>which will be used for protection of operation with statistics of timers that can be accessed through the <a href="https://en.wikipedia.org/wiki/Procfs">procfs</a>:</p>
+<pre><code class="language-C">static int __init init_tstats_procfs(void)
+{
+	struct proc_dir_entry *pe;
+
+	pe = proc_create("timer_stats", 0644, NULL, &amp;tstats_fops);
+	if (!pe)
+		return -ENOMEM;
+	return 0;
+}
+</code></pre>
+<p>For example:</p>
+<pre><code>$ cat /proc/timer_stats
+Timerstats sample period: 3.888770 s
+  12,     0 swapper          hrtimer_stop_sched_tick (hrtimer_sched_tick)
+  15,     1 swapper          hcd_submit_urb (rh_timer_func)
+   4,   959 kedac            schedule_timeout (process_timeout)
+   1,     0 swapper          page_writeback_init (wb_timer_fn)
+  28,     0 swapper          hrtimer_stop_sched_tick (hrtimer_sched_tick)
+  22,  2948 IRQ 4            tty_flip_buffer_push (delayed_work_timer_fn)
+  ...
+  ...
+  ...
+</code></pre>
+<p>The next step after initialization of the <code>tstats_lookup_lock</code> spinlock is the call of the <code>timer_register_cpu_notifier</code> function. This function depends on the <code>CONFIG_HOTPLUG_CPU</code> kernel configuration option which enables support for <a href="https://en.wikipedia.org/wiki/Hot_swapping">hotplug</a> processors in the Linux kernel.</p>
+<p>When a processor will be logically offlined, a notification will be sent to the Linux kernel with the <code>CPU_DEAD</code> or the <code>CPU_DEAD_FROZEN</code> event by the call of the <code>cpu_notifier</code> macro:</p>
+<pre><code class="language-C">#ifdef CONFIG_HOTPLUG_CPU
+...
+...
+static inline void timer_register_cpu_notifier(void)
+{
+	cpu_notifier(timer_cpu_notify, 0);
+}
+...
+...
+#else
+...
+...
+static inline void timer_register_cpu_notifier(void) { }
+...
+...
+#endif /* CONFIG_HOTPLUG_CPU */
+</code></pre>
+<p>In this case the <code>timer_cpu_notify</code> will be called which checks an event type and will call the <code>migrate_timers</code> function:</p>
+<pre><code class="language-C">static int timer_cpu_notify(struct notifier_block *self,
+	                        unsigned long action, void *hcpu)
+{
+	switch (action) {
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		migrate_timers((long)hcpu);
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+</code></pre>
+<p>This chapter will not describe <code>hotplug</code> related events in the Linux kernel source code, but if you are interesting in such things, you can find implementation of the <code>migrate_timers</code> function in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/timer.c">kernel/time/timer.c</a> source code file.</p>
+<p>The last step in the <code>init_timers</code> function is the call of the:</p>
+<pre><code class="language-C">open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+</code></pre>
+<p>function. The <code>open_softirq</code> function may be already familar to you if you have read the ninth <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Interrupts/interrupts-9.html">part</a> about the interrupts and interrupt handling in the Linux kernel. In short words, the <code>open_softirq</code> function defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/softirq.c">kernel/softirq.c</a> source code file and executes initialization of the deferred interrupt handler.</p>
+<p>In our case the deferred function is the <code>run_timer_softirq</code> function that is will be called after a hardware interrupt in the <code>do_IRQ</code> function which defined in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/irq.c">arch/x86/kernel/irq.c</a> source code file. The main point of this function is to handle a software dynamic timer. The Linux kernel does not do this thing during the hardware timer interrupt handling because this is time consuming operation.</p>
+<p>Let's look on the implementation of the <code>run_timer_softirq</code> function:</p>
+<pre><code class="language-C">static void run_timer_softirq(struct softirq_action *h)
+{
+	struct tvec_base *base = this_cpu_ptr(&amp;tvec_bases);
+
+	if (time_after_eq(jiffies, base-&gt;timer_jiffies))
+		__run_timers(base);
+}
+</code></pre>
+<p>At the beginning of the <code>run_timer_softirq</code> function we get a <code>dynamic</code> timer for a current processor and compares the current value of the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-1.html">jiffies</a> with the value of the <code>timer_jiffies</code> for the current structure by the call of the <code>time_after_eq</code> macro which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/jiffies.h">include/linux/jiffies.h</a> header file:</p>
+<pre><code class="language-C">#define time_after_eq(a,b)          \
+    (typecheck(unsigned long, a) &amp;&amp; \
+     typecheck(unsigned long, b) &amp;&amp; \
+    ((long)((a) - (b)) &gt;= 0))
+</code></pre>
+<p>Reclaim that the <code>timer_jiffies</code> field of the <code>tvec_base</code> structure represents the relative time when functions delayed by the given timer will be executed. So we compare these two values and if the current time represented by the <code>jiffies</code> is greater than <code>base-&gt;timer_jiffies</code>, we call the <code>__run_timers</code> function that defined in the same source code file. Let's look on the implementation of this function.</p>
+<p>As I just wrote, the <code>__run_timers</code> function runs all expired timers for a given processor. This function starts from the acquiring of the <code>tvec_base's</code> lock to protect the <code>tvec_base</code> structure</p>
+<pre><code class="language-C">static inline void __run_timers(struct tvec_base *base)
+{
+	struct timer_list *timer;
+
+	spin_lock_irq(&amp;base-&gt;lock);
+	...
+	...
+	...
+	spin_unlock_irq(&amp;base-&gt;lock);
+}
+</code></pre>
+<p>After this it starts the loop while the <code>timer_jiffies</code> will not be greater than the <code>jiffies</code>:</p>
+<pre><code class="language-C">while (time_after_eq(jiffies, base-&gt;timer_jiffies)) {
+	...
+	...
+	...
+}
+</code></pre>
+<p>We can find many different manipulations in the our loop, but the main point is to find expired timers and call delayed functions. First of all we need to calculate the <code>index</code> of the <code>base-&gt;tv1</code> list that stores the next timer to be handled with the following expression:</p>
+<pre><code class="language-C">index = base-&gt;timer_jiffies &amp; TVR_MASK;
+</code></pre>
+<p>where the <code>TVR_MASK</code> is a mask for the getting of the <code>tvec_root-&gt;vec</code> elements. As we got the index with the next timer which must be handled we check its value. If the index is zero, we go through all lists in our cascade table <code>tv2</code>, <code>tv3</code> and etc., and rehashing it with the call of the <code>cascade</code> function:</p>
+<pre><code class="language-C">if (!index &amp;&amp;
+	(!cascade(base, &amp;base-&gt;tv2, INDEX(0))) &amp;&amp;
+		(!cascade(base, &amp;base-&gt;tv3, INDEX(1))) &amp;&amp;
+				!cascade(base, &amp;base-&gt;tv4, INDEX(2)))
+		cascade(base, &amp;base-&gt;tv5, INDEX(3));
+</code></pre>
+<p>After this we increase the value of the <code>base-&gt;timer_jiffies</code>:</p>
+<pre><code class="language-C">++base-&gt;timer_jiffies;
+</code></pre>
+<p>In the last step we are executing a corresponding function for each timer from the list in a following loop:</p>
+<pre><code class="language-C">hlist_move_list(base-&gt;tv1.vec + index, head);
+
+while (!hlist_empty(head)) {
+	...
+	...
+	...
+	timer = hlist_entry(head-&gt;first, struct timer_list, entry);
+	fn = timer-&gt;function;
+	data = timer-&gt;data;
+
+	spin_unlock(&amp;base-&gt;lock);
+	call_timer_fn(timer, fn, data);
+	spin_lock(&amp;base-&gt;lock);
+
+	...
+	...
+	...
+}
+</code></pre>
+<p>where the <code>call_timer_fn</code> just call the given function:</p>
+<pre><code class="language-C">static void call_timer_fn(struct timer_list *timer, void (*fn)(unsigned long),
+	                      unsigned long data)
+{
+	...
+	...
+	...
+	fn(data);
+	...
+	...
+	...
+}
+</code></pre>
+<p>That's all. The Linux kernel has infrastructure for <code>dynamic timers</code> from this moment. We will not dive into this interesting theme. As I already wrote the <code>timers</code> is a <a href="http://lxr.free-electrons.com/ident?i=timer_list">widely</a> used concept in the Linux kernel and nor one part, nor two parts will not cover understanding of such things how it implemented and how it works. But now we know about this concept, why does the Linux kernel needs in it and some data structures around it.</p>
+<p>Now let's look usage of <code>dynamic timers</code> in the Linux kernel.</p>
+<h2 id="usage-of-dynamic-timers">Usage of dynamic timers</h2>
+<p>As you already can noted, if the Linux kernel provides a concept, it also provides API for managing of this concept and the <code>dynamic timers</code> concept is not exception here. To use a timer in the Linux kernel code, we must define a variable with a <code>timer_list</code> type. We can initialize our <code>timer_list</code> structure in two ways. The first is to use the <code>init_timer</code> macro that defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/timer.h">include/linux/timer.h</a> header file:</p>
+<pre><code class="language-C">#define init_timer(timer)    \
+	__init_timer((timer), 0)
+
+#define __init_timer(_timer, _flags)   \
+         init_timer_key((_timer), (_flags), NULL, NULL)
+</code></pre>
+<p>where the <code>init_timer_key</code> function just calls the:</p>
+<pre><code class="language-C">do_init_timer(timer, flags, name, key);
+</code></pre>
+<p>function which fields the given <code>timer</code> with default values. The second way is to use the:</p>
+<pre><code class="language-C">#define TIMER_INITIALIZER(_function, _expires, _data)		\
+	__TIMER_INITIALIZER((_function), (_expires), (_data), 0)
+</code></pre>
+<p>macro which will initilize the given <code>timer_list</code> structure too.</p>
+<p>After a <code>dynamic timer</code> is initialzed we can start this <code>timer</code> with the call of the:</p>
+<pre><code class="language-C">void add_timer(struct timer_list * timer);
+</code></pre>
+<p>function and stop it with the:</p>
+<pre><code class="language-C">int del_timer(struct timer_list * timer);
+</code></pre>
+<p>function.</p>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fourth part of the chapter that describes timers and timer management related stuff in the Linux kernel. In the previous part we got acquainted with the two new concepts: the <code>tick broadcast</code> framework and the <code>NO_HZ</code> mode. In this part we continued to dive into time managemented related stuff and got acquainted with the new concept - <code>dynamic timer</code> or software timer. We didn't saw implementation of a <code>dynamic timers</code> management code in details in this part but saw data structures and API around this concept.</p>
+<p>In the next part we will continue to dive into timer management related things in the Linux kernel and will see new concept for us - <code>timers</code>.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Internet_Protocol">IP</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Netfilter">netfilter</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Computer_network">network</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">cpumask</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt">interrupt</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-1.html">jiffies</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Procfs">procfs</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-3.html">previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/114/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/194/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/postgresql_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/194/index.html">postgresql教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/110.html">hfpp2012</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="postgresql">postgresql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9个">9</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/1/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/blockchain_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/1/index.html">区块链技术指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/1.html">ayamefing</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="blockchain">blockchain</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">102页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 34个">34</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/115/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/115/index.html">ANTLR 4简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7496;var bookPageRelUrl ='Timers/timers-4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,459 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>基本类型-深入解析Go(go internals)</title>
+<meta content='基本类型,深入解析Go,go internals' name='keywords'>
+<meta content='基本类型,深入解析Go,go internals' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/3/zh/02.0.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">基本数据结构</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/3/zh/02.2.html">
+<span class="">slice</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/3/index.html">深入解析Go (go internals)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tiancaiamao/go-internals" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="21-基本类型">2.1 基本类型</h1>
+<p>向新手介绍Go语言时，解释一下Go中各种类型变量在内存中的布局通常有利于帮助他们加深理解。</p>
+<p>先看一些基础的例子:</p>
+<p><a href="http://research.swtch.com/godata1.png" data-uk-lightbox><img src="http://research.swtch.com/godata1.png" alt=""></a></p>
+<p>变量i属于类型int，在内存中用一个32位字长(word)表示。(32位内存布局方式）</p>
+<p>变量j由于做了精确的转换，属于int32类型。尽管i和j有着相同的内存布局，但是它们属于不同的类型：赋值操作 <code>i = j</code> 是一种类型错误，必须写成更精确的转换方式：<code>i = int(j)</code>。</p>
+<p>变量f属于float类型，Go语言当前使用32位浮点型值表示(float32)。它与int32很像，但是内部实现不同。</p>
+<p>接下来，变量bytes的类型是[5]byte，一个由5个字节组成的数组。它的内存表示就是连起来的5个字节，就像C的数组。类似地，变量primes是4个int的数组。</p>
+<h2 id="结构体和指针">结构体和指针</h2>
+<p>与C相同而与Java不同的是，Go语言让程序员决定何时使用指针。举例来说，这种类型定义：</p>
+<pre><code>type Point struct { X, Y int }
+</code></pre>
+<p>先来定义一个简单的struct类型，名为Point，表示内存中两个相邻的整数。</p>
+<p><a href="http://research.swtch.com/godata1a.png" data-uk-lightbox><img src="http://research.swtch.com/godata1a.png" alt=""></a></p>
+<p><code>Point{10,20}</code>表示一个已初始化的Point类型。对它进行取地址表示一个指向刚刚分配和初始化的Point类型的指针。前者在内存中是两个词，而后者是一个指向两个词的指针。</p>
+<p>结构体的域在内存中是紧挨着排列的。</p>
+<pre><code>type Rect1 struct { Min, Max Point }
+type Rect2 struct { Min, Max *Point }
+</code></pre>
+<p><a href="http://research.swtch.com/godata1b.png" data-uk-lightbox><img src="http://research.swtch.com/godata1b.png" alt=""></a></p>
+<p>Rect1是一个具有两个Point类型属性的结构体，由在一行的两个Point--四个int代表。Rect2是一个具有两个<code>*Point</code>类型属性的结构体，由两个*Point表示。</p>
+<p>使用过C的程序员可能对<code>Point</code>和<code>*Point</code>的不同毫不见怪，但用惯Java或Python的程序员们可能就不那么轻松了。Go语言给了程序员基本内存层面的控制，由此提供了诸多能力，如控制给定数据结构集合的总大小、内存分配的次数、内存访问模式以及建立优秀系统的所有要点。</p>
+<h2 id="字符串">字符串</h2>
+<p>有了前面的准备，我们就可以开始研究更有趣的数据类型了。</p>
+<p><a href="http://research.swtch.com/godata2.png" data-uk-lightbox><img src="http://research.swtch.com/godata2.png" alt=""></a></p>
+<p>（灰色的箭头表示已经实现的但不能直接可见的指针）</p>
+<p>字符串在Go语言内存模型中用一个2字长的数据结构表示。它包含一个指向字符串存储数据的指针和一个长度数据。因为string类型是不可变的，对于多字符串共享同一个存储数据是安全的。切分操作<code>str[i:j]</code>会得到一个新的2字长结构，一个可能不同的但仍指向同一个字节序列(即上文说的存储数据)的指针和长度数据。这意味着字符串切分可以在不涉及内存分配或复制操作。这使得字符串切分的效率等同于传递下标。</p>
+<p>（说句题外话，在Java和其他语言里有一个有名的“疑难杂症”：在你分割字符串并保存时，对于源字符串的引用在内存中仍然保存着完整的原始字符串--即使只有一小部分仍被需要，Go也有这个“毛病”。另一方面，我们努力但又失败了的是，让字符串分割操作变得昂贵--包含一次分配和一次复制。在大多数程序中都避免了这么做。）</p>
+<h2 id="links">links</h2>
+<ul>
+<li><a href="preface.html">目录</a></li>
+<li>上一节: <a href="02.0.html">基本数据结构</a></li>
+<li>下一节: <a href="02.2.html">slice</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/13/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/13/index.html">Go实战开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2789个">2789</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/19/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/19/index.html">Go命令教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/14.html">hyper0x</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1478个">1478</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/14/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/14/index.html">Go入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/10.html">Unknwon</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8842个">8842</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/155/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/155/index.html">CHNote，Apple设备、Git、Shell等使用教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/87.html">wanggw911</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/94/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/94/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/57.html">RedstoneWill</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/141/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/141/index.html">各种程序开发相关的Awesome开源项目清单</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/74.html">sindresorhus</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">25页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 102911个">102911</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/3/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.0.html" title="如何研究Go内部实现" data-book-page-rel-url="zh/01.0.html" data-book-page-id="9756">如何研究Go内部实现</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.1.html" title="从源代码安装Go" data-book-page-rel-url="zh/01.1.html" data-book-page-id="9757">从源代码安装Go</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.2.html" title="本书的组织结构" data-book-page-rel-url="zh/01.2.html" data-book-page-id="9758">本书的组织结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.3.html" title="基本技巧" data-book-page-rel-url="zh/01.3.html" data-book-page-id="9759">基本技巧</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.0.html" title="基本数据结构" data-book-page-rel-url="zh/02.0.html" data-book-page-id="9760">基本数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.1.html" title="基本类型" data-book-page-rel-url="zh/02.1.html" data-book-page-id="9761">基本类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.2.html" title="slice" data-book-page-rel-url="zh/02.2.html" data-book-page-id="9762">slice</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.3.html" title="map的实现" data-book-page-rel-url="zh/02.3.html" data-book-page-id="9763">map的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.4.html" title="nil" data-book-page-rel-url="zh/02.4.html" data-book-page-id="9764">nil</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.0.html" title="函数调用协议" data-book-page-rel-url="zh/03.0.html" data-book-page-id="9765">函数调用协议</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.1.html" title="Go调用汇编和C" data-book-page-rel-url="zh/03.1.html" data-book-page-id="9766">Go调用汇编和C</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.2.html" title="多值返回" data-book-page-rel-url="zh/03.2.html" data-book-page-id="9767">多值返回</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.3.html" title="go关键字" data-book-page-rel-url="zh/03.3.html" data-book-page-id="9768">go关键字</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.4.html" title="defer关键字" data-book-page-rel-url="zh/03.4.html" data-book-page-id="9769">defer关键字</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.5.html" title="连续栈" data-book-page-rel-url="zh/03.5.html" data-book-page-id="9770">连续栈</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.6.html" title="闭包的实现" data-book-page-rel-url="zh/03.6.html" data-book-page-id="9771">闭包的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.0.html" title="Go语言程序初始化过程" data-book-page-rel-url="zh/04.0.html" data-book-page-id="9772">Go语言程序初始化过程</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.1.html" title="系统初始化" data-book-page-rel-url="zh/04.1.html" data-book-page-id="9773">系统初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.2.html" title="main.main之前的准备" data-book-page-rel-url="zh/04.2.html" data-book-page-id="9774">main.main之前的准备</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.0.html" title="goroutine调度" data-book-page-rel-url="zh/05.0.html" data-book-page-id="9775">goroutine调度</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.1.html" title="调度器相关数据结构" data-book-page-rel-url="zh/05.1.html" data-book-page-id="9776">调度器相关数据结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.2.html" title="goroutine的生老病死" data-book-page-rel-url="zh/05.2.html" data-book-page-id="9777">goroutine的生老病死</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.3.html" title="设计与演化" data-book-page-rel-url="zh/05.3.html" data-book-page-id="9778">设计与演化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.5.html" title="抢占式调度" data-book-page-rel-url="zh/05.5.html" data-book-page-id="9779">抢占式调度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.0.html" title="内存管理" data-book-page-rel-url="zh/06.0.html" data-book-page-id="9780">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.1.html" title="内存池" data-book-page-rel-url="zh/06.1.html" data-book-page-id="9781">内存池</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.2.html" title="垃圾回收上篇" data-book-page-rel-url="zh/06.2.html" data-book-page-id="9782">垃圾回收上篇</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.3.html" title="垃圾回收下篇" data-book-page-rel-url="zh/06.3.html" data-book-page-id="9783">垃圾回收下篇</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.0.html" title="高级数据结构的实现" data-book-page-rel-url="zh/07.0.html" data-book-page-id="9784">高级数据结构的实现</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.1.html" title="channel" data-book-page-rel-url="zh/07.1.html" data-book-page-id="9785">channel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.2.html" title="interface" data-book-page-rel-url="zh/07.2.html" data-book-page-id="9786">interface</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.3.html" title="方法调用" data-book-page-rel-url="zh/07.3.html" data-book-page-id="9787">方法调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/08.0.html" title="网络" data-book-page-rel-url="zh/08.0.html" data-book-page-id="9788">网络</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/08.1.html" title="非阻塞io" data-book-page-rel-url="zh/08.1.html" data-book-page-id="9789">非阻塞io</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.0.html" title="cgo" data-book-page-rel-url="zh/09.0.html" data-book-page-id="9790">cgo</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.1.html" title="预备知识" data-book-page-rel-url="zh/09.1.html" data-book-page-id="9791">预备知识</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.2.html" title="cgo关键技术" data-book-page-rel-url="zh/09.2.html" data-book-page-id="9792">cgo关键技术</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.3.html" title="Go调用C" data-book-page-rel-url="zh/09.3.html" data-book-page-id="9793">Go调用C</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.4.html" title="C调用Go" data-book-page-rel-url="zh/09.4.html" data-book-page-id="9794">C调用Go</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="杂项" disabled data-book-page-rel-url="" data-book-page-id="9795">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/10.1.html" title="内存模型" data-book-page-rel-url="zh/10.1.html" data-book-page-id="9796">内存模型</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =3;var bookPageId =9761;var bookPageRelUrl ='zh/02.1.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

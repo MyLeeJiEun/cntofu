@@ -1,0 +1,612 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>12. 部署 Docker Registry-和我一步步部署 kubernetes 集群</title>
+<meta content='12. 部署 Docker Registry,和我一步步部署 kubernetes 集群' name='keywords'>
+<meta content='12. 部署 Docker Registry,和我一步步部署 kubernetes 集群' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/111/11-部署EFK插件.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">11. 部署 EFK ..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/111/13-部署harbor私有仓库.html">
+<span class="">13. 部署 Harb..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/111/index.html">和我一步步部署 kubernetes 集群</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/follow-me-install-kubernetes-cluster" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<p>tags: registry, ceph</p>
+<h1 id="部署私有-docker-registry">部署私有 docker registry</h1>
+<p>注意：本文档介绍使用 docker 官方的 registry v2 镜像部署私有仓库的步骤，你也可以部署 Harbor 私有仓库（<a href="13-部署harbor私有仓库.html">部署 Harbor 私有仓库</a>）。</p>
+<p>本文档讲解部署一个 TLS 加密、HTTP Basic 认证、用 ceph rgw 做后端存储的私有 docker registry 步骤，如果使用其它类型的后端存储，则可以从 “创建 docker registry” 节开始；</p>
+<p>示例两台机器 IP 如下：</p>
+<ul>
+<li>ceph rgw: 10.64.3.9</li>
+<li>docker registry: 10.64.3.7</li>
+</ul>
+<h2 id="部署-ceph-rgw-节点">部署 ceph RGW 节点</h2>
+<pre><code class="language-bash">$ ceph-deploy rgw create 10.64.3.9 # rgw 默认监听7480端口
+$
+</code></pre>
+<h2 id="创建测试账号-demo">创建测试账号 demo</h2>
+<pre><code class="language-bash">$ radosgw-admin user create --uid=demo --display-name="ceph rgw demo user"
+$
+</code></pre>
+<h2 id="创建-demo-账号的子账号-swift">创建 demo 账号的子账号 swift</h2>
+<p>当前 registry 只支持使用 swift 协议访问 ceph rgw 存储，暂时不支持 s3 协议；</p>
+<pre><code class="language-bash">$ radosgw-admin subuser create --uid demo --subuser=demo:swift --access=full --secret=secretkey --key-type=swift
+$
+</code></pre>
+<h2 id="创建-demoswift-子账号的-sercret-key">创建 demo:swift 子账号的 sercret key</h2>
+<pre><code class="language-bash">$ radosgw-admin key create --subuser=demo:swift --key-type=swift --gen-secret
+{
+    "user_id": "demo",
+    "display_name": "ceph rgw demo user",
+    "email": "",
+    "suspended": 0,
+    "max_buckets": 1000,
+    "auid": 0,
+    "subusers": [
+        {
+            "id": "demo:swift",
+            "permissions": "full-control"
+        }
+    ],
+    "keys": [
+        {
+            "user": "demo",
+            "access_key": "5Y1B1SIJ2YHKEHO5U36B",
+            "secret_key": "nrIvtPqUj7pUlccLYPuR3ntVzIa50DToIpe7xFjT"
+        }
+    ],
+    "swift_keys": [
+        {
+            "user": "demo:swift",
+            "secret_key": "aCgVTx3Gfz1dBiFS4NfjIRmvT0sgpHDP6aa0Yfrh"
+        }
+    ],
+    "caps": [],
+    "op_mask": "read, write, delete",
+    "default_placement": "",
+    "placement_tags": [],
+    "bucket_quota": {
+        "enabled": false,
+        "max_size_kb": -1,
+        "max_objects": -1
+    },
+    "user_quota": {
+        "enabled": false,
+        "max_size_kb": -1,
+        "max_objects": -1
+    },
+        "temp_url_keys": []
+}
+</code></pre>
+<ul>
+<li><code>aCgVTx3Gfz1dBiFS4NfjIRmvT0sgpHDP6aa0Yfrh</code> 为子账号 demo:swift 的 secret key；</li>
+</ul>
+<h2 id="创建-docker-registry">创建 docker registry</h2>
+<p>创建 registry 使用的 TLS 证书</p>
+<pre><code class="language-bash">$ mdir -p registry/{auth,certs}
+$ cat registry-csr.json
+{
+  "CN": "registry",
+  "hosts": [
+      "127.0.0.1",
+      "10.64.3.7"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "BeiJing",
+      "L": "BeiJing",
+      "O": "k8s",
+      "OU": "System"
+    }
+  ]
+}
+$ cfssl gencert -ca=/etc/kubernetes/ssl/ca.pem \
+    -ca-key=/etc/kubernetes/ssl/ca-key.pem \
+    -config=/etc/kubernetes/ssl/ca-config.json \
+    -profile=kubernetes registry-csr.json | cfssljson -bare registry
+$ cp registry.pem registry-key.pem registry/certs
+$
+</code></pre>
+<ul>
+<li>这里复用以前创建的 CA 证书和秘钥文件；</li>
+<li>hosts 字段指定 registry 的 NodeIP；</li>
+</ul>
+<p>创建 HTTP Baisc 认证文件</p>
+<pre><code class="language-bash">$ docker run --entrypoint htpasswd registry:2 -Bbn foo foo123  &gt; auth/htpasswd
+$ cat auth/htpasswd
+foo:$2y$05$I60z69MdluAQ8i1Ka3x3Neb332yz1ioow2C4oroZSOE0fqPogAmZm
+</code></pre>
+<p>配置 registry 参数</p>
+<pre><code class="language-bash">$ export RGW_AUTH_URL="http://10.64.3.9:7480/auth/v1"
+$ export RGW_USER="demo:swift"
+$ export RGW_SECRET_KEY="aCgVTx3Gfz1dBiFS4NfjIRmvT0sgpHDP6aa0Yfrh"
+$ cat &gt; config.yml &lt;&lt; EOF
+# https://docs.docker.com/registry/configuration/#list-of-configuration-options
+version: 0.1
+log:
+  level: info
+  fromatter: text
+  fields:
+    service: registry
+
+storage:
+  cache:
+    blobdescriptor: inmemory
+  delete:
+    enabled: true
+  swift:
+    authurl: ${RGW_AUTH_URL}
+    username: ${RGW_USER}
+    password: ${RGW_SECRET_KEY}
+    container: registry
+
+auth:
+  htpasswd:
+    realm: basic-realm
+    path: /auth/htpasswd
+
+http:
+  addr: 0.0.0.0:8000
+  headers:
+    X-Content-Type-Options: [nosniff]
+  tls:
+    certificate: /certs/registry.pem
+    key: /certs/registry-key.pem
+
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3
+EOF
+</code></pre>
+<ul>
+<li>storage.swift 指定后端使用 swfit 接口协议的存储，这里配置的是 ceph rgw 存储参数；</li>
+<li>auth.htpasswd 指定了 HTTP Basic 认证的 token 文件路径；</li>
+<li>http.tls 指定了 registry http 服务器的证书和秘钥文件路径；</li>
+</ul>
+<p>创建 docker registry</p>
+<pre><code class="language-bash">$ docker run -d -p 8000:8000 \
+    -v $(pwd)/registry/auth/:/auth \
+    -v $(pwd)/registry/certs:/certs \
+    -v $(pwd)/config.yml:/etc/docker/registry/config.yml \
+    --name registry registry:2
+</code></pre>
+<ul>
+<li>执行该 docker run 命令的机器 IP 为 10.64.3.7；</li>
+</ul>
+<h2 id="向-registry-push-image">向 registry push image</h2>
+<p>将签署 registry 证书的 CA 证书拷贝到 <code>/etc/docker/certs.d/10.64.3.7:8000</code> 目录下</p>
+<pre><code class="language-bash">$ sudo mkdir -p /etc/docker/certs.d/10.64.3.7:8000
+$ sudo cp /etc/kubernetes/ssl/ca.pem /etc/docker/certs.d/10.64.3.7:8000/ca.crt
+$
+</code></pre>
+<p>登陆私有 registry</p>
+<pre><code class="language-bash">$ docker login 10.64.3.7:8000
+Username: foo
+Password:
+Login Succeeded
+</code></pre>
+<p>登陆信息被写入 <code>~/.docker/config.json</code> 文件</p>
+<pre><code class="language-bash">$ cat ~/.docker/config.json
+{
+        "auths": {
+                "10.64.3.7:8000": {
+                        "auth": "Zm9vOmZvbzEyMw=="
+                }
+        }
+}
+</code></pre>
+<p>将本地的 image 打上私有 registry 的 tag</p>
+<pre><code class="language-bash">$ docker tag docker.io/kubernetes/pause 10.64.3.7:8000/zhangjun3/pause
+$ docker images |grep pause
+docker.io/kubernetes/pause                            latest              f9d5de079539        2 years ago         239.8 kB
+10.64.3.7:8000/zhangjun3/pause                        latest              f9d5de079539        2 years ago         239.8 kB
+</code></pre>
+<p>将 image push 到私有 registry</p>
+<pre><code class="language-bash">$ docker push 10.64.3.7:8000/zhangjun3/pause
+The push refers to a repository [10.64.3.7:8000/zhangjun3/pause]
+5f70bf18a086: Pushed
+e16a89738269: Pushed
+latest: digest: sha256:9a6b437e896acad3f5a2a8084625fdd4177b2e7124ee943af642259f2f283359 size: 916
+</code></pre>
+<p>查看 ceph 上是否已经有 push 的 pause 容器文件</p>
+<pre><code class="language-bash">$ rados lspools
+rbd
+.rgw.root
+default.rgw.control
+default.rgw.data.root
+default.rgw.gc
+default.rgw.log
+default.rgw.users.uid
+default.rgw.users.keys
+default.rgw.users.swift
+default.rgw.buckets.index
+default.rgw.buckets.data
+
+$ rados --pool default.rgw.buckets.data ls|grep pause
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_layers/sha256/f9d5de0795395db6c50cb1ac82ebed1bd8eb3eefcebb1aa724e01239594e937b/link
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_layers/sha256/f72a00a23f01987b42cb26f259582bb33502bdb0fcf5011e03c60577c4284845/link
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_layers/sha256/a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4/link
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_manifests/tags/latest/current/link
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_manifests/tags/latest/index/sha256/9a6b437e896acad3f5a2a8084625fdd4177b2e7124ee943af642259f2f283359/link
+9c2d5a9d-19e6-4003-90b5-b1cbf15e890d.4310.1_files/docker/registry/v2/repositories/zhangjun3/pause/_manifests/revisions/sha256/9a6b437e896acad3f5a2a8084625fdd4177b2e7124ee943af642259f2f283359/link
+</code></pre>
+<h2 id="私有-registry-的运维操作">私有 registry 的运维操作</h2>
+<h3 id="查询私有镜像中的-images">查询私有镜像中的 images</h3>
+<pre><code class="language-bash">$ curl  --user zhangjun3:xxx --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/_catalog
+{"repositories":["library/redis","zhangjun3/busybox","zhangjun3/pause","zhangjun3/pause2"]}
+</code></pre>
+<h3 id="查询某个镜像的-tags-列表">查询某个镜像的 tags 列表</h3>
+<pre><code class="language-bash">$ curl  --user zhangjun3:xxx --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/zhangjun3/busybox/tags/list
+{"name":"zhangjun3/busybox","tags":["latest"]}
+</code></pre>
+<h3 id="获取-image-或-layer-的-digest">获取 image 或 layer 的 digest</h3>
+<p>向 <code>v2/&lt;repoName&gt;/manifests/&lt;tagName&gt;</code> 发 GET 请求，从响应的头部 <code>Docker-Content-Digest</code> 获取 image digest，从响应的 body 的 <code>fsLayers.blobSum</code> 中获取 layDigests;</p>
+<p>注意，必须包含请求头：<code>Accept: application/vnd.docker.distribution.manifest.v2+json</code>：</p>
+<pre><code class="language-bash">$ curl -v -H "Accept: application/vnd.docker.distribution.manifest.v2+json" --user zhangjun3:xxx --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/zhangjun3/busybox/manifests/latest
+
+&gt; GET /v2/zhangjun3/busybox/manifests/latest HTTP/1.1
+&gt; User-Agent: curl/7.29.0
+&gt; Host: 10.64.3.7:8000
+&gt; Accept: application/vnd.docker.distribution.manifest.v2+json
+&gt;
+&lt; HTTP/1.1 200 OK
+&lt; Content-Length: 527
+&lt; Content-Type: application/vnd.docker.distribution.manifest.v2+json
+&lt; Docker-Content-Digest: sha256:68effe31a4ae8312e47f54bec52d1fc925908009ce7e6f734e1b54a4169081c5
+&lt; Docker-Distribution-Api-Version: registry/2.0
+&lt; Etag: "sha256:68effe31a4ae8312e47f54bec52d1fc925908009ce7e6f734e1b54a4169081c5"
+&lt; X-Content-Type-Options: nosniff
+&lt; Date: Tue, 21 Mar 2017 15:19:42 GMT
+&lt;
+{
+   "schemaVersion": 2,
+   "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+   "config": {
+      "mediaType": "application/vnd.docker.container.image.v1+json",
+      "size": 1465,
+      "digest": "sha256:00f017a8c2a6e1fe2ffd05c281f27d069d2a99323a8cd514dd35f228ba26d2ff"
+   },
+   "layers": [
+      {
+         "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+         "size": 701102,
+         "digest": "sha256:04176c8b224aa0eb9942af765f66dae866f436e75acef028fe44b8a98e045515"
+      }
+   ]
+}
+</code></pre>
+<h3 id="删除-image">删除 image</h3>
+<p>向 <code>/v2/&lt;name&gt;/manifests/&lt;reference&gt;</code> 发送 DELETE 请求，reference 为上一步返回的 Docker-Content-Digest 字段内容：</p>
+<pre><code class="language-bash">$ curl -X DELETE  --user zhangjun3:xxx --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/zhangjun3/busybox/manifests/sha256:68effe31a4ae8312e47f54bec52d1fc925908009ce7e6f734e1b54a4169081c5
+$
+</code></pre>
+<h3 id="删除-layer">删除 layer</h3>
+<p>向 <code>/v2/&lt;name&gt;/blobs/&lt;digest&gt;</code>发送 DELETE 请求，其中 digest 是上一步返回的 <code>fsLayers.blobSum</code> 字段内容：</p>
+<pre><code class="language-bash">$ curl -X DELETE  --user zhangjun3:xxx --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/zhangjun3/busybox/blobs/sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4
+$ curl -X DELETE  --cacert /etc/docker/certs.d/10.64.3.7\:8000/ca.crt https://10.64.3.7:8000/v2/zhangjun3/busybox/blobs/sha256:04176c8b224aa0eb9942af765f66dae866f436e75acef028fe44b8a98e045515
+$
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/49/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/49/index.html">如何设计计算机操作系统</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/26.html">SamyPesse</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 17175个">17175</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/16/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/95/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/95/index.html">Spring Framework 5 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/58.html">lfvepclr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">134页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 25个">25</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/9/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/9/index.html">分布式 Java</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">27页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 176个">176</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/96/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/96/index.html">零基础学Python</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/59.html">qiwsir</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1635个">1635</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/94/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/94/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/57.html">RedstoneWill</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/111/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7884">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/01-组件版本和集群环境.html" title="01. 组件版本和集群环境" data-book-page-rel-url="01-组件版本和集群环境.html" data-book-page-id="7885">01. 组件版本和集群环境</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/02-创建CA证书和秘钥.html" title="02. 创建 CA 证书和秘钥" data-book-page-rel-url="02-创建CA证书和秘钥.html" data-book-page-id="7886">02. 创建 CA 证书和秘钥</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/03-部署高可用Etcd集群.html" title="03. 部署高可用 Etcd 集群" data-book-page-rel-url="03-部署高可用Etcd集群.html" data-book-page-id="7887">03. 部署高可用 Etcd 集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/04-部署Kubectl命令行工具.html" title="04. 下载和配置 Kubectl 命令行工具" data-book-page-rel-url="04-部署Kubectl命令行工具.html" data-book-page-id="7888">04. 下载和配置 Kubectl 命令行工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/05-部署Flannel网络.html" title="05. 配置 Flannel 网络" data-book-page-rel-url="05-部署Flannel网络.html" data-book-page-id="7889">05. 配置 Flannel 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/06-部署Master节点.html" title="06. 部署 Master 节点" data-book-page-rel-url="06-部署Master节点.html" data-book-page-id="7890">06. 部署 Master 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/07-部署Node节点.html" title="07. 部署 Node 节点" data-book-page-rel-url="07-部署Node节点.html" data-book-page-id="7891">07. 部署 Node 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/08-部署DNS插件.html" title="08. 部署 DNS 插件" data-book-page-rel-url="08-部署DNS插件.html" data-book-page-id="7892">08. 部署 DNS 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/09-部署Dashboard插件.html" title="09. 部署 Dashboard 插件" data-book-page-rel-url="09-部署Dashboard插件.html" data-book-page-id="7893">09. 部署 Dashboard 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/10-部署Heapster插件.html" title="10. 部署 Heapster 插件" data-book-page-rel-url="10-部署Heapster插件.html" data-book-page-id="7894">10. 部署 Heapster 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/11-部署EFK插件.html" title="11. 部署 EFK 插件" data-book-page-rel-url="11-部署EFK插件.html" data-book-page-id="7895">11. 部署 EFK 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/12-部署Docker-Registry.html" title="12. 部署 Docker Registry" data-book-page-rel-url="12-部署Docker-Registry.html" data-book-page-id="7896">12. 部署 Docker Registry</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/13-部署harbor私有仓库.html" title="13. 部署 Harbor 私有仓库" data-book-page-rel-url="13-部署harbor私有仓库.html" data-book-page-id="7897">13. 部署 Harbor 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/14-清理集群.html" title="14. 清理集群" data-book-page-rel-url="14-清理集群.html" data-book-page-id="7898">14. 清理集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/tags.html" title="标签" data-book-page-rel-url="tags.html" data-book-page-id="7899">标签</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =111;var bookPageId =7896;var bookPageRelUrl ='12-部署Docker-Registry.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

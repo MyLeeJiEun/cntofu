@@ -1,0 +1,567 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>IDT and interrupts-如何设计计算机操作系统(How to Make a Computer Operating System)</title>
+<meta content='IDT and interrupts,如何设计计算机操作系统,How to Make a Computer Operating System' name='keywords'>
+<meta content='IDT and interrupts,如何设计计算机操作系统,How to Make a Computer Operating System' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/49/Chapter-6/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">GDT</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/49/Chapter-8/README.html">
+<span class="">Theory: phy..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/49/index.html">如何设计计算机操作系统 (How to Make a Computer Operating System)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/SamyPesse/How-to-Make-a-Computer-Operating-System" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="chapter-7-idt-and-interrupts">Chapter 7: IDT and interrupts</h2>
+<p>An interrupt is a signal to the processor emitted by hardware or software indicating an event that needs immediate attention.</p>
+<p>There are 3 types of interrupts:</p>
+<ul>
+<li><strong>Hardware interrupts:</strong> are sent to the processor from an external device (keyboard, mouse, hard disk, ...). Hardware interrupts were introduced as a way to reduce wasting the processor's valuable time in polling loops, waiting for external events.</li>
+<li><strong>Software interrupts:</strong> are initiated voluntarily by the software. It's used to manage system calls.</li>
+<li><strong>Exceptions:</strong> are used for errors or events occurring during program execution that are exceptional enough that they cannot be handled within the program itself (division by zero, page fault, ...)</li>
+</ul>
+<h4 id="the-keyboard-example">The keyboard example:</h4>
+<p>When the user pressed a key on the keyboard, the keyboard controller will signal an interrupt to the Interrupt Controller. If the interrupt is not masked, the controller will signal the interrupt to the processor, the processor will execute a routine to manage the interrupt (key pressed or key released), this routine could, for example, get the pressed key from the keyboard controller and print the key to the screen. Once the character processing routine is completed, the interrupted job can be resumed.</p>
+<h4 id="what-is-the-pic">What is the PIC?</h4>
+<p>The <a href="http://en.wikipedia.org/wiki/Programmable_Interrupt_Controller">PIC</a> (Programmable interrupt controller)is a device that is used to combine several sources of interrupt onto one or more CPU lines, while allowing priority levels to be assigned to its interrupt outputs. When the device has multiple interrupt outputs to assert, it asserts them in the order of their relative priority.</p>
+<p>The best known PIC is the 8259A, each 8259A can handle 8 devices but most computers have two controllers: one master and one slave, this allows the computer to manage interrupts from 14 devices.</p>
+<p>In this chapter, we will need to program this controller to initialize and mask interrupts.</p>
+<h4 id="what-is-the-idt">What is the IDT?</h4>
+<blockquote>
+<p>The Interrupt Descriptor Table (IDT) is a data structure used by the x86 architecture to implement an interrupt vector table. The IDT is used by the processor to determine the correct response to interrupts and exceptions.</p>
+</blockquote>
+<p>Our kernel is going to use the IDT to define the different functions to be executed when an interrupt occurred.</p>
+<p>Like the GDT, the IDT is loaded using the LIDTL assembly instruction. It expects the location of a IDT description structure:</p>
+<pre><code class="language-cpp">struct idtr {
+	u16 limite;
+	u32 base;
+} __attribute__ ((packed));
+</code></pre>
+<p>The IDT table is composed of IDT segments with the following structure:</p>
+<pre><code class="language-cpp">struct idtdesc {
+	u16 offset0_15;
+	u16 select;
+	u16 type;
+	u16 offset16_31;
+} __attribute__ ((packed));
+</code></pre>
+<p><strong>Caution:</strong> the directive <code>__attribute__ ((packed))</code> signal to gcc that the structure should use as little memory as possible. Without this directive, gcc includes some bytes to optimize the memory alignment and the access during execution.</p>
+<p>Now we need to define our IDT table and then load it using LIDTL. The IDT table can be stored wherever we want in memory, its address should just be signaled to the process using the IDTR registry.</p>
+<p>Here is a table of common interrupts (Maskable hardware interrupt are called IRQ):</p>
+<table>
+<thead>
+<tr>
+<th align="center">IRQ</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="center">0</td>
+<td>Programmable Interrupt Timer Interrupt</td>
+</tr>
+<tr>
+<td align="center">1</td>
+<td>Keyboard Interrupt</td>
+</tr>
+<tr>
+<td align="center">2</td>
+<td>Cascade (used internally by the two PICs. never raised)</td>
+</tr>
+<tr>
+<td align="center">3</td>
+<td>COM2 (if enabled)</td>
+</tr>
+<tr>
+<td align="center">4</td>
+<td>COM1 (if enabled)</td>
+</tr>
+<tr>
+<td align="center">5</td>
+<td>LPT2 (if enabled)</td>
+</tr>
+<tr>
+<td align="center">6</td>
+<td>Floppy Disk</td>
+</tr>
+<tr>
+<td align="center">7</td>
+<td>LPT1</td>
+</tr>
+<tr>
+<td align="center">8</td>
+<td>CMOS real-time clock (if enabled)</td>
+</tr>
+<tr>
+<td align="center">9</td>
+<td>Free for peripherals / legacy SCSI / NIC</td>
+</tr>
+<tr>
+<td align="center">10</td>
+<td>Free for peripherals / SCSI / NIC</td>
+</tr>
+<tr>
+<td align="center">11</td>
+<td>Free for peripherals / SCSI / NIC</td>
+</tr>
+<tr>
+<td align="center">12</td>
+<td>PS2 Mouse</td>
+</tr>
+<tr>
+<td align="center">13</td>
+<td>FPU / Coprocessor / Inter-processor</td>
+</tr>
+<tr>
+<td align="center">14</td>
+<td>Primary ATA Hard Disk</td>
+</tr>
+<tr>
+<td align="center">15</td>
+<td>Secondary ATA Hard Disk</td>
+</tr>
+</tbody>
+</table>
+<h4 id="how-to-initialize-the-interrupts">How to initialize the interrupts?</h4>
+<p>This is a simple method to define an IDT segment</p>
+<pre><code class="language-cpp">void init_idt_desc(u16 select, u32 offset, u16 type, struct idtdesc *desc)
+{
+	desc-&gt;offset0_15 = (offset &amp; 0xffff);
+	desc-&gt;select = select;
+	desc-&gt;type = type;
+	desc-&gt;offset16_31 = (offset &amp; 0xffff0000) &gt;&gt; 16;
+	return;
+}
+</code></pre>
+<p>And we can now initialize the interupts:</p>
+<pre><code class="language-cpp">#define IDTBASE	0x00000000
+#define IDTSIZE 0xFF
+idtr kidtr;
+</code></pre>
+<pre><code class="language-cpp">void init_idt(void)
+{
+	/* Init irq */
+	int i;
+	for (i = 0; i &lt; IDTSIZE; i++)
+		init_idt_desc(0x08, (u32)_asm_schedule, INTGATE, &amp;kidt[i]); //
+
+	/* Vectors  0 -&gt; 31 are for exceptions */
+	init_idt_desc(0x08, (u32) _asm_exc_GP, INTGATE, &amp;kidt[13]);		/* #GP */
+	init_idt_desc(0x08, (u32) _asm_exc_PF, INTGATE, &amp;kidt[14]);     /* #PF */
+
+	init_idt_desc(0x08, (u32) _asm_schedule, INTGATE, &amp;kidt[32]);
+	init_idt_desc(0x08, (u32) _asm_int_1, INTGATE, &amp;kidt[33]);
+
+	init_idt_desc(0x08, (u32) _asm_syscalls, TRAPGATE, &amp;kidt[48]);
+	init_idt_desc(0x08, (u32) _asm_syscalls, TRAPGATE, &amp;kidt[128]); //48
+
+	kidtr.limite = IDTSIZE * 8;
+	kidtr.base = IDTBASE;
+
+
+	/* Copy the IDT to the memory */
+	memcpy((char *) kidtr.base, (char *) kidt, kidtr.limite);
+
+	/* Load the IDTR registry */
+	asm("lidtl (kidtr)");
+}
+</code></pre>
+<p>After intialization of our IDT, we need to activate interrupts by configuring the PIC. The following function will configure the two PICs by writting in their internal registries using the output ports of the processor <code>io.outb</code>. We configure the PICs using the ports:</p>
+<ul>
+<li>Master PIC: 0x20 and 0x21</li>
+<li>Slave PIC: 0xA0 and 0xA1</li>
+</ul>
+<p>For a PIC, there are 2 types of registries:</p>
+<ul>
+<li>ICW (Initialization Command Word): reinit the controller</li>
+<li>OCW (Operation Control Word): configure the controller once initialized (used to mask/unmask the interrupts)</li>
+</ul>
+<pre><code class="language-cpp">void init_pic(void)
+{
+	/* Initialization of ICW1 */
+	io.outb(0x20, 0x11);
+	io.outb(0xA0, 0x11);
+
+	/* Initialization of ICW2 */
+	io.outb(0x21, 0x20);	/* start vector = 32 */
+	io.outb(0xA1, 0x70);	/* start vector = 96 */
+
+	/* Initialization of ICW3 */
+	io.outb(0x21, 0x04);
+	io.outb(0xA1, 0x02);
+
+	/* Initialization of ICW4 */
+	io.outb(0x21, 0x01);
+	io.outb(0xA1, 0x01);
+
+	/* mask interrupts */
+	io.outb(0x21, 0x0);
+	io.outb(0xA1, 0x0);
+}
+</code></pre>
+<h4 id="pic-icw-configurations-details">PIC ICW configurations details</h4>
+<p>The registries have to be configured in order.</p>
+<p><strong>ICW1 (port 0x20 / port 0xA0)</strong></p>
+<pre><code>|0|0|0|1|x|0|x|x|
+         |   | +--- with ICW4 (1) or without (0)
+         |   +----- one controller (1), or cascade (0)
+         +--------- triggering by level (level) (1) or by edge (edge) (0)
+</code></pre>
+<p><strong>ICW2 (port 0x21 / port 0xA1)</strong></p>
+<pre><code>|x|x|x|x|x|0|0|0|
+ | | | | |
+ +----------------- base address for interrupts vectors
+</code></pre>
+<p><strong>ICW2 (port 0x21 / port 0xA1)</strong></p>
+<p>For the master:</p>
+<pre><code>|x|x|x|x|x|x|x|x|
+ | | | | | | | |
+ +------------------ slave controller connected to the port yes (1), or no (0)
+</code></pre>
+<p>For the slave:</p>
+<pre><code>|0|0|0|0|0|x|x|x|  pour l'esclave
+           | | |
+           +-------- Slave ID which is equal to the master port
+</code></pre>
+<p><strong>ICW4 (port 0x21 / port 0xA1)</strong></p>
+<p>It is used to define in which mode the controller should work.</p>
+<pre><code>|0|0|0|x|x|x|x|1|
+       | | | +------ mode "automatic end of interrupt" AEOI (1)
+       | | +-------- mode buffered slave (0) or master (1)
+       | +---------- mode buffered (1)
+       +------------ mode "fully nested" (1)
+</code></pre>
+<h4 id="why-do-idt-segments-offset-our-asm-functions">Why do idt segments offset our ASM functions?</h4>
+<p>You should have noticed that when I'm initializing our IDT segments, I'm using offsets to segment the code in Assembly. The different functions are defined in <a href="https://github.com/SamyPesse/How-to-Make-a-Computer-Operating-System/blob/master/src/kernel/arch/x86/x86int.asm">x86int.asm</a> and are of the following scheme:</p>
+<pre><code class="language-asm">%macro	SAVE_REGS 0
+	pushad
+	push ds
+	push es
+	push fs
+	push gs
+	push ebx
+	mov bx,0x10
+	mov ds,bx
+	pop ebx
+%endmacro
+
+%macro	RESTORE_REGS 0
+	pop gs
+	pop fs
+	pop es
+	pop ds
+	popad
+%endmacro
+
+%macro	INTERRUPT 1
+global _asm_int_%1
+_asm_int_%1:
+	SAVE_REGS
+	push %1
+	call isr_default_int
+	pop eax	;;a enlever sinon
+	mov al,0x20
+	out 0x20,al
+	RESTORE_REGS
+	iret
+%endmacro
+</code></pre>
+<p>These macros will be used to define the interrupt segment that will prevent corruption of the different registries, it will be very useful for multitasking.</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/24/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/24/index.html">复杂性思维第二版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/17.html">Kivy Developers From China</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">16页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 83个">83</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/70/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/70/index.html">C++ 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1422个">1422</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/150/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/150/index.html">C/C++面向WebAssembly编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/82.html">3dgen</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 476个">476</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/103/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/103/index.html">http2讲解中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 254个">254</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/104/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/199/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/199/index.html">什么是 Markdown</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">38页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/49/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="4730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-1/README.html" title="Introduction about the x86 architecture and about our OS" data-book-page-rel-url="Chapter-1/README.html" data-book-page-id="4731">Introduction about the x86 architecture and about our OS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-2/README.html" title="Setup the development environment" data-book-page-rel-url="Chapter-2/README.html" data-book-page-id="4732">Setup the development environment</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-3/README.html" title="First boot with GRUB" data-book-page-rel-url="Chapter-3/README.html" data-book-page-id="4733">First boot with GRUB</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-4/README.html" title="Backbone of the OS and C++ runtime" data-book-page-rel-url="Chapter-4/README.html" data-book-page-id="4734">Backbone of the OS and C++ runtime</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-5/README.html" title="Base classes for managing x86 architecture" data-book-page-rel-url="Chapter-5/README.html" data-book-page-id="4735">Base classes for managing x86 architecture</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-6/README.html" title="GDT" data-book-page-rel-url="Chapter-6/README.html" data-book-page-id="4736">GDT</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-7/README.html" title="IDT and interrupts" data-book-page-rel-url="Chapter-7/README.html" data-book-page-id="4737">IDT and interrupts</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/Chapter-8/README.html" title="Theory: physical and virtual memory" data-book-page-rel-url="Chapter-8/README.html" data-book-page-id="4738">Theory: physical and virtual memory</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/49/chapter9/README.html" title="Memory management: physical and virtual" data-book-page-rel-url="chapter9/README.html" data-book-page-id="4739">Memory management: physical and virtual</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =49;var bookPageId =4737;var bookPageRelUrl ='Chapter-7/README.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

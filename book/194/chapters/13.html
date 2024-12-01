@@ -1,0 +1,369 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>13. listen/notify 之消息队列-postgresql教程</title>
+<meta content='13. listen/notify 之消息队列,postgresql教程' name='keywords'>
+<meta content='13. listen/notify 之消息队列,postgresql教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/194/chapters/12.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">12. 表的继承和分区..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/194/chapters/14.html">
+<span class="">14. listen/..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/194/index.html">postgresql教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/hfpp2012/postgresql_tutorial" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h4 id="1-消息队列的简介">1. 消息队列的简介</h4>
+<p>什么是消息队列呢？队列就是排队，就像在银行办理业务排队一样，排在最前面的先处理，后面的后处理，按照顺序来，先进先出。这个队列可以是程序，可以是数据，也可以是任务，是任何你可以存储的东西。消息队列就是给队列传递消息。这么来说，打个比方，我们在一个网站上注册了账号，系统可能会给你发送一封注册邮件，同时在页面上提示你"稍等几分钟后会收到一封邮件"，发邮件这个事是通过操作系统的调用，例如linux的sendmail，或者接口来发送的，发邮件是通过排队来发的，先到的先发，假如很多邮件等着发，那就得像银行那样排队了，所以未必就能实时，总有延迟。总结来说，发邮件这个事是有延迟的，是需要等待之后用户才能收到邮件的。然而，这种延迟对用户的体验还有操作并不影响啊。在网站上的其他应用他还是照样用，没有任何影响。对这种对用户没直接影响或者有延迟的任务就可以扔到消息队列处理。所以，发邮件，发短信，捕获异常等任务都可以扔到消息队列。也就是消息队列是独立于web进程的另一个进程，因为它有可能耗时很长的，所以要另开一个进程来处理，对web进程没有任务影响，用户还是照常访问网站。这么来说，假如网站有一个需要扔的消息队列叫A，但用户触发了A，就把A扔到消息队列，这时给用户感觉是这个A任务是一瞬间完成，其实它是给消息队列那个进程发送了消息，可能跟它说，我要发短信，就把发短信这个指令，加上短信的内容一并传给消息队列的进程，消息队列收到消息后，就把这个任务放到队列中进行排队，因为前面还有一堆任务没处理，所以要慢慢处理，轮到A的时候才处理A，由于A是耗时的动作所以就慢慢处理就好，反正对用户不太影响。</p>
+<p>前面说到，消息队列的进程要把任务放入队列中，由于有很多任务，需要排队，所以这些任务是需要存储起来的。在ruby中，有很多gem可以实现后台的消息队列，但它们的存储方式有区别，比如<a href="https://github.com/collectiveidea/delayed_job">delayed_job</a>就是用数据库(MySQL，Sqlite，PostgreSQL等)来存的，它会先让你创建表，如果有任务进来，就会插入到表中作为一条记录，要处理的时候就会取出这条记录。像<a href="https://github.com/resque/resque">resque</a>和<a href="https://github.com/mperham/sidekiq">sidekiq</a>就是用redis来存储数据的，redis是存储在计算机的内存中的。比较一下，就知道resque和sidekiq在存储方式上比delayed_job有优势，而delayed_job的好处是能直接利用数据库，不用额外安装redis。</p>
+<p>消息队列是另外的一个进程，任务进入消息队列中，一个接一个的处理，也就是说，A进程在被处理时，必须等前面的任务被处理完才能轮到它。这种方式体现在delayed_job和resque中。sidekiq的处理方式是多线程的，它是基于celluloid的，用Actor作为并发模型，它能同时处理多个任务。</p>
+<p>值得一提的是Ruby on Rails从4.2开始加上了<a href="http://edgeguides.rubyonrails.org/active_job_basics.html">active_job</a>。因为有各种各样的消息队列的解决方案，active_job就是提供了统一的接口和调用，要用到消息队列还是会用到上面提到的几个。这个东西就像activerecord一样，要指定数据库那也是很简单的，只要换相应的gem和改配置文件就行了，而active_job也正是这样。</p>
+<p>不过，这一篇文章不会详说上面的三种消息队列的实现，只会说到特用于PostgreSQL的消息队列<a href="https://github.com/QueueClassic/queue_classic">queue_classic</a></p>
+<h4 id="2-postgresql的listennotify">2. PostgreSQL的listen/notify</h4>
+<p><a href="https://github.com/QueueClassic/queue_classic">queue_classic</a>是基于PostgreSQL的listen/notify来实现的，列队在等任务进来就是用的listen，把任务放入队列就是notify。</p>
+<p>PostgreSQL的<a href="http://www.postgresql.org/docs/9.4/static/sql-listen.html">listen</a>/<a href="http://www.postgresql.org/docs/9.4/static/sql-notify.html">notify</a>，也就是一种消息的订阅/发布模式，也就是类似那种生产者/消费者模式。这种模式很常见，例如redis的<a href="http://redis.io/topics/pubsub">pub/sub</a>模式、rails的<a href="http://api.rubyonrails.org/classes/ActiveSupport/Notifications.html">Notifications</a>组件。</p>
+<p>懂了PostgreSQL的listen/notify，也就等于懂了其他的订阅/发布模式。</p>
+<p>它很简单，就相当于一种广播机制，比如，你定阅杂志，还有其他人也订阅了，这个过程就叫listen，也就是监听，等杂志有更新了，或者有新的杂志出来，它就会广播，就会送一份给订阅杂志的人，这个过程就是notify，也就是通知。</p>
+<p>listen/notify的使用很简单。</p>
+<p>首先是listen(监听)，只接监听的通道的名称，这个名称自己定义。</p>
+<pre><code>rails365_pro=# LISTEN virtual;
+LISTEN
+</code></pre>
+<p>这个时候可以直接执行notify。</p>
+<pre><code>rails365_pro=# NOTIFY virtual;
+NOTIFY
+Asynchronous notification "virtual" received from server process with PID 4996.
+</code></pre>
+<p>表示监听的通道已知收到消息了。</p>
+<p>还可以传参数。</p>
+<pre><code>rails365_pro=# NOTIFY virtual, 'This is the payload';
+NOTIFY
+Asynchronous notification "virtual" with payload "This is the payload" received from server process with PID 4996.
+</code></pre>
+<p>也可以结合sql语句来使用。</p>
+<pre><code>LISTEN foo;
+SELECT pg_notify('fo' || 'o', 'pay' || 'load');
+</code></pre>
+<p>只要连接到同一个数据库的所有session都会接到监听通道传过来的信息。</p>
+<p>可以尝试另开一个psql进程。然后notify，再回到之前的psql执行listen就可以测试的，如果显示正确的pid就成功的。</p>
+<p>下一章: <a href="http://www.rails365.net/articles/2015-10-12-postgresql-listen-notify-queue-classic-er">PostgreSQL的listen/notify之queue_classic(二)</a></p>
+<p>完结。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/42/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/docker_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/42/index.html">Docker-從入門到實踐</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="docker">docker</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">82页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/18/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/18/index.html">Go社区的知识图谱</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/13.html">golang foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1356个">1356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/51/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/51/index.html">前端开发笔记本</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/28.html">li-xinyang</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">67页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1436个">1436</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/119/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/119/index.html">给小白看的设计模式书</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/144/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gulp_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/144/index.html">gulp 入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/39.html">onface</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gulp">gulp</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">8页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1780个">1780</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/130/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/130/index.html">进击的Python</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/68.html">HuberTRoy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 169个">169</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/194/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/README.html" title="0. 介绍" data-book-page-rel-url="README.html" data-book-page-id="13215">0. 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/1.html" title="1. 全文检索系统之基本介绍" data-book-page-rel-url="chapters/1.html" data-book-page-id="13216">1. 全文检索系统之基本介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/2.html" title="2. 全文检索系统之进阶" data-book-page-rel-url="chapters/2.html" data-book-page-id="13217">2. 全文检索系统之进阶</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/3.html" title="3. 全文检索系统之中文支持" data-book-page-rel-url="chapters/3.html" data-book-page-id="13218">3. 全文检索系统之中文支持</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/4.html" title="4. 全文检索系统之 pg_search 实现" data-book-page-rel-url="chapters/4.html" data-book-page-id="13219">4. 全文检索系统之 pg_search 实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/5.html" title="5. 客户端程序 pgweb" data-book-page-rel-url="chapters/5.html" data-book-page-id="13220">5. 客户端程序 pgweb</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/6.html" title="6. 枚举类型" data-book-page-rel-url="chapters/6.html" data-book-page-id="13221">6. 枚举类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/7.html" title="7. ltree 插件" data-book-page-rel-url="chapters/7.html" data-book-page-id="13222">7. ltree 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/8.html" title="8. Window Functions" data-book-page-rel-url="chapters/8.html" data-book-page-id="13223">8. Window Functions</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/9.html" title="9. array 和 hstore 类型" data-book-page-rel-url="chapters/9.html" data-book-page-id="13224">9. array 和 hstore 类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/10.html" title="10. 模式 Schema" data-book-page-rel-url="chapters/10.html" data-book-page-id="13225">10. 模式 Schema</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/11.html" title="11. 表的继承和分区之介绍" data-book-page-rel-url="chapters/11.html" data-book-page-id="13226">11. 表的继承和分区之介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/12.html" title="12. 表的继承和分区之 pg_partman" data-book-page-rel-url="chapters/12.html" data-book-page-id="13227">12. 表的继承和分区之 pg_partman</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/13.html" title="13. listen/notify 之消息队列" data-book-page-rel-url="chapters/13.html" data-book-page-id="13228">13. listen/notify 之消息队列</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/14.html" title="14. listen/notify 之 queue_classic" data-book-page-rel-url="chapters/14.html" data-book-page-id="13229">14. listen/notify 之 queue_classic</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/194/chapters/15.html" title="15. 监控工具介绍" data-book-page-rel-url="chapters/15.html" data-book-page-id="13230">15. 监控工具介绍</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =194;var bookPageId =13228;var bookPageRelUrl ='chapters/13.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

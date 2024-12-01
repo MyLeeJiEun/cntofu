@@ -1,0 +1,964 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Session支持-Go语言web编程(How to build a web with golang)</title>
+<meta content='Session支持,Go语言web编程,How to build a web with golang' name='keywords'>
+<meta content='Session支持,Go语言web编程,How to build a web with golang' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/16/zh/14.1.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">静态文件支持</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/16/zh/14.3.html">
+<span class="">表单支持</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/16/index.html">Go语言web编程 (How to build a web with golang)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/astaxie/build-web-application-with-golang" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="142-session支持">14.2 Session支持</h1>
+<p>第六章的时候我们介绍过如何在Go语言中使用session，也实现了一个sessionManger，beego框架基于sessionManager实现了方便的session处理功能。</p>
+<h2 id="session集成">session集成</h2>
+<p>beego中主要有以下的全局变量来控制session处理：</p>
+<pre><code class="language-Go">
+//related to session 
+SessionOn            bool   // 是否开启session模块，默认不开启
+SessionProvider      string // session后端提供处理模块，默认是sessionManager支持的memory
+SessionName          string // 客户端保存的cookies的名称
+SessionGCMaxLifetime int64  // cookies有效期
+
+GlobalSessions *session.Manager //全局session控制器
+</code></pre>
+<p>当然上面这些变量需要初始化值，也可以按照下面的代码来配合配置文件以设置这些值：</p>
+<pre><code class="language-Go">
+if ar, err := AppConfig.Bool("sessionon"); err != nil {
+	SessionOn = false
+} else {
+	SessionOn = ar
+}
+if ar := AppConfig.String("sessionprovider"); ar == "" {
+	SessionProvider = "memory"
+} else {
+	SessionProvider = ar
+}
+if ar := AppConfig.String("sessionname"); ar == "" {
+	SessionName = "beegosessionID"
+} else {
+	SessionName = ar
+}
+if ar, err := AppConfig.Int("sessiongcmaxlifetime"); err != nil &amp;&amp; ar != 0 {
+	int64val, _ := strconv.ParseInt(strconv.Itoa(ar), 10, 64)
+	SessionGCMaxLifetime = int64val
+} else {
+	SessionGCMaxLifetime = 3600
+}	
+</code></pre>
+<p>在beego.Run函数中增加如下代码：</p>
+<pre><code class="language-Go">
+if SessionOn {
+	GlobalSessions, _ = session.NewManager(SessionProvider, SessionName, SessionGCMaxLifetime)
+	go GlobalSessions.GC()
+}
+</code></pre>
+<p>这样只要SessionOn设置为true，那么就会默认开启session功能，独立开一个goroutine来处理session。</p>
+<p>为了方便我们在自定义Controller中快速使用session，作者在<code>beego.Controller</code>中提供了如下方法：</p>
+<pre><code class="language-Go">
+func (c *Controller) StartSession() (sess session.Session) {
+	sess = GlobalSessions.SessionStart(c.Ctx.ResponseWriter, c.Ctx.Request)
+	return
+}		
+</code></pre>
+<h2 id="session使用">session使用</h2>
+<p>通过上面的代码我们可以看到，beego框架简单地继承了session功能，那么在项目中如何使用呢？</p>
+<p>首先我们需要在应用的main入口处开启session：</p>
+<pre><code class="language-Go">
+beego.SessionOn = true
+</code></pre>
+<p>然后我们就可以在控制器的相应方法中如下所示的使用session了：</p>
+<pre><code class="language-Go">
+func (this *MainController) Get() {
+	var intcount int
+	sess := this.StartSession()
+	count := sess.Get("count")
+	if count == nil {
+		intcount = 0
+	} else {
+		intcount = count.(int)
+	}
+	intcount = intcount + 1
+	sess.Set("count", intcount)
+	this.Data["Username"] = "astaxie"
+	this.Data["Email"] = "astaxie@gmail.com"
+	this.Data["Count"] = intcount
+	this.TplNames = "index.tpl"
+}
+</code></pre>
+<p>上面的代码展示了如何在控制逻辑中使用session，主要分两个步骤：</p>
+<ol>
+<li>获取session对象</li>
+</ol>
+<pre><code class="language-Go">
+	//获取对象,类似PHP中的session_start()
+	sess := this.StartSession()
+</code></pre>
+<ol start="2">
+<li>使用session进行一般的session值操作</li>
+</ol>
+<pre><code class="language-Go">
+	//获取session值，类似PHP中的$_SESSION["count"]
+	sess.Get("count")
+	
+	//设置session值
+	sess.Set("count", intcount)
+</code></pre>
+<p>从上面代码可以看出基于beego框架开发的应用中使用session相当方便，基本上和PHP中调用<code>session_start()</code>类似。</p>
+<h2 id="links">links</h2>
+<ul>
+<li><a href="preface.html">目录</a></li>
+<li>上一节: <a href="14.1.html">静态文件支持</a></li>
+<li>下一节: <a href="14.3.html">表单及验证支持</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/15/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/15/index.html">Go语言标准库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/11.html">polaris1119</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">49页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3356个">3356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/164/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/164/index.html">Go 开发者路线图</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/93.html">Alikhll</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4583个">4583</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/18/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/18/index.html">Go社区的知识图谱</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/13.html">golang foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1356个">1356</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/72/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/72/index.html">前端开发规范手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/45.html">Aaaaaashu</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 693个">693</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/21/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/105/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/105/index.html">程序员的自我修养</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/64.html">leohxj</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">136页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 130个">130</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/16/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1." disabled data-book-page-rel-url="" data-book-page-id="9008">1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.0.html" title="Go环境配置" data-book-page-rel-url="zh/01.0.html" data-book-page-id="9009">Go环境配置</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.1." disabled data-book-page-rel-url="" data-book-page-id="9010">1.1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.1.html" title="安装Go" data-book-page-rel-url="zh/01.1.html" data-book-page-id="9011">安装Go</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.2." disabled data-book-page-rel-url="" data-book-page-id="9012">1.2.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.2.html" title="GOPATH 与工作空间" data-book-page-rel-url="zh/01.2.html" data-book-page-id="9013">GOPATH 与工作空间</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.3." disabled data-book-page-rel-url="" data-book-page-id="9014">1.3.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.3.html" title="Go 命令" data-book-page-rel-url="zh/01.3.html" data-book-page-id="9015">Go 命令</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.4." disabled data-book-page-rel-url="" data-book-page-id="9016">1.4.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.4.html" title="Go开发工具" data-book-page-rel-url="zh/01.4.html" data-book-page-id="9017">Go开发工具</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="1.5." disabled data-book-page-rel-url="" data-book-page-id="9018">1.5.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/01.5.html" title="小结" data-book-page-rel-url="zh/01.5.html" data-book-page-id="9019">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2." disabled data-book-page-rel-url="" data-book-page-id="9020">2.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.0.html" title="Go语言基础" data-book-page-rel-url="zh/02.0.html" data-book-page-id="9021">Go语言基础</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.1." disabled data-book-page-rel-url="" data-book-page-id="9022">2.1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.1.html" title="你好，Go" data-book-page-rel-url="zh/02.1.html" data-book-page-id="9023">你好，Go</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.2." disabled data-book-page-rel-url="" data-book-page-id="9024">2.2.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.2.html" title="Go基础" data-book-page-rel-url="zh/02.2.html" data-book-page-id="9025">Go基础</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.3." disabled data-book-page-rel-url="" data-book-page-id="9026">2.3.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.3.html" title="流程和函数" data-book-page-rel-url="zh/02.3.html" data-book-page-id="9027">流程和函数</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.4." disabled data-book-page-rel-url="" data-book-page-id="9028">2.4.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.4.html" title="struct" data-book-page-rel-url="zh/02.4.html" data-book-page-id="9029">struct</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.5." disabled data-book-page-rel-url="" data-book-page-id="9030">2.5.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.5.html" title="面向对象" data-book-page-rel-url="zh/02.5.html" data-book-page-id="9031">面向对象</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.6." disabled data-book-page-rel-url="" data-book-page-id="9032">2.6.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.6.html" title="interface" data-book-page-rel-url="zh/02.6.html" data-book-page-id="9033">interface</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.7." disabled data-book-page-rel-url="" data-book-page-id="9034">2.7.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.7.html" title="并发" data-book-page-rel-url="zh/02.7.html" data-book-page-id="9035">并发</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="2.8." disabled data-book-page-rel-url="" data-book-page-id="9036">2.8.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/02.8.html" title="小结" data-book-page-rel-url="zh/02.8.html" data-book-page-id="9037">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3." disabled data-book-page-rel-url="" data-book-page-id="9038">3.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.0.html" title="Web基础" data-book-page-rel-url="zh/03.0.html" data-book-page-id="9039">Web基础</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.1" disabled data-book-page-rel-url="" data-book-page-id="9040">3.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.1.html" title="web工作方式" data-book-page-rel-url="zh/03.1.html" data-book-page-id="9041">web工作方式</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.2" disabled data-book-page-rel-url="" data-book-page-id="9042">3.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.2.html" title="Go搭建一个简单的web服务" data-book-page-rel-url="zh/03.2.html" data-book-page-id="9043">Go搭建一个简单的web服务</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.3" disabled data-book-page-rel-url="" data-book-page-id="9044">3.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.3.html" title="Go如何使得web工作" data-book-page-rel-url="zh/03.3.html" data-book-page-id="9045">Go如何使得web工作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.4" disabled data-book-page-rel-url="" data-book-page-id="9046">3.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.4.html" title="Go的http包详解" data-book-page-rel-url="zh/03.4.html" data-book-page-id="9047">Go的http包详解</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="3.5" disabled data-book-page-rel-url="" data-book-page-id="9048">3.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/03.5.html" title="小结" data-book-page-rel-url="zh/03.5.html" data-book-page-id="9049">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4." disabled data-book-page-rel-url="" data-book-page-id="9050">4.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.0.html" title="表单" data-book-page-rel-url="zh/04.0.html" data-book-page-id="9051">表单</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.1" disabled data-book-page-rel-url="" data-book-page-id="9052">4.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.1.html" title="处理表单的输入" data-book-page-rel-url="zh/04.1.html" data-book-page-id="9053">处理表单的输入</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.2" disabled data-book-page-rel-url="" data-book-page-id="9054">4.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.2.html" title="验证表单的输入" data-book-page-rel-url="zh/04.2.html" data-book-page-id="9055">验证表单的输入</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.3" disabled data-book-page-rel-url="" data-book-page-id="9056">4.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.3.html" title="预防跨站脚本" data-book-page-rel-url="zh/04.3.html" data-book-page-id="9057">预防跨站脚本</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.4" disabled data-book-page-rel-url="" data-book-page-id="9058">4.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.4.html" title="防止多次递交表单" data-book-page-rel-url="zh/04.4.html" data-book-page-id="9059">防止多次递交表单</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.5" disabled data-book-page-rel-url="" data-book-page-id="9060">4.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.5.html" title="处理文件上传" data-book-page-rel-url="zh/04.5.html" data-book-page-id="9061">处理文件上传</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.6" disabled data-book-page-rel-url="" data-book-page-id="9062">4.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/04.6.html" title="小结" data-book-page-rel-url="zh/04.6.html" data-book-page-id="9063">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5." disabled data-book-page-rel-url="" data-book-page-id="9064">5.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.0.html" title="访问数据库" data-book-page-rel-url="zh/05.0.html" data-book-page-id="9065">访问数据库</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.1" disabled data-book-page-rel-url="" data-book-page-id="9066">5.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.1.html" title="database/sql接口" data-book-page-rel-url="zh/05.1.html" data-book-page-id="9067">database/sql接口</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.2" disabled data-book-page-rel-url="" data-book-page-id="9068">5.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.2.html" title="使用MySQL数据库" data-book-page-rel-url="zh/05.2.html" data-book-page-id="9069">使用MySQL数据库</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.3" disabled data-book-page-rel-url="" data-book-page-id="9070">5.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.3.html" title="使用SQLite数据库" data-book-page-rel-url="zh/05.3.html" data-book-page-id="9071">使用SQLite数据库</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.4" disabled data-book-page-rel-url="" data-book-page-id="9072">5.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.4.html" title="使用PostgreSQL数据库" data-book-page-rel-url="zh/05.4.html" data-book-page-id="9073">使用PostgreSQL数据库</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.5" disabled data-book-page-rel-url="" data-book-page-id="9074">5.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.5.html" title="使用Beego orm库进行ORM开发" data-book-page-rel-url="zh/05.5.html" data-book-page-id="9075">使用Beego orm库进行ORM开发</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.6" disabled data-book-page-rel-url="" data-book-page-id="9076">5.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.6.html" title="NOSQL数据库操作" data-book-page-rel-url="zh/05.6.html" data-book-page-id="9077">NOSQL数据库操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="5.7" disabled data-book-page-rel-url="" data-book-page-id="9078">5.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/05.7.html" title="小结" data-book-page-rel-url="zh/05.7.html" data-book-page-id="9079">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6." disabled data-book-page-rel-url="" data-book-page-id="9080">6.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.0.html" title="session和数据存储" data-book-page-rel-url="zh/06.0.html" data-book-page-id="9081">session和数据存储</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.1" disabled data-book-page-rel-url="" data-book-page-id="9082">6.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.1.html" title="session和cookie" data-book-page-rel-url="zh/06.1.html" data-book-page-id="9083">session和cookie</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.2" disabled data-book-page-rel-url="" data-book-page-id="9084">6.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.2.html" title="Go如何使用session" data-book-page-rel-url="zh/06.2.html" data-book-page-id="9085">Go如何使用session</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.3" disabled data-book-page-rel-url="" data-book-page-id="9086">6.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.3.html" title="session存储" data-book-page-rel-url="zh/06.3.html" data-book-page-id="9087">session存储</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.4" disabled data-book-page-rel-url="" data-book-page-id="9088">6.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.4.html" title="预防session劫持" data-book-page-rel-url="zh/06.4.html" data-book-page-id="9089">预防session劫持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="6.5" disabled data-book-page-rel-url="" data-book-page-id="9090">6.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/06.5.html" title="小结" data-book-page-rel-url="zh/06.5.html" data-book-page-id="9091">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7." disabled data-book-page-rel-url="" data-book-page-id="9092">7.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.0.html" title="文本文件处理" data-book-page-rel-url="zh/07.0.html" data-book-page-id="9093">文本文件处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.1" disabled data-book-page-rel-url="" data-book-page-id="9094">7.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.1.html" title="XML处理" data-book-page-rel-url="zh/07.1.html" data-book-page-id="9095">XML处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.2" disabled data-book-page-rel-url="" data-book-page-id="9096">7.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.2.html" title="JSON处理" data-book-page-rel-url="zh/07.2.html" data-book-page-id="9097">JSON处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.3" disabled data-book-page-rel-url="" data-book-page-id="9098">7.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.3.html" title="正则处理" data-book-page-rel-url="zh/07.3.html" data-book-page-id="9099">正则处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.4" disabled data-book-page-rel-url="" data-book-page-id="9100">7.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.4.html" title="模板处理" data-book-page-rel-url="zh/07.4.html" data-book-page-id="9101">模板处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.5" disabled data-book-page-rel-url="" data-book-page-id="9102">7.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.5.html" title="文件操作" data-book-page-rel-url="zh/07.5.html" data-book-page-id="9103">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.6" disabled data-book-page-rel-url="" data-book-page-id="9104">7.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.6.html" title="字符串处理" data-book-page-rel-url="zh/07.6.html" data-book-page-id="9105">字符串处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="7.7" disabled data-book-page-rel-url="" data-book-page-id="9106">7.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/07.7.html" title="小结" data-book-page-rel-url="zh/07.7.html" data-book-page-id="9107">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8." disabled data-book-page-rel-url="" data-book-page-id="9108">8.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.0.html" title="Web服务" data-book-page-rel-url="zh/08.0.html" data-book-page-id="9109">Web服务</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.1" disabled data-book-page-rel-url="" data-book-page-id="9110">8.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.1.html" title="Socket编程" data-book-page-rel-url="zh/08.1.html" data-book-page-id="9111">Socket编程</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.2" disabled data-book-page-rel-url="" data-book-page-id="9112">8.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.2.html" title="WebSocket" data-book-page-rel-url="zh/08.2.html" data-book-page-id="9113">WebSocket</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.3" disabled data-book-page-rel-url="" data-book-page-id="9114">8.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.3.html" title="REST" data-book-page-rel-url="zh/08.3.html" data-book-page-id="9115">REST</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.4" disabled data-book-page-rel-url="" data-book-page-id="9116">8.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.4.html" title="RPC" data-book-page-rel-url="zh/08.4.html" data-book-page-id="9117">RPC</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="8.5" disabled data-book-page-rel-url="" data-book-page-id="9118">8.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/08.5.html" title="小结" data-book-page-rel-url="zh/08.5.html" data-book-page-id="9119">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9." disabled data-book-page-rel-url="" data-book-page-id="9120">9.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.0.html" title="安全与加密" data-book-page-rel-url="zh/09.0.html" data-book-page-id="9121">安全与加密</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.1" disabled data-book-page-rel-url="" data-book-page-id="9122">9.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.1.html" title="预防CSRF攻击" data-book-page-rel-url="zh/09.1.html" data-book-page-id="9123">预防CSRF攻击</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.2" disabled data-book-page-rel-url="" data-book-page-id="9124">9.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.2.html" title="确保输入过滤" data-book-page-rel-url="zh/09.2.html" data-book-page-id="9125">确保输入过滤</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.3" disabled data-book-page-rel-url="" data-book-page-id="9126">9.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.3.html" title="避免XSS攻击" data-book-page-rel-url="zh/09.3.html" data-book-page-id="9127">避免XSS攻击</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.4" disabled data-book-page-rel-url="" data-book-page-id="9128">9.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.4.html" title="避免SQL注入" data-book-page-rel-url="zh/09.4.html" data-book-page-id="9129">避免SQL注入</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.5" disabled data-book-page-rel-url="" data-book-page-id="9130">9.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.5.html" title="存储密码" data-book-page-rel-url="zh/09.5.html" data-book-page-id="9131">存储密码</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.6" disabled data-book-page-rel-url="" data-book-page-id="9132">9.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.6.html" title="加密和解密数据" data-book-page-rel-url="zh/09.6.html" data-book-page-id="9133">加密和解密数据</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="9.7" disabled data-book-page-rel-url="" data-book-page-id="9134">9.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/09.7.html" title="小结" data-book-page-rel-url="zh/09.7.html" data-book-page-id="9135">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10." disabled data-book-page-rel-url="" data-book-page-id="9136">10.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/10.0.html" title="国际化和本地化" data-book-page-rel-url="zh/10.0.html" data-book-page-id="9137">国际化和本地化</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.1" disabled data-book-page-rel-url="" data-book-page-id="9138">10.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/10.1.html" title="设置默认地区" data-book-page-rel-url="zh/10.1.html" data-book-page-id="9139">设置默认地区</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.2" disabled data-book-page-rel-url="" data-book-page-id="9140">10.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/10.2.html" title="本地化资源" data-book-page-rel-url="zh/10.2.html" data-book-page-id="9141">本地化资源</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.3" disabled data-book-page-rel-url="" data-book-page-id="9142">10.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/10.3.html" title="国际化站点" data-book-page-rel-url="zh/10.3.html" data-book-page-id="9143">国际化站点</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="10.4" disabled data-book-page-rel-url="" data-book-page-id="9144">10.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/10.4.html" title="小结" data-book-page-rel-url="zh/10.4.html" data-book-page-id="9145">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11." disabled data-book-page-rel-url="" data-book-page-id="9146">11.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/11.0.html" title="错误处理，调试和测试" data-book-page-rel-url="zh/11.0.html" data-book-page-id="9147">错误处理，调试和测试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.1" disabled data-book-page-rel-url="" data-book-page-id="9148">11.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/11.1.html" title="错误处理" data-book-page-rel-url="zh/11.1.html" data-book-page-id="9149">错误处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.2" disabled data-book-page-rel-url="" data-book-page-id="9150">11.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/11.2.html" title="使用GDB调试" data-book-page-rel-url="zh/11.2.html" data-book-page-id="9151">使用GDB调试</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.3" disabled data-book-page-rel-url="" data-book-page-id="9152">11.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/11.3.html" title="Go怎么写测试用例" data-book-page-rel-url="zh/11.3.html" data-book-page-id="9153">Go怎么写测试用例</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="11.4" disabled data-book-page-rel-url="" data-book-page-id="9154">11.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/11.4.html" title="小结" data-book-page-rel-url="zh/11.4.html" data-book-page-id="9155">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12." disabled data-book-page-rel-url="" data-book-page-id="9156">12.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.0.html" title="部署与维护" data-book-page-rel-url="zh/12.0.html" data-book-page-id="9157">部署与维护</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.1" disabled data-book-page-rel-url="" data-book-page-id="9158">12.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.1.html" title="应用日志" data-book-page-rel-url="zh/12.1.html" data-book-page-id="9159">应用日志</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.2" disabled data-book-page-rel-url="" data-book-page-id="9160">12.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.2.html" title="网站错误处理" data-book-page-rel-url="zh/12.2.html" data-book-page-id="9161">网站错误处理</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.3" disabled data-book-page-rel-url="" data-book-page-id="9162">12.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.3.html" title="应用部署" data-book-page-rel-url="zh/12.3.html" data-book-page-id="9163">应用部署</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.4" disabled data-book-page-rel-url="" data-book-page-id="9164">12.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.4.html" title="备份和恢复" data-book-page-rel-url="zh/12.4.html" data-book-page-id="9165">备份和恢复</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="12.5" disabled data-book-page-rel-url="" data-book-page-id="9166">12.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/12.5.html" title="小结" data-book-page-rel-url="zh/12.5.html" data-book-page-id="9167">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13." disabled data-book-page-rel-url="" data-book-page-id="9168">13.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.0.html" title="如何设计一个Web框架" data-book-page-rel-url="zh/13.0.html" data-book-page-id="9169">如何设计一个Web框架</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.1" disabled data-book-page-rel-url="" data-book-page-id="9170">13.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.1.html" title="项目规划" data-book-page-rel-url="zh/13.1.html" data-book-page-id="9171">项目规划</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.2" disabled data-book-page-rel-url="" data-book-page-id="9172">13.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.2.html" title="自定义路由器设计" data-book-page-rel-url="zh/13.2.html" data-book-page-id="9173">自定义路由器设计</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.3" disabled data-book-page-rel-url="" data-book-page-id="9174">13.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.3.html" title="controller设计" data-book-page-rel-url="zh/13.3.html" data-book-page-id="9175">controller设计</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.4" disabled data-book-page-rel-url="" data-book-page-id="9176">13.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.4.html" title="日志和配置设计" data-book-page-rel-url="zh/13.4.html" data-book-page-id="9177">日志和配置设计</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.5" disabled data-book-page-rel-url="" data-book-page-id="9178">13.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.5.html" title="实现博客的增删改" data-book-page-rel-url="zh/13.5.html" data-book-page-id="9179">实现博客的增删改</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="13.6" disabled data-book-page-rel-url="" data-book-page-id="9180">13.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/13.6.html" title="小结" data-book-page-rel-url="zh/13.6.html" data-book-page-id="9181">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14." disabled data-book-page-rel-url="" data-book-page-id="9182">14.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.0.html" title="扩展Web框架" data-book-page-rel-url="zh/14.0.html" data-book-page-id="9183">扩展Web框架</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.1" disabled data-book-page-rel-url="" data-book-page-id="9184">14.1</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.1.html" title="静态文件支持" data-book-page-rel-url="zh/14.1.html" data-book-page-id="9185">静态文件支持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.2" disabled data-book-page-rel-url="" data-book-page-id="9186">14.2</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.2.html" title="Session支持" data-book-page-rel-url="zh/14.2.html" data-book-page-id="9187">Session支持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.3" disabled data-book-page-rel-url="" data-book-page-id="9188">14.3</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.3.html" title="表单支持" data-book-page-rel-url="zh/14.3.html" data-book-page-id="9189">表单支持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.4" disabled data-book-page-rel-url="" data-book-page-id="9190">14.4</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.4.html" title="用户认证" data-book-page-rel-url="zh/14.4.html" data-book-page-id="9191">用户认证</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.5" disabled data-book-page-rel-url="" data-book-page-id="9192">14.5</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.5.html" title="多语言支持" data-book-page-rel-url="zh/14.5.html" data-book-page-id="9193">多语言支持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.6" disabled data-book-page-rel-url="" data-book-page-id="9194">14.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.6.html" title="pprof支持" data-book-page-rel-url="zh/14.6.html" data-book-page-id="9195">pprof支持</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="14.7" disabled data-book-page-rel-url="" data-book-page-id="9196">14.7</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/14.7.html" title="小结" data-book-page-rel-url="zh/14.7.html" data-book-page-id="9197">小结</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="附录A" disabled data-book-page-rel-url="" data-book-page-id="9198">附录A</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/16/zh/ref.html" title="参考资料" data-book-page-rel-url="zh/ref.html" data-book-page-id="9199">参考资料</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =16;var bookPageId =9187;var bookPageRelUrl ='zh/14.2.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

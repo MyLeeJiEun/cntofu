@@ -1,0 +1,636 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>附录-Shell 编程范例</title>
+<meta content='附录,Shell 编程范例' name='keywords'>
+<meta content='附录,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/chapters/01-chapter10.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">总结</span>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="附录">附录</h1>
+<ul>
+<li><a href="#toc_19246_27800_1">Shell 编程学习笔记</a></li>
+<li><a href="#toc_19246_27800_2">前言</a></li>
+<li><a href="#toc_19246_27800_3">执行 Shell 脚本的方式</a></li>
+<li><a href="#toc_19246_27800_4">范例：输入重定向到Bash</a></li>
+<li><a href="#toc_19246_27800_5">范例：以脚本名作为参数</a></li>
+<li><a href="#toc_19246_27800_6">范例：以 . 来执行</a></li>
+<li><a href="#toc_19246_27800_7">范例：直接执行</a></li>
+<li><a href="#toc_19246_27800_8">Shell 的执行原理</a></li>
+<li><a href="#toc_19246_27800_9">变量赋值</a></li>
+<li><a href="#toc_19246_27800_10">范例：获取当前的工作目录并存放到变量中</a></li>
+<li><a href="#toc_19246_27800_11">数组</a></li>
+<li><a href="#toc_19246_27800_12">范例：对数组元素赋值</a></li>
+<li><a href="#toc_19246_27800_13">范例：访问某个数组元素</a></li>
+<li><a href="#toc_19246_27800_14">范例：数组组合赋值</a></li>
+<li><a href="#toc_19246_27800_15">范例：列出数组中所有内容</a></li>
+<li><a href="#toc_19246_27800_16">范例：获取数组元素个数</a></li>
+<li><a href="#toc_19246_27800_17">参数传递</a></li>
+<li><a href="#toc_19246_27800_18">设置环境变量</a></li>
+<li><a href="#toc_19246_27800_19">键盘读起变量值</a></li>
+<li><a href="#toc_19246_27800_20">设置变量的只读属性</a></li>
+<li><a href="#toc_19246_27800_21">条件测试命令 test</a></li>
+<li><a href="#toc_19246_27800_22">范例：数值比较</a></li>
+<li><a href="#toc_19246_27800_23">范例：测试文件属性</a></li>
+<li><a href="#toc_19246_27800_24">范例：字符传属性以及比较</a></li>
+<li><a href="#toc_19246_27800_25">范例：串比较</a></li>
+<li><a href="#toc_19246_27800_26">整数算术或关系运算 expr</a></li>
+<li><a href="#toc_19246_27800_27">控制执行流程命令</a></li>
+<li><a href="#toc_19246_27800_28">范例：条件分支命令 if</a></li>
+<li><a href="#toc_19246_27800_29">范例：case 命令举例</a></li>
+<li><a href="#toc_19246_27800_30">范例：循环语句 while, until</a></li>
+<li><a href="#toc_19246_27800_31">范例：有限循环命令 for</a></li>
+<li><a href="#toc_19246_27800_32">函数</a></li>
+<li><a href="#toc_19246_27800_33">后记</a></li>
+</ul>
+<p><span id="toc_19246_27800_1"></span></p>
+<h2 id="shell编程学习笔记">Shell编程学习笔记</h2>
+<p><span id="toc_19246_27800_2"></span></p>
+<h3 id="前言">前言</h3>
+<p>这是作者早期的 Shell 编程学习笔记，主要包括 Shell 概述、 Shell 变量、位置参数、特殊符号、别名、各种控制语句、函数等 Shell 编程知识。</p>
+<p>要想系统地学 Shell，应该找些较系统的资料，例如：<a href="http://www.tinylab.org/shell-programming-paradigm-series-index-review/">《Shell 编程范例》</a>和<a href="http://www.chinaunix.net/jh/24/628472.html">《鸟哥学习Shell Scripts》</a>。</p>
+<p><span id="toc_19246_27800_3"></span></p>
+<h3 id="执行-shell-脚本的方式">执行 Shell 脚本的方式</h3>
+<p><span id="toc_19246_27800_4"></span></p>
+<h4 id="范例输入重定向到-bash">范例：输入重定向到 Bash</h4>
+<pre><code>$ bash &lt; ex1
+</code></pre>
+<p>可以读入 <code>ex1</code> 中的程序，并执行</p>
+<p><span id="toc_19246_27800_5"></span></p>
+<h4 id="范例以脚本名作为参数">范例：以脚本名作为参数</h4>
+<p>其一般形式是：</p>
+<pre><code>$ bash 脚本名 ［参数]
+</code></pre>
+<p>例如：</p>
+<pre><code>$ bash ex2 /usr/meng /usr/zhang
+</code></pre>
+<p>其执行过程与上一种方式一样，但这种方式的好处是能在脚本名后面带有参数，从而将参数值传递给程序中的命令，使一个 Shell 脚本可以处理多种情况，就如同函数调用时可根据具体问题传递相应的实参。</p>
+<p><span id="toc_19246_27800_6"></span></p>
+<h4 id="范例以--来执行">范例：以 . 来执行</h4>
+<p>如果以当前 Shell （以 <code>·</code> 表示）执行一个 Shell 脚本，则可以使用如下简便形式：</p>
+<pre><code>$ · ex3［参数］
+</code></pre>
+<p><span id="toc_19246_27800_7"></span></p>
+<h4 id="范例直接执行">范例：直接执行</h4>
+<p>将 Shell 脚本的权限设置为可执行，然后在提示符下直接执行它。</p>
+<p>具体办法：</p>
+<pre><code>$ chmod a+x ex4
+$ ./ex4
+</code></pre>
+<p>这个要求在 Shell 脚本的开头指明执行该脚本的具体 Shell，例如 <code>/bin/bash</code>：</p>
+<pre><code>#!/bin/bash
+</code></pre>
+<p><span id="toc_19246_27800_8"></span></p>
+<h3 id="shell-的执行原理">Shell 的执行原理</h3>
+<p>Shell 接收用户输入的命令（脚本名），并进行分析。如果文件被标记为可执行，但不是被编译过的程序，Shell 就认为它是一个 Shell 脚本。 Shell 将读取其中的内容，并加以解释执行。所以，从用户的观点看，执行 Shell 脚本的方式与执行一般的可执行文件的方式相似。</p>
+<p>因此，用户开发的 Shell 脚本可以驻留在命令搜索路径的目录之下（通常是 <code>/bin</code>、<code>/usr/bin</code>等），像普通命令一样使用。这样，也就开发出自己的新命令。如果打算反复使用编好的 Shell 脚本，那么采用这种方式就比较方便。</p>
+<p><span id="toc_19246_27800_9"></span></p>
+<h3 id="变量赋值">变量赋值</h3>
+<p>可以将一个命令的执行结果赋值给变量。有两种形式的命令替换：一种是使用倒引号引用命令，其一般形式是： <code>命令表</code>。</p>
+<p><span id="toc_19246_27800_10"></span></p>
+<h4 id="范例获取当前的工作目录并存放到变量中">范例：获取当前的工作目录并存放到变量中</h4>
+<p>例如：将当前工作目录的全路径名存放到变量dir中，输入以下命令行：</p>
+<pre><code>$ dir=`pwd`
+</code></pre>
+<p>另一种形式是：<code>$(命令表)</code>。上面的命令行也可以改写为：</p>
+<pre><code>$ dir=$(pwd)
+</code></pre>
+<p><span id="toc_19246_27800_11"></span></p>
+<h3 id="数组">数组</h3>
+<p><code>Bash</code> 只提供一维数组，并且没有限定数组的大小。类似与 C 语言，数组元素的下标由 0 开始编号。获取数组中的元素要利用下标。下标可以是整数或算术表达式，其值应大于或等于 0 。用户可以使用赋值语句对数组变量赋值。</p>
+<p><span id="toc_19246_27800_12"></span></p>
+<h4 id="范例对数组元素赋值">范例：对数组元素赋值</h4>
+<p>对数组元素赋值的一般形式是：<code>数组名[下标]＝值</code>，例如：</p>
+<pre><code>$ city[0]=Beijing
+$ city[1]=Shanghai
+$ city[2]=Tianjin
+</code></pre>
+<p>也可以用 <code>declare</code> 命令显式声明一个数组，一般形式是：</p>
+<pre><code>$ declare -a 数组名
+</code></pre>
+<p><span id="toc_19246_27800_13"></span></p>
+<h4 id="范例访问某个数组元素">范例：访问某个数组元素</h4>
+<p>读取数组元素值的一般格式是： <code>${数组名[下标]}</code>，例如：</p>
+<pre><code>$ echo ${city[0]}
+Beijing
+</code></pre>
+<p><span id="toc_19246_27800_14"></span></p>
+<h4 id="范例数组组合赋值">范例：数组组合赋值</h4>
+<p>一个数组的各个元素可以利用上述方式一个元素一个元素地赋值，也可以组合赋值。定义一个数组并为其赋初值的一般形式是：</p>
+<pre><code>数组名=(值1 值2 ... 值n)
+</code></pre>
+<p>其中，各个值之间以空格分开。例如：</p>
+<pre><code>$ A=(this is an example of shell script)
+$ echo ${A[0]} ${A[2]} ${A[3]} ${A[6]}
+this an example script
+$ echo ${A[8]}
+</code></pre>
+<p>由于值表中初值共有 7 个，所以 <code>A</code> 的元素个数也是 7 。 <code>A[8]</code> 超出了已赋值的数组 <code>A</code> 的范围，就认为它是一个新元素，由于预先没有赋值，所以它的值是空串。</p>
+<p>若没有给出数组元素的下标，则数组名表示下标为 0 的数组元素，如 <code>city</code> 就等价于 <code>city[0]</code>。</p>
+<p><span id="toc_19246_27800_15"></span></p>
+<h4 id="范例列出数组中所有内容">范例：列出数组中所有内容</h4>
+<p>使用 <code>*</code> 或 <code>@</code> 做下标，则会以数组中所有元素取代。</p>
+<pre><code>$ echo ${A[*]}
+this is an example of shell script
+</code></pre>
+<p><span id="toc_19246_27800_16"></span></p>
+<h4 id="范例获取数组元素个数">范例：获取数组元素个数</h4>
+<pre><code>$ echo ${#A[*]}
+7
+</code></pre>
+<p><span id="toc_19246_27800_17"></span></p>
+<h3 id="参数传递">参数传递</h3>
+<p>假如要编写一个 Shell 来求两个数的和，可以怎么实现呢？为了介绍参数传递的用法，编写这样一个脚本：</p>
+<pre><code>$ cat &gt; add
+let sum=$1+$2
+echo $sum
+</code></pre>
+<p>保存后，执行一下：</p>
+<pre><code>$ chmod a+x ./add
+$ ./add 5 10
+15
+</code></pre>
+<p>可以看出 5 和 10 分别传给了 <code>$1</code> 和 <code>$2</code>，这是 Shell 自己预设的参数顺序，其实也可以先定义好变量，然后传递进去。</p>
+<p>例如，修改上述脚本得到：</p>
+<pre><code>let sum=$X+$Y
+echo $sum
+</code></pre>
+<p>再次执行：</p>
+<pre><code>$ X=5 Y=10 ./add
+15
+</code></pre>
+<p>可以发现，同样可以得到正确结果。</p>
+<p><span id="toc_19246_27800_18"></span></p>
+<h3 id="设置环境变量">设置环境变量</h3>
+<p>export一个环境变量：</p>
+<pre><code>$ export opid=True
+</code></pre>
+<p>这样子就可以，如果要登陆后都生效，可以直接添加到 <code>/etc/profile</code> 或者 <code>~/.bashrc</code> 里头。</p>
+<p><span id="toc_19246_27800_19"></span></p>
+<h3 id="键盘读起变量值">键盘读起变量值</h3>
+<p>可以通过 <code>read</code> 来读取变量值，例如，来等待用户输入一个值并且显示出来：</p>
+<pre><code>$ read -p "请输入一个值 ： "  input ; echo "你输入了一个值为 ：" $input
+请输入一个值 ： 21500
+你输入了一个值为 ： 21500
+</code></pre>
+<p><span id="toc_19246_27800_20"></span></p>
+<h3 id="设置变量的只读属性">设置变量的只读属性</h3>
+<p>有些重要的 Shell 变量，赋值后不应该修改，那么可设置它为 <code>readonly</code> ：</p>
+<pre><code>$ oracle_home=/usr/oracle7/bin
+$ readonly oracle_home
+</code></pre>
+<p><span id="toc_19246_27800_21"></span></p>
+<h3 id="条件测试命令-test">条件测试命令 test</h3>
+<p>语法：<code>test 表达式</code> 如果表达式为真，则返回真，否则，返回假。</p>
+<p><span id="toc_19246_27800_22"></span></p>
+<h4 id="范例数值比较">范例：数值比较</h4>
+<p>先给出数值比较时常见的比较符：</p>
+<blockquote>
+<p><code>-eg =；-ne !=；-gt &gt;；-ge &gt;=；-lt &lt;；-le &lt;=</code></p>
+</blockquote>
+<pre><code>$ test var1 -gt var2
+</code></pre>
+<p><span id="toc_19246_27800_23"></span></p>
+<h4 id="范例测试文件属性">范例：测试文件属性</h4>
+<p>文件的可读、可写、可执行，是否为普通文件，是否为目录分别对应：</p>
+<blockquote>
+<p><code>-r; -w; -x; -f; -d</code></p>
+</blockquote>
+<pre><code>$ test -r filename
+</code></pre>
+<p><span id="toc_19246_27800_24"></span></p>
+<h4 id="范例字符传属性以及比较">范例：字符传属性以及比较</h4>
+<blockquote>
+<p>串的长度为零：<code>-z</code>； 非零：<code>-n</code>，如:</p>
+</blockquote>
+<pre><code>$ test -z s1
+</code></pre>
+<p>如果串 <code>s1</code> 长度为零，返回真。</p>
+<p><span id="toc_19246_27800_25"></span></p>
+<h4 id="范例串比较">范例：串比较</h4>
+<blockquote>
+<p>相等<code>"s1"="s2"</code>； 不相等 <code>"s1"!="s2"</code></p>
+</blockquote>
+<p>还有一种比较串的方法（可以按字典序来比较）：</p>
+<pre><code>$ if [[ 'abcde' &lt; 'abcdf' ]]; then  echo "yeah,果然是诶"; fi
+yeah,果然是诶
+</code></pre>
+<p><span id="toc_19246_27800_26"></span></p>
+<h3 id="整数算术或关系运算-expr">整数算术或关系运算 expr</h3>
+<p>可用该命令进行的运算有：</p>
+<blockquote>
+<p>算术运算：<code>+ - * / %</code>；逻辑运算<code>：= ! &lt; &lt;= &gt; &gt;=</code></p>
+</blockquote>
+<p>如:</p>
+<pre><code>$ i=5;expr $i+5
+</code></pre>
+<p>另外，<code>bc</code> 是一个命令行计算器，可以进行一些算术计算。</p>
+<p><span id="toc_19246_27800_27"></span></p>
+<h3 id="控制执行流程命令">控制执行流程命令</h3>
+<p><span id="toc_19246_27800_28"></span></p>
+<h4 id="范例条件分支命令-if">范例：条件分支命令 if</h4>
+<p><code>if</code> 命令举例：如果第一个参数是一个普通文件名，那么分页打印该文件；否则，如果它为目录名，则进入该目录并打印该目录下的所有文件，如果也不是目录，那么提示相关信息。</p>
+<pre><code>if test -f $1
+then
+	pr $1&gt;/dev/lp0
+elif
+	test-d $1
+then
+	(cd $1;pr *&gt;/dev/lp0)
+else
+	echo $1 is neither a file nor a directory
+fi
+</code></pre>
+<p><span id="toc_19246_27800_29"></span></p>
+<h4 id="范例case-命令举例">范例：case 命令举例</h4>
+<p><code>case</code> 命令是一个基于模式匹配的多路分支命令，下面将根据用户键盘输入情况决定下一步将执行那一组命令。</p>
+<pre><code>while ［ $reply!="y" ］ &amp;&amp; [ $reply!="Y" ]                         #下面将学习的循环语句
+do
+	echo "\nAre you want to continue?(Y/N)\c"
+	read reply             #读取键盘
+	case $replay in
+		(y|Y) break;;         #退出循环
+		(n|N) echo "\n\nTerminating\n"
+		      exit 0;;
+		    *) echo "\n\nPlease answer y or n"
+			continue;       #直接返回内层循环开始出继续
+	esac
+done
+</code></pre>
+<p><span id="toc_19246_27800_30"></span></p>
+<h4 id="范例循环语句-while-until">范例：循环语句 while, until</h4>
+<p>语法：</p>
+<pre><code>while/until 命令表1
+do
+	命令表2
+done
+</code></pre>
+<p>区别是，前者执行命令表 1 后，如果退出状态为零，那么执行 <code>do</code> 后面的命令表 2，然后回到起始处，而后者执行命令表 1 后，如果退出状态非零，才执行类似操作。例子同上。</p>
+<p><span id="toc_19246_27800_31"></span></p>
+<h4 id="范例有限循环命令-for">范例：有限循环命令 for</h4>
+<p>语法：</p>
+<pre><code>for 变量名 in 字符串表
+do
+	命令表
+done
+</code></pre>
+<p>举例：</p>
+<pre><code>FILE="test1.c myfile1.f pccn.h"
+for i in $FILE
+do
+	cd ./tmp
+	cp $i $i.old
+	echo "$i copied"
+done
+</code></pre>
+<p><span id="toc_19246_27800_32"></span></p>
+<h3 id="函数">函数</h3>
+<p>现在来看看 Shell 里头的函数用法，先看个例子：写一个函数，然后调用它显示 <code>Hello, World!</code></p>
+<pre><code>$ cat &gt; show
+# 函数定义
+function show
+{
+	echo $1$2;
+}
+H="Hello,"
+W="World!"
+# 调用函数，并传给两个参数H和W
+show $H $W
+</code></pre>
+<p>演示：</p>
+<pre><code>$ chmod 770 show
+$./show
+Hello,World!
+</code></pre>
+<p>看出什么蹊跷了吗？</p>
+<pre><code>$ show $H $W
+</code></pre>
+<p>咱们可以直接在函数名后面跟实参。</p>
+<p>实参顺序对应“虚参”的 <code>$1,$2,$3</code>……</p>
+<p>注意：假如要传入一个参数，如果这个参数中间带空格，怎么办？ 先试试看。</p>
+<p>来显示 <code>Hello World</code> （两个单词之间有个空格）</p>
+<pre><code>function show
+{
+	echo $1
+}
+HW="Hello World"
+show "$HW"
+</code></pre>
+<p>如果直接 <code>show $HW</code>，肯定不行，因为 <code>$1</code> 只接受到了 <code>Hello</code>，所以结果只显示 <code>Hello</code>，原因是字符串变量必须用 <code>"</code> 包含起来。</p>
+<p><span id="toc_19246_27800_33"></span></p>
+<h3 id="后记">后记</h3>
+<p>感兴趣的话继续学习吧！</p>
+<p>还有好多强大的东西等着呢，比如 <code>cut</code>，<code>expr</code>，<code>sed</code>，<code>awk</code> 等等。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/191/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/114/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/31/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/183/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/183/index.html">一起来学算法吧！</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/100.html">MisterBooo</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/117/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/117/index.html">成为专业程序员路上用到的各种优秀资料、神器及框架</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">26页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/160/index.html">
+<img class="uk-book-cover" src="/static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/160/index.html">Python - 100天从新手到大师</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/92.html">jackfrued</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">75页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33569个">33569</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2893;var bookPageRelUrl ='zh/appendix/02-chapter1.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

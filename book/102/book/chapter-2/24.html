@@ -1,0 +1,623 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>多线程备份-C 语言进阶</title>
+<meta content='多线程备份,C 语言进阶' name='keywords'>
+<meta content='多线程备份,C 语言进阶' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/102/book/chapter-2/23.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">单线程备份(下)</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/102/book/chapter-2/25.html">
+<span class="">总结</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/102/index.html">C 语言进阶</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/gitbook" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h4 id="0x0f-多线程备份">0x0F-多线程备份</h4>
+<h4 id="写在最前方">写在最前方</h4>
+<ul>
+<li>到现在为止我们有了一开始的<strong>遍历模型(show_structure)</strong>，<strong>队列模型(queue)</strong>。</li>
+<li>现在我们需要做的就是将他们融合在一起，并且通过多线程将其驱动。</li>
+<li>以下将会用到<strong>Windows API</strong> 和 <strong>Windows线程库</strong><code>&lt;process.h&gt;</code>以及文件状态需要用到的<code>&lt;sys/stat.h&gt;</code></li>
+<li>对于一个多线程的备份程序而言，可以使用一个十分清晰的方式来实现，通俗的话来说就是，<strong>一个线程</strong>在不断将<strong>路径模型</strong>压入队列中，其他 <strong>n个线程</strong> 不断地从这个队列中弹出路径，实行复制<code>n = CPU's core * 2 - 1</code>。</li>
+<li>其次我们需要实现的是类似<strong>增量备份</strong>的效果，即有改变的文件才需要重新复制，或者新增的才需要复制。</li>
+<li>剩下的就是实现两个供线程调用的函数(这个函数有特殊)，一个入队，一个出队</li>
+<li>之所以选择<strong>Visual Studio</strong>还有另一个原因，它的某些必要函数是可以开启支持<strong>线程安全</strong>的，这个概念我不作解释，记得在属性中查看是否开启**/MT(多线程)**</li>
+</ul>
+<h4 id="写在中间">写在中间</h4>
+<ul>
+<li> <p>让我们来施展一个很久不用的魔法 <code>3, 2, 1！</code></p> <pre><code>  static queue filesVec;    /* 队列主体 */
+  HANDLE vecEmpty, vecFull; /* 两个 Semaphore */
+  HANDLE pushThread;  /* 将路径加入队列中的线程 */
+  HANDLE copyThread[SELF_THREADS_LIMIT]; /* 将路径弹出队列并复制的线程 */
+  CRITICAL_SECTION inputSec, testSec, manageSec; /* 关键段或临界区 */
+
+  /* 计算时间 */
+  static clock_t start, finish; /* 备份开始，结束时间 */
+  static double Total_time;    /* 计算备份花费时间 */
+</code></pre> <p>这些东西，都被写在了<code>backup.c</code>中，作为全局变量，暂时先不管其中看不懂的部分，可能到现在为止，大家都已经迷糊了。但是没关系，因为还没说过所以迷糊。继续往下</p> </li>
+<li> <p>从小事做起，先实现一个简单的增量备份功能</p> </li>
+<li> <p>实际上就是判断两个文件的<strong>最后修改时间</strong>是否一致</p>
+<ul>
+<li>实现判断目的路径上的文件是否存在</li>
+<li>如果存在，则再次判断<strong>源路径</strong>上的文件和<strong>目的路径</strong>上的文件的<strong>最后修改时间是否相同</strong></li>
+</ul> </li>
+<li> <p><code>not_changed</code></p> <pre><code>  /**
+   * @version  1.0 2015/10/03
+   * @author   wushengxin
+   * @param    dstfile 目的路径的文件
+  			 srcfile 源路径的文件
+   * @function 判断两个文件的最后修改时间是否相同
+   */
+  static int not_changed(const char * __restrict dstfile, const char * __restrict srcfile)
+  {
+  	struct stat dst_stat, src_stat;
+  	stat(dstfile, &amp;dst_stat);
+  	stat(srcfile, &amp;src_stat);
+  	return dst_stat.st_mtime == src_stat.st_mtime;
+  }
+</code></pre> <p>这个函数定义在<code>backup.c</code>中，因为没有在头文件中声明，所以一定要定义在调用者的前方。</p> <p>这个函数比较短小，实现的功能就是判断最后修改的时间是否相同，用到头文件<code>sys/stat.h</code></p> </li>
+<li> <p><strong>两个被线程调用的函数</strong></p>
+<ul>
+<li> <p>首先是入队功能的函数：这个函数主要是调用最后实现的<code>backup</code>函数，用于递归遍历所给路径下的所有文件夹，将所有文件路径转换成<strong>路径模型</strong>，压入队中</p> <pre><code>  /**
+   * @version 1.0 2015/10/03
+   * @author  wushengxin
+   * @param   pSelect 传入的参数，当前为备份的源路径
+   * function 作为线程开始函数的一个参数，作用是调用 backup 函数
+   */
+  static unsigned int __stdcall callBackup(void * pSelect)
+  {
+  	char* tmpPath = (char*)pSelect; /* 源路径 */
+  	start = clock(); /* 开始计时 */
+  	backup(tmpPath, get_backup_tpath());
+  	return 0;
+  }
+</code></pre> <p>这个函数定义在<code>backup.c</code>中，因为没有在头文件中声明，所以一定要定义在调用者的前方。</p> <p>其中参数<code>pSelect</code>的用法就像是可以接受任何类型的<strong>泛型函数</strong>，只不过需要自己提前知道类型，这个技术也被用于C语言的面向对象，<strong>可用于隐藏成员变量和成员函数</strong>。最后可能会稍微介绍一下。</p>
+<ul>
+<li> <p>其次是出队的函数：这个函数的功能比较多，首先等待队列非空(vecFull)的<strong>信号(Semaphore)</strong>，得到信号之后就弹出一个<strong>路径模型</strong>，进行复制操作，并且负责把路径模型使用的内存释放，在此释放一个队列空的信号，进入下一个循环。</p> <pre><code>  static unsigned int __stdcall callCopyFile(void * para)
+  {
+  	DWORD    isExit   = 0;         /* 判断入队线程是否还存在 */
+  	queue*   address  = &amp;filesVec;
+  	combine* localCom = NULL;
+  	int      empty    = 0;
+  	while (1)
+  	{
+  		char * dst_path = NULL;
+  		char * src_path = NULL;
+  		EnterCriticalSection(&amp;testSec);
+  		GetExitCodeThread(pushThread, &amp;isExit); /* 查看入队的线程是否已经结束 */
+  		empty = address-&gt;empty; /* 查看此时队列是否为空 */
+  		LeaveCriticalSection(&amp;testSec);
+  		if (isExit != STILL_ACTIVE &amp;&amp; empty) /* STILL_ACTIVE 代表还在运行 */
+  		{
+  			puts("Push Thread is End!");
+  			break;   
+  		}
+
+  		isExit = WaitForSingleObject(vecFull, 3000); /* 设定一个等待时间，以防死锁 */
+  		if (isExit == WAIT_TIMEOUT)
+  		{
+  			fprintf(stderr, "Copy Thread wait time out!\n");
+  			continue;
+  		}
+
+  		EnterCriticalSection(&amp;manageSec); /* 这个关键段的添加十分重要，是读取时候的核心 */
+  		if (!(localCom = filesVec.PopFront(address))) /* 每次弹出时一定要防止资源争夺带来的冲突 */
+  			continue;
+  		LeaveCriticalSection(&amp;manageSec);
+
+  		dst_path = localCom-&gt;dst_to_path; /* 空间局部性 */
+  		src_path = localCom-&gt;src_from_path;
+
+  		if (CopyFileA(src_path, dst_path, FALSE) == 0) /* 显式使用 CopyFileA 函数，而不是使用 CopyFile 宏 */
+  		{
+  			EnterCriticalSection(&amp;inputSec);
+  			if (ERROR_ACCESS_DENIED == GetLastError())
+  			{
+  				fprintf(stderr, "\nThe File has already existed and is HIDDEN or ReadOnly! \n");
+  				fprintf(stderr, "Copy File from %s Fail!\n", src_path);
+  			}
+  			else if (ERROR_ENCRYPTION_FAILED == GetLastError())
+  			{
+  				fprintf(stderr, "\nThe File is Encrypted(被加密), And Can't not be copy\n");
+  				fprintf(stderr, "Copy File from %s Fail!\n", src_path);
+  			}
+  			LeaveCriticalSection(&amp;inputSec);
+  		}
+  		Free_s(src_path);
+  		Free_s(dst_path);
+  		Free_s(localCom);
+  		ReleaseSemaphore(vecEmpty, 1, NULL); /* 是放一个信号量 */
+  	}/* while (1) */		
+  	return 0;
+  }
+</code></pre> </li>
+</ul> <p>这个函数看似很长，实际上大半实在做判断，而不是在做拷贝，真正做拷贝的是在中间部分的<code>WaitForSingleObject</code>函数之后才开始的</p>
+<ul>
+<li>解释一下
+<ul>
+<li>因为在此处并不是多线程的基础文章，而是假设你有基础，如果没有，可以前往一个地方<strong>CSDN作者</strong>：<code>MoreWindows</code>，它的多线程文章十分通俗易懂</li>
+<li>这次我们提到的多线程概念有
+<ul>
+<li><code>Semaphore(信号量)</code>，使用的一个类似多个互斥量的概念</li>
+<li><code>CRITICAL_SECTION(关键段/临界区)</code>，作用和锁相同，但是某些情况下(<strong>粗心</strong>)不能很好的保护资源不被争夺，不能再进程间共享</li>
+<li><code>Mutex(互斥量)</code>，用了<strong>非递归的</strong>锁一定能保护好资源不被争夺。但是教<code>CRITICAL_SECTION</code>的开销要大。</li>
+<li>其他信息请参看<a href="http://blog.csdn.net/morewindows/article/details/17488865">那位的博客</a>。</li>
+</ul> </li>
+<li>假设你已经具备了多线程的基础。</li>
+</ul> </li>
+<li>那么讲解一下思路：
+<ul>
+<li>首先可以将线程当成这个函数，那么按顺序执行的结果就是，进入循环(好吧废话)</li>
+<li>其次我们需要时刻<strong>警惕</strong>，入队线程是否已经结束？并且结束的话队列是否为空？如果两个条件<strong>同时成立</strong>，那么就结束<strong>本线程</strong>，任务结束。</li>
+<li>只要任意的条件不符合，就代表本线程的任务还要继续，那么就在原地等待<strong>信号</strong>，一个队列非空(<code>vecFull</code>)的信号。</li>
+<li>一旦接受到信号，就证明队列中有<strong>路径模型</strong>可以被本线程弹出，就开始弹出路径模型，此时一定要记住用<strong>关键段或者锁</strong>给弹出操作做保险。</li>
+<li>这里提一句，互斥量(<strong>Mutex</strong>)比关键段(<strong>Critical Section</strong>)<strong>要可靠</strong>，但开销更大</li>
+<li>弹出之后就是调用<strong>API</strong>进行复制，随后释放堆上的空间，最后释放一个信号，代表队列中的元素被我弹出了一个。</li>
+<li>进入下一次循环</li>
+</ul> </li>
+<li>可以将其中的<code>stderr</code>换成文件流，将错误信息输入到文件中，而不是屏幕上，以保存错误信息不至于丢失。</li>
+</ul> </li>
+</ul> </li>
+<li> <p>下面开始主体函数 <code>backup</code> 的编写</p>
+<ul>
+<li> <p>由于此次的代码过长，所以不放上代码，一切代码都可以到我的<strong>Github</strong>仓库下载。</p> </li>
+<li> <p>讲解思路</p> </li>
+<li> <p>首先 <code>backup</code> 和 <code>show_structure</code> 最大的不同便在于<strong>后者</strong>不需要保存路径模型，而是直接使用。</p> </li>
+<li> <p>故我们只需要在 <code>show_structure</code> 的路径变量中，添加一个<strong>目的路径</strong>的参数就行。即<code>backup</code>函数中的主要参数变为<strong>三个</strong>:</p> <pre><code>  /* backup.c : backup */
+  char * from_path_buf = make_path(path); /* 源路径 */
+  char * to_path_buf   = make_path(bpath); /* 目的路径 */
+  char * find_path_buf = make_path(path); /* 用于 Windows API FindFirstFile */
+</code></pre> </li>
+<li> <p>首先我们拥有一个静态全局的队列 <code>fileVec</code>，可以被任何线程访问</p> </li>
+<li> <p>紧接着我们构造了两个动作，压入(<code>backup</code>)，弹出(<code>callCopyFile</code>)，<code>backup</code>是用<code>callBackup</code>调用。</p> </li>
+<li> <p>在<strong>二级界面</strong>中，当我们选择第一个选项开始备份后，我们选择在此时获得<strong>源路径</strong>，并将之通过线程创建函数 <code>_beginthreadex</code>　传递给 <code>callBackup</code>，进而传递给<code>backup</code>函数，开始压入任务。</p> <pre><code>  /**
+   * @version 1.0 2015/10/03
+   * @author  wushengxin
+   * @param   pSelect 传入的参数，可以是NULL
+   * function 作为线程开始函数的一个参数，作用是调用 backup 函数
+   */
+  static unsigned int __stdcall callBackup(void * pSelect)
+  {
+  	char* tmpPath = (char*)pSelect;
+  	start = clock();
+  	backup(tmpPath, get_backup_topath());
+  	return 0;
+  }
+</code></pre> </li>
+<li> <p>在创建并完成压入线程之后，开始创建拷贝线程，之所以这么安排，是因为压入的操作必定比拷贝的要快，且我们一开始便将<strong>信号量</strong>的 <code>vecEmpty</code>初始化为 <code>20</code>，这是因为一开始的队列是空的，需要压入线程先开始行动。</p> </li>
+<li> <p>这里需要提到的是 <code>_beginthreadex</code> 函数，还有一个与它相似的函数是 <code>_beginthread</code>，两者之间的区别在于，<strong>前者参数更多，前者类似POSIX里的非分离式线程属性，前者使用完需要手动销魂，前后者调用的函数修饰不一样</strong>，什么意思？如果下面这个代码使用后者创建会发生什么问题？</p> </li>
+<li> <p>想想<strong>分离式</strong>线程的特点，就是自动释放所有的资源，这就会导致，如果前一个线程比自己创建的还快完成任务，那么自己就可能用到它的<strong>句柄</strong>，这就可能会<strong>造成错误</strong>。而如果前者的话，由程序员稍后自己释放销毁句柄，能保证一定不会出现这种现象。</p> </li>
+<li> <p>一直以来都是使用前者。</p> <pre><code>  /* backup.c : backup */
+  pushThread = (HANDLE)_beginthreadex(NULL, 0, callBackup, (void*)tmpPath, 0, NULL); /* 压入线程 */
+  for (int i = 0; i &lt; SELF_THREADS_LIMIT; ++i)
+  {
+  	copyThread[i] = (HANDLE)_beginthreadex(NULL, 0, callCopyFile, NULL, 0, NULL); /* 拷贝线程 */
+  }
+</code></pre> </li>
+<li> <p>在压入的过程中，唯一需要注意的就是在压入<code>fileVec</code>的时候，一定要防止资源竞争(同样适用在复制过程中的弹出操作)，通过信号量可以有效防止多于1个以上的线程同时访问<code>fileVec</code></p> <pre><code>  /* backup.c : backup */
+  if(is Directory)
+  	{ ... }
+  else /* 是一个文件 */
+  {
+  	strcat(tmp_from_file_buf, fileData.cFileName);
+  	strcat(tmp_to_file_buf, fileData.cFileName);
+  	if (_access(tmp_to_file_buf, 0) == 0) /*如果目标文件存在*/
+  	{
+  		if (is_changed(tmp_from_file_buf, tmp_to_file_buf))
+  		{
+  			rele_path(tmp_from_file_buf);
+  			rele_path(tmp_to_file_buf);
+  			continue;  /*如果目标文件与源文件的修改时间相同，则不需要入队列*/
+  		}
+  		fprintf(stderr, "File : %s hast changed!\n", tmp_from_file_buf);
+  	}
+  	else
+  		fprintf(stderr, "Add New File %s \n", tmp_from_file_buf);
+  	/* 使用信号量防止竞争 */
+  	WaitForSingleObject(vecEmpty, INFINITE);
+  	EnterCriticalSection(&amp;manageSec);
+  	filesVec.PushBack(&amp;filesVec, tmp_from_file_buf, tmp_to_file_buf);
+  	LeaveCriticalSection(&amp;manageSec);
+  	ReleaseSemaphore(vecFull, 1, NULL);
+  }
+</code></pre> </li>
+<li> <p>在复制的过程中，十分有可能出现<strong>压入线程</strong>结束，但是拷贝线程却停留在等待信号的阶段，这就要求我们必须设定一个等待的时间，超时则<strong>重新检测</strong>是否是<strong>压入线程结束且队列空</strong>。这一点十分重要，可以自己思考一下。</p> <pre><code>  /* backup.c : callCopyFile */
+  EnterCriticalSection(&amp;testSec);
+  GetExitCodeThread(pushThread, &amp;isExit); /* 查看入队的线程是否已经结束 */
+  empty = address-&gt;empty; /* 查看此时队列是否为空 */
+  LeaveCriticalSection(&amp;testSec);
+  if (isExit != STILL_ACTIVE &amp;&amp; empty) /* STILL_ACTIVE 代表还在运行 */
+  {
+  	puts("Push Thread is End!\n");
+  	break;   
+  }
+
+  isExit = WaitForSingleObject(vecFull, 3000); /* 设定一个等待时间，以防死锁 */
+  if (isExit == WAIT_TIMEOUT)
+  {
+  	fprintf(stderr, "Copy Thread wait time out!\n");
+  	continue; /* 所有代码都在一个 while(1)中 */
+  }
+</code></pre> </li>
+<li> <p>当所有线程都退出就代表任务完成，要销毁一系列相关参数。</p> </li>
+</ul> </li>
+</ul>
+<h4 id="写在最后">写在最后</h4>
+<ul>
+<li><strong>添加了多线程以后</strong>，前方有一些原始代码是需要修改的才能使用，比如<strong>队列模型</strong>(<code>Queue.c</code>)中的一些代码，需要用<strong>关键段</strong>进行修饰，防止资源争夺。其他方面没有太多需要修改的</li>
+<li>完整代码被我放在我的<strong>Github</strong><a href="https://github.com/wrestle/BackUpYourSelves/tree/master/src/win/branch/book-backup">仓库</a></li>
+</ul>
+<h4 id="简单总结">简单总结</h4>
+<ul>
+<li>使用的 <strong>Windows API</strong>中 <code>CopyFile</code> <code>CreateDirectory</code> <code>FindFirstFile</code> <code>FindNextFile</code>，是核心的功能函数。</li>
+<li>在此处，可以换一个思路思考一下，是否可以对<strong>容器队列</strong>，进行线程安全保护，从而不必在主代码中一直使用<strong>关键段</strong>进行保护？至少在<code>PushBack</code>和<code>PopFront</code>两个操作上可以不必担心资源争夺。防止在编写程序的时候粗心大意忘记了保护。</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/25/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/43/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/43/index.html">C 语言编程透视</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 369个">369</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/58/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/58/index.html">guava学习记录项目</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/34.html">tiantiangao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 70个">70</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/120/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/136/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/136/index.html">Serverless 架构应用开发指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 396个">396</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/159/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/159/index.html">im-service 简介</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/91.html">yu000hong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/102/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/README.html" title="介绍" data-book-page-rel-url="README.html" data-book-page-id="7413">介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/Seperate-0.html" title="第一部分" data-book-page-rel-url="book/chapter-0/Seperate-0.html" data-book-page-id="7414">第一部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/00.html" title="前序" data-book-page-rel-url="book/chapter-0/00.html" data-book-page-id="7415">前序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/01.html" title="序" data-book-page-rel-url="book/chapter-0/01.html" data-book-page-id="7416">序</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/02.html" title="C代码风格" data-book-page-rel-url="book/chapter-0/02.html" data-book-page-id="7417">C代码风格</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/04.html" title="C代码规范" data-book-page-rel-url="book/chapter-0/04.html" data-book-page-id="7418">C代码规范</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-0/03.html" title="变量" data-book-page-rel-url="book/chapter-0/03.html" data-book-page-id="7419">变量</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/Seperate-1.html" title="第二部分" data-book-page-rel-url="book/chapter-1/Seperate-1.html" data-book-page-id="7420">第二部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/10.html" title="指针(上)" data-book-page-rel-url="book/chapter-1/10.html" data-book-page-id="7421">指针(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/11.html" title="指针(下)" data-book-page-rel-url="book/chapter-1/11.html" data-book-page-id="7422">指针(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/12.html" title="预处理器" data-book-page-rel-url="book/chapter-1/12.html" data-book-page-id="7423">预处理器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/13.html" title="效率至上(上)" data-book-page-rel-url="book/chapter-1/13.html" data-book-page-id="7424">效率至上(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/14.html" title="效率至上(下)" data-book-page-rel-url="book/chapter-1/14.html" data-book-page-id="7425">效率至上(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/15.html" title="未曾领略的新风景" data-book-page-rel-url="book/chapter-1/15.html" data-book-page-id="7426">未曾领略的新风景</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-1/16.html" title="C线程和Glib的视角" data-book-page-rel-url="book/chapter-1/16.html" data-book-page-id="7427">C线程和Glib的视角</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/Seperate-2.html" title="第三部分" data-book-page-rel-url="book/chapter-2/Seperate-2.html" data-book-page-id="7428">第三部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/20.html" title="错误处理" data-book-page-rel-url="book/chapter-2/20.html" data-book-page-id="7429">错误处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/21.html" title="开始行动" data-book-page-rel-url="book/chapter-2/21.html" data-book-page-id="7430">开始行动</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/22.html" title="单线程备份(上)" data-book-page-rel-url="book/chapter-2/22.html" data-book-page-id="7431">单线程备份(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/23.html" title="单线程备份(下)" data-book-page-rel-url="book/chapter-2/23.html" data-book-page-id="7432">单线程备份(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/24.html" title="多线程备份" data-book-page-rel-url="book/chapter-2/24.html" data-book-page-id="7433">多线程备份</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-2/25.html" title="总结" data-book-page-rel-url="book/chapter-2/25.html" data-book-page-id="7434">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/Seperate-3.html" title="第四部分" data-book-page-rel-url="book/chapter-3/Seperate-3.html" data-book-page-id="7435">第四部分</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/30.html" title="网络的世界" data-book-page-rel-url="book/chapter-3/30.html" data-book-page-id="7436">网络的世界</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/31.html" title="套接字编程(1)" data-book-page-rel-url="book/chapter-3/31.html" data-book-page-id="7437">套接字编程(1)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/32.html" title="套接字编程(2)" data-book-page-rel-url="book/chapter-3/32.html" data-book-page-id="7438">套接字编程(2)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/33.html" title="并发HTTP服务器(1)" data-book-page-rel-url="book/chapter-3/33.html" data-book-page-id="7439">并发HTTP服务器(1)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/34.html" title="并发HTTP服务器(2)" data-book-page-rel-url="book/chapter-3/34.html" data-book-page-id="7440">并发HTTP服务器(2)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/35.html" title="并发HTTP服务器(3)" data-book-page-rel-url="book/chapter-3/35.html" data-book-page-id="7441">并发HTTP服务器(3)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/36.html" title="并发HTTP服务器(4)" data-book-page-rel-url="book/chapter-3/36.html" data-book-page-id="7442">并发HTTP服务器(4)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/102/book/chapter-3/37.html" title="并发HTTP服务器(5)" data-book-page-rel-url="book/chapter-3/37.html" data-book-page-id="7443">并发HTTP服务器(5)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =102;var bookPageId =7433;var bookPageRelUrl ='book/chapter-2/24.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

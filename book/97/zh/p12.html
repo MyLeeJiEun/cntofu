@@ -1,0 +1,435 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>改进诗歌下载服务器-Twisted与异步编程入门</title>
+<meta content='改进诗歌下载服务器,Twisted与异步编程入门' name='keywords'>
+<meta content='改进诗歌下载服务器,Twisted与异步编程入门' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/97/zh/p11.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">改进诗歌下载服务器</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/97/zh/p13.html">
+<span class="">使用Deferred新..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/97/index.html">Twisted与异步编程入门</a>
+<a target="_blank" rel="nofollow" href="https://github.com/likebeta/twisted-intro-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h3 id="新的服务器实现">新的服务器实现</h3>
+<p>这里我们要新写一个Twisted版的服务器。然后，再来讨论一些Deferred的新功能。</p>
+<p>在第九、十部分，我们提出了诗歌转换引擎这个概念。由于实现太过简单，因此我们用随机选择来模拟了可能会出现的转换失败的情景。但如果转换引擎位于服务器端，那么当服务器宕机就会出现真实的转换失败的情景了。</p>
+<p>因此，在本节我们要实现一个诗歌样式转换服务器，然后在下一节，我们会重写诗歌下载客户端使用这一服务来学习Deferred的新功能。</p>
+<h3 id="设计协议">设计协议</h3>
+<p>到目前为止，服务器端与客户端之间的交互都是单向的。但样式转换服务需要两者进行双向交互-客户端将原始式样的诗歌发送给服务器，然后服务器转换格式并将其返回给对应的客户端。因此，我们需要使用或自己实现一个协议来实现这种交互。</p>
+<p>我们设计服务器端可以提供若干种转换服务，让客户端来进行选择。因此客户端需要向服务器端发送两部分信息：转换方式与诗歌原始内容。服务器只是将转换格式之后的诗歌发送给客户端。这里使用到了简单的<a href="http://en.wikipedia.org/wiki/Remote_procedure_call">远程调用</a>。</p>
+<p>Twisted支持若干种能解决这个问题的协议：XML-RPC, Perspective Broker, AMP。</p>
+<p>但介绍使用其中任何一种都需要大量的时间，因此我们使用自己实现的协议。我们约定客户端发送内容格式如下：</p>
+<blockquote>
+<p><strong>转换方式.诗歌内容</strong></p>
+</blockquote>
+<p>我们将其以<a href="http://en.wikipedia.org/wiki/Netstrings">netstring</a>格式编码，当然服务器回发的信息也是以netstring格式编码。由于netstring使用了length-encoding，因此客户端能够识别出服务器没有将完整诗歌回发的情况。如果你尝试一下会发现，之前的协议无法检测到中途中断传输的情况。</p>
+<h3 id="代码">代码</h3>
+<p>新的服务器实现代码在<a href="http://github.com/jdavisp3/twisted-intro/blob/master/twisted-server-1/transformedpoetry.py#L1">twisted-server-1/transformedpoetry.py</a>中。首先，我们定义了一个TransformService类：</p>
+<pre><code class="language-python">class TransformService(object):
+    def cummingsify(self, poem):
+        return poem.lower()
+</code></pre>
+<p>这里我们仅仅实现了一种转换方法(与转换方式同名)，我们可以通过添加方法支持更多转换方式。有一个重要的地方需要注意：格式转换服务与具体协议的实现是完全分离的。将协议逻辑与服务逻辑分开是Twisted编程中常见的模式。这样做可以通过多种协议实现同一种服务，以增加代码的重用性。</p>
+<p>下面看看factory的实现代码：</p>
+<pre><code class="language-python">class TransformFactory(ServerFactory):
+    protocol = TransformProtocol
+    def __init__(self, service):
+        self.service = service
+    def transform(self, xform_name, poem):
+        thunk = getattr(self, 'xform_%s' % (xform_name,), None)
+        if thunk is None: # no such transform
+            return None
+        try:
+            return thunk(poem)
+        except:
+            return None # transform failed
+    def xform_cummingsify(self, poem):
+        return self.service.cummingsify(poem)
+</code></pre>
+<p>factory提供了一个transform的函数，protocol就是用它来处理客户端连接发送的诗歌格式转换请求的。</p>
+<p>如果发现不存在客户端请求的转换方式或转换失败，那么返回None。和TransformService一样，factory与具体的协议逻辑实现也是相互独立的。</p>
+<p>有一个地方需要引起注意：我们通过xfomr_前缀式方法来获取服务方法。这种方法在Twisted中很常见，尽管前缀经常发生变化，并且他们经常是依赖独立于factory的一个对象（如此处的 TransformService）。考虑到客户端可以发送任意的transform方法名，这是一种防止客户端蓄意使用恶性代码来让服务器端执行的方法。这种方法也提供了实现由服务提供具体协议代理的机制。</p>
+<p>下面是协议实现代码：</p>
+<pre><code class="language-python">class TransformProtocol(NetstringReceiver):
+    def stringReceived(self, request):
+        if '.' not in request: # bad request
+            self.transport.loseConnection()
+            return
+        xform_name, poem = request.split('.', 1)
+        self.xformRequestReceived(xform_name, poem)
+    def xformRequestReceived(self, xform_name, poem):
+        new_poem = self.factory.transform(xform_name, poem)
+        if new_poem is not None:
+            self.sendString(new_poem)
+        self.transport.loseConnection()
+</code></pre>
+<p>在这个协议的实现中，我们通过继承NetstringReceiver来利用了Twisted对netstrings的实现。基类很好的处理了编码与解码功能，我们需要做的就是实现stringReceived方法。换句话说，stringReceived接收的参数是客户端编码之后的诗歌，而无需我们再去添加额外的编码信息。而且基类同样管理着缓冲区，即当一首诗歌完整接收完再进行解码。</p>
+<p>如果一切进展正常的话，我们会使用NetstringReceiver的 sendString方法来将格式转换成功后的诗歌发送给客户端。</p>
+<p>注意我们是如何通过定义xformRequestReceived方法将收到的信息一步步推向更高的抽象层而实现了Twisted的模式。</p>
+<h3 id="一个简单的客户端">一个简单的客户端</h3>
+<p>我们会在下一个部分来实现相应的客户端，这里使用一个简单的脚本来实现客户端，代码位于<a href="https://github.com/jdavisp3/twisted-intro/blob/master/twisted-server-1/transform-test">twisted-server-1/transform-test</a>中。如果你运行服务器端于11000端口：</p>
+<pre><code>python twisted-server-1/transformedpoetry.py --port 11000
+</code></pre>
+<p>相应的运行脚本为：</p>
+<pre><code>./twisted-server-1/transform-test 11000
+</code></pre>
+<p>那么你会看到如下输出（经过netstring编码）：</p>
+<pre><code>15:here is my poem,
+</code></pre>
+<h3 id="讨论">讨论</h3>
+<p>在这个部分介绍了如下几个方面内容：</p>
+<ol>
+<li>双向通信</li>
+<li>基于Twisted已有的协议实现新协议</li>
+<li>将协议实现与服务功能实现独立分开</li>
+</ol>
+<p>双向通信的基本机制是很简单的。我们使用前面服务器端与客户端使用的相同的技术来写与读数据，唯一不同的是我们这次两者都使用了（读与写）。当然，一个复杂的协议需要复杂的代码来处理接收到的数据流与格式化输出的信息。这也是为什么使用已经存在的协议的原因。</p>
+<p>如果你开始觉得写简单的协议已经很上手了，那么最好就开始看看Twisted对不同协议的实现。尽管写一些简单的协议有助理解Twisted的编程风格，但在一个真实的程序中，最好是复用那些已经实现并证明性能良好的协议。</p>
+<p>最后一点是将协议解析逻辑与服务实现逻辑分开，这是Twisted编程中非常重要的一个模式。我们这个服务器程序只是一个演示，你可以想象一下真实的网络服务是相当复杂的。通过将服务与协议逻辑分开，你可以通过复用已有的服务代码来运行于其它的协议实现上。</p>
+<p>图27展示了一个格式转换服务器通过两种协议提供格式转换服务（当然，我们的服务器只提供了一种协议）：</p>
+<div style="text-align: center">
+<a href="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p12_server-21.png" data-uk-lightbox><img src="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p12_server-21.png" title="提供两种协议支持的格式转换服务器" alt="提供两种协议支持的格式转换服务器"></a>
+</div>
+<div style="text-align: center">
+图27 提供两种协议支持的格式转换服务器
+</div>
+<p>虽然在图27中使用了两种协议，但他们也许只是几个协议属性不同而已，factory共享同一个服务，这样就实现了代码的复用。</p>
+<h3 id="参考">参考</h3>
+<p>本部分原作参见: dave @ <a href="http://krondo.com/?p=2101">http://krondo.com/?p=2101</a></p>
+<p>本部分翻译内容参见杨晓伟的博客 <a href="http://blog.sina.com.cn/s/blog_704b6af70100qa5s.html">http://blog.sina.com.cn/s/blog_704b6af70100qa5s.html</a></p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/165/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/165/index.html">Python学习知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/94.html">coco369</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">85页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 190个">190</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/172/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/172/index.html">Seaborn 0.9 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">76页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 32个">32</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/156/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/132/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/vuejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/132/index.html">vue-router文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/71.html">srzyhead</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="vuejs">vuejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/199/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/199/index.html">什么是 Markdown</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/112.html">frank-lam</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">38页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/88/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/88/index.html">Spring Data JPA 参考指南 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/56.html">ityouknow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 92个">92</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/97/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p01.html" title="Twisted 理论基础" data-book-page-rel-url="zh/p01.html" data-book-page-id="9734">Twisted 理论基础</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p02.html" title="异步编程模式与Reactor初探" data-book-page-rel-url="zh/p02.html" data-book-page-id="9735">异步编程模式与Reactor初探</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p03.html" title="初识Twisted" data-book-page-rel-url="zh/p03.html" data-book-page-id="9736">初识Twisted</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p04.html" title="由twisted支持的客户端" data-book-page-rel-url="zh/p04.html" data-book-page-id="9737">由twisted支持的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p05.html" title="由Twisted扶持的客户端" data-book-page-rel-url="zh/p05.html" data-book-page-id="9738">由Twisted扶持的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p06.html" title="更加"抽象"的运用Twisted" data-book-page-rel-url="zh/p06.html" data-book-page-id="9739">更加"抽象"的运用Twisted</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p07.html" title="小插曲，Deferred" data-book-page-rel-url="zh/p07.html" data-book-page-id="9740">小插曲，Deferred</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p08.html" title="使用Deferred的诗歌下载客户端" data-book-page-rel-url="zh/p08.html" data-book-page-id="9741">使用Deferred的诗歌下载客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p09.html" title="第二个小插曲，deferred" data-book-page-rel-url="zh/p09.html" data-book-page-id="9742">第二个小插曲，deferred</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p10.html" title="增强defer功能的客户端" data-book-page-rel-url="zh/p10.html" data-book-page-id="9743">增强defer功能的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p11.html" title="改进诗歌下载服务器" data-book-page-rel-url="zh/p11.html" data-book-page-id="9744">改进诗歌下载服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p12.html" title="改进诗歌下载服务器" data-book-page-rel-url="zh/p12.html" data-book-page-id="9745">改进诗歌下载服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p13.html" title="使用Deferred新功能实现新客户端" data-book-page-rel-url="zh/p13.html" data-book-page-id="9746">使用Deferred新功能实现新客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p14.html" title="Deferred用于同步环境" data-book-page-rel-url="zh/p14.html" data-book-page-id="9747">Deferred用于同步环境</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p15.html" title="测试诗歌" data-book-page-rel-url="zh/p15.html" data-book-page-id="9748">测试诗歌</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p16.html" title="Twisted 进程守护" data-book-page-rel-url="zh/p16.html" data-book-page-id="9749">Twisted 进程守护</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p17.html" title="构造"回调"的另一种方法" data-book-page-rel-url="zh/p17.html" data-book-page-id="9750">构造"回调"的另一种方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p18.html" title="Deferreds 全貌" data-book-page-rel-url="zh/p18.html" data-book-page-id="9751">Deferreds 全貌</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p19.html" title="取消之前的意图" data-book-page-rel-url="zh/p19.html" data-book-page-id="9752">取消之前的意图</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p20.html" title="轮子内的轮子: Twisted和Erlang" data-book-page-rel-url="zh/p20.html" data-book-page-id="9753">轮子内的轮子: Twisted和Erlang</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p21.html" title="惰性不是迟缓: Twisted和Haskell" data-book-page-rel-url="zh/p21.html" data-book-page-id="9754">惰性不是迟缓: Twisted和Haskell</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p22.html" title="结束" data-book-page-rel-url="zh/p22.html" data-book-page-id="9755">结束</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =97;var bookPageId =9745;var bookPageRelUrl ='zh/p12.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,1030 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Queue——消息队列任务与分发源码剖析-Laravel 源码详解</title>
+<meta content='Laravel Queue——消息队列任务与分发源码剖析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Queue——消息队列任务与分发源码剖析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Eve..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html">
+<span class="">Laravel Que..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="laravel-queue消息队列任务与分发源码剖析">Laravel Queue——消息队列任务与分发源码剖析</h1>
+<h2 id="前言">前言</h2>
+<p>在实际的项目开发中，我们经常会遇到需要轻量级队列的情形，例如发短信、发邮件等，这些任务不足以使用 <code>kafka</code>、<code>RabbitMQ</code> 等重量级的消息队列，但是又的确需要异步、重试、并发控制等功能。通常来说，我们经常会使用 <code>Redis</code>、<code>Beanstalk</code>、<code>Amazon SQS</code> 来实现相关功能，<code>laravel</code> 为此对不同的后台队列服务提供统一的 <code>API</code>，本文将会介绍应用最为广泛的 <code>redis</code> 队列。</p>
+<p>本文参考文档资料：</p>
+<p><a href="https://laravel-china.org/articles/3729/use-laravel-queue-to-understand-the-knowledge">使用 Laravel Queue 不得不明白的知识</a></p>
+<p><a href="https://laravel-china.org/articles/4169/analysis-of-laravel-message-queue">Laravel 的消息队列剖析</a></p>
+<h2 id="背景知识">背景知识</h2>
+<p>在讲解 <code>laravel</code> 的队列服务之前，我们要先说说基于 <code>redis</code> 的队列服务。首先，redis设计用来做缓存的，但是由于它自身的某种特性使得它可以用来做消息队列，</p>
+<h3 id="redis-队列的数据结构">redis 队列的数据结构</h3>
+<ul>
+<li>List 链表</li>
+</ul>
+<p><code>redis</code> 做消息队列的特性例如FIFO（先入先出）很容易实现，只需要一个 <code>list</code> 对象从头取数据，从尾部塞数据即可。</p>
+<p>相关的命令：（1）左侧入右侧出：lpush/rpop；（2）右侧入左侧出：rpush/lpop。</p>
+<p>这个简单的消息队列很容易实现。</p>
+<ul>
+<li>Zset 有序集合</li>
+</ul>
+<p>有些任务场景，并不需要任务立刻执行，而是需要延迟执行；有些任务很重要，需要在任务失败的时候重新尝试。这些功能仅仅依靠 <code>list</code> 是无法完成的。这个时候，就需要 <code>redis</code> 的有序集合。</p>
+<p><code>Redis</code> 有序集合和 <code>Redis</code> 集合类似，是不包含相同字符串的合集。它们的差别是，每个有序集合的成员都关联着一个评分 <code>score</code>，这个评分用于把有序集合中的成员按最低分到最高分排列。</p>
+<p>单看有序集合和延迟任务并无关系，但是可以将有序集合的评分 <code>score</code> 设置为延时任务开启的时间，之后轮询这个有序集合，将到期的任务拿出来进行处理，这样就实现了延迟任务的功能。</p>
+<p>对于重要的需要重试的任务，在任务执行之前，会将该任务放入有序集合中，设置任务最长的执行时间。若任务顺利执行完毕，该任务会在有序集合中删除。如果任务没有在规定时间内完成，那么该有序集合的任务将会被重新放入队列中。</p>
+<p>相关命令：</p>
+<p>(1) <code>ZADD</code> 添加一个或多个成员到有序集合，或者如果它已经存在更新其分数。</p>
+<p>(2) <code>ZRANGEBYSCORE</code> 按分数返回一个成员范围的有序集合。</p>
+<p>(3) <code>ZREMRANGEBYRANK</code> 在给定的索引之内删除所有成员的有序集合。</p>
+<h3 id="laravel-队列服务的任务调度">laravel 队列服务的任务调度</h3>
+<p>队列服务的任务调度过程如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/%E6%9C%AA%E5%91%BD%E5%90%8D%E6%96%87%E4%BB%B6.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/%E6%9C%AA%E5%91%BD%E5%90%8D%E6%96%87%E4%BB%B6.png" alt=""></a></p>
+<p><code>laravel</code> 的队列服务由两个进程控制，一个是生产者，一个是消费者。这两个进程操纵了 <code>redis</code> 三个队列，其中一个 <code>List</code>，负责即时任务，两个 <code>Zset</code>，负责延时任务与待处理任务。</p>
+<p>生产者负责向 <code>redis</code> 推送任务，如果是即时任务，默认就会向 <code>queue:default</code> 推送；如果是延时任务，就会向 <code>queue:default:delayed</code> 推送。</p>
+<p>消费者轮询两个队列，不断的从队列中取出任务，先把任务放入 <code>queue:default:reserved</code> 中，再执行相关任务。如果任务执行成功，就会删除 <code>queue:default:reserved</code> 中的任务，否则会被重新放入 <code>queue:default:delayed</code> 队列中。</p>
+<h2 id="laravel-队列服务的总体流程">laravel 队列服务的总体流程</h2>
+<p>任务分发流程：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171208-213853@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171208-213853@2x.png" alt=""></a></p>
+<p>任务处理器运作：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/QQ20171208-213913@2x.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/QQ20171208-213913@2x.png" alt=""></a></p>
+<h2 id="laravel-队列服务的注册与启动">laravel 队列服务的注册与启动</h2>
+<p><code>laravel</code> 队列服务需要注册的服务比较多：</p>
+<pre><code class="language-php">class QueueServiceProvider extends ServiceProvider
+{
+	public function register()
+    {
+        $this-&gt;registerManager();
+
+        $this-&gt;registerConnection();
+
+        $this-&gt;registerWorker();
+
+        $this-&gt;registerListener();
+
+        $this-&gt;registerFailedJobServices();
+    }
+}
+
+</code></pre>
+<h3 id="registermanager-注册门面">registerManager 注册门面</h3>
+<p><code>registerManager</code> 负责注册队列服务的门面类：</p>
+<pre><code class="language-php">protected function registerManager()
+{
+    $this-&gt;app-&gt;singleton('queue', function ($app) {
+        return tap(new QueueManager($app), function ($manager) {
+            $this-&gt;registerConnectors($manager);
+        });
+    });
+}
+
+public function registerConnectors($manager)
+{
+    foreach (['Null', 'Sync', 'Database', 'Redis', 'Beanstalkd', 'Sqs'] as $connector) {
+        $this-&gt;{"register{$connector}Connector"}($manager);
+    }
+}
+
+protected function registerRedisConnector($manager)
+{
+    $manager-&gt;addConnector('redis', function () {
+        return new RedisConnector($this-&gt;app['redis']);
+    });
+}
+</code></pre>
+<p><code>QueueManager</code> 是队列服务的总门面，提供一切与队列相关的操作接口。<code>QueueManager</code> 中有一个成员变量 <code>$connectors</code>，该成员变量中存储着所有 <code>laravel</code> 支持的底层队列服务：'Database', 'Redis', 'Beanstalkd', 'Sqs'。</p>
+<pre><code class="language-php">class QueueManager implements FactoryContract, MonitorContract
+{
+	public function addConnector($driver, Closure $resolver)
+    {
+        $this-&gt;connectors[$driver] = $resolver;
+    }
+}
+
+</code></pre>
+<p>成员变量 <code>$connectors</code> 会被存储各种驱动的 <code>connector</code>，例如 <code>RedisConnector</code>、<code>SqsConnector</code>、<code>DatabaseConnector</code>、<code>BeanstalkdConnector</code>。</p>
+<h3 id="registerconnection-底层队列连接服务">registerConnection 底层队列连接服务</h3>
+<p>接下来，就要连接实现队列的底层服务了，例如 <code>redis</code>：</p>
+<pre><code class="language-php">protected function registerConnection()
+{
+    $this-&gt;app-&gt;singleton('queue.connection', function ($app) {
+        return $app['queue']-&gt;connection();
+    });
+}
+
+public function connection($name = null)
+{
+    $name = $name ?: $this-&gt;getDefaultDriver();
+
+    if (! isset($this-&gt;connections[$name])) {
+        $this-&gt;connections[$name] = $this-&gt;resolve($name);
+
+        $this-&gt;connections[$name]-&gt;setContainer($this-&gt;app);
+    }
+
+    return $this-&gt;connections[$name];
+}
+
+public function getDefaultDriver()
+{
+    return $this-&gt;app['config']['queue.default'];
+}
+</code></pre>
+<p><code>connection</code> 函数首先会获取 <code>连接</code> 名，没有 <code>连接</code> 名就会从 <code>config</code> 中获取默认的连接。</p>
+<pre><code class="language-php">protected function resolve($name)
+{
+    $config = $this-&gt;getConfig($name);
+
+    return $this-&gt;getConnector($config['driver'])
+                    -&gt;connect($config)
+                    -&gt;setConnectionName($name);
+}
+
+</code></pre>
+<p><code>resolve</code> 函数利用相应的底层驱动 <code>connector</code> 进行连接操作，也就是 <code>connect</code> 函数，该函数会返回 <code>RedisQueue</code>：</p>
+<pre><code class="language-php">class RedisConnector implements ConnectorInterface
+{
+	public function connect(array $config)
+    {
+        return new RedisQueue(
+            $this-&gt;redis, $config['queue'],
+            Arr::get($config, 'connection', $this-&gt;connection),
+            Arr::get($config, 'retry_after', 60)
+        );
+    }
+}
+
+</code></pre>
+<h3 id="registerworker-消费者服务注册">registerWorker 消费者服务注册</h3>
+<p>消费者的注册服务会返回 <code>Illuminate\Queue\Worker</code> 类：</p>
+<pre><code class="language-php">protected function registerWorker()
+{
+    $this-&gt;app-&gt;singleton('queue.worker', function () {
+        return new Worker(
+            $this-&gt;app['queue'], $this-&gt;app['events'], $this-&gt;app[ExceptionHandler::class]
+        );
+    });
+}
+
+</code></pre>
+<h2 id="laravel-bus-服务注册与启动">laravel Bus 服务注册与启动</h2>
+<p>定义好自己想要的队列类之后，还需要将队列任务推送给底层驱动后台，例如 <code>redis</code>，一般会使用 <code>dispatch</code> 函数：</p>
+<pre><code class="language-php">Job::dispatch();
+
+</code></pre>
+<p>或者</p>
+<pre><code class="language-php">$job = (new ProcessPodcast($pocast));
+
+dispatch($job);
+
+</code></pre>
+<p><code>dispatch</code> 函数就是 <code>Bus</code> 服务，专门用于分发队列任务。</p>
+<pre><code class="language-php">class BusServiceProvider extends ServiceProvider
+{
+	public function register()
+    {
+        $this-&gt;app-&gt;singleton(Dispatcher::class, function ($app) {
+            return new Dispatcher($app, function ($connection = null) use ($app) {
+                return $app[QueueFactoryContract::class]-&gt;connection($connection);
+            });
+        });
+
+        $this-&gt;app-&gt;alias(
+            Dispatcher::class, DispatcherContract::class
+        );
+
+        $this-&gt;app-&gt;alias(
+            Dispatcher::class, QueueingDispatcherContract::class
+        );
+    }
+}
+</code></pre>
+<h2 id="创建任务">创建任务</h2>
+<h3 id="queue-设置">queue 设置</h3>
+<pre><code class="language-php">'redis' =&gt; [
+        'driver' =&gt; 'redis',
+        'connection' =&gt; 'default',
+        'queue' =&gt; 'default',
+        'retry_after' =&gt; 90,
+    ],
+
+</code></pre>
+<p>一般来说，默认的 <code>redis</code> 配置如上，<code>connection</code> 是 <code>database</code> 中 <code>redis</code> 的连接名称；<code>queue</code> 是 <code>redis</code> 中的队列名称，值得注意的是，如果使用的是 <code>redis</code> 集群的话，这个需要使用 <code>key hash tag</code>，也就是 <code>{default}</code>;当任务运行超过 <code>retry_after</code> 这个时间后，该任务会被重新放入队列当中。</p>
+<h3 id="任务类的创建">任务类的创建</h3>
+<ul>
+<li> <p>任务类的结构很简单，一般来说只会包含一个让队列用来调用此任务的 <code>handle</code> 方法。</p> </li>
+<li> <p>如果想要使得任务被推送到队列中，而不是同步执行，那么需要实现 <code>Illuminate\Contracts\Queue\ShouldQueue</code> 接口。</p> </li>
+<li> <p>如果想要让任务推送到特定的连接中，例如 <code>redis</code> 或者 <code>sqs</code>，那么需要设置 <code>conneciton</code> 变量。</p> </li>
+<li> <p>如果想要让任务推送到特定的队列中去，可以设置 <code>queue</code> 变量。</p> </li>
+<li> <p>如果想要让任务延迟推送，那么需要设置 <code>delay</code> 变量。</p> </li>
+<li> <p>如果想要设置任务至多重试的次数，可以使用 <code>tries</code> 变量；</p> </li>
+<li> <p>如果想要设置任务可以运行的最大秒数，那么可以使用 <code>timeout</code> 参数。</p> </li>
+<li> <p>如果想要手动访问队列，可以使用 <code>trait</code> : <code>Illuminate\Queue\InteractsWithQueue</code>。</p> </li>
+<li> <p>如果队列监听器任务执行次数超过在工作队列中定义的最大尝试次数，监听器的 <code>failed</code> 方法将会被自动调用。 <code>failed</code> 方法接受事件实例和失败的异常作为参数：</p> </li>
+</ul>
+<pre><code class="language-php">class ProcessPodcast implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    protected $podcast;
+    
+    public $connection = 'redis';
+    
+    public $queue = 'test';
+    
+    public $delay = 30;
+    
+    public $tries = 5;
+    
+    public $timeout = 30;
+
+    public function __construct(Podcast $podcast)
+    {
+        $this-&gt;podcast = $podcast;
+    }
+
+    public function handle(AudioProcessor $processor)
+    {
+        // Process uploaded podcast...
+        
+        if (false) {
+            $this-&gt;release(30);
+        }
+    }
+    
+    public function failed(OrderShipped $event, $exception)
+    {
+        //
+    }
+}
+
+</code></pre>
+<h3 id="任务事件">任务事件</h3>
+<pre><code class="language-php">class AppServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        //任务运行前
+        Queue::before(function (JobProcessing $event) {
+            // $event-&gt;connectionName
+            // $event-&gt;job
+            // $event-&gt;job-&gt;payload()
+        });
+
+        //任务运行后
+        Queue::after(function (JobProcessed $event) {
+            // $event-&gt;connectionName
+            // $event-&gt;job
+            // $event-&gt;job-&gt;payload()
+        });
+        
+        //任务循环前
+        Queue::looping(function () {
+    		  while (DB::transactionLevel() &gt; 0) {
+              DB::rollBack();
+            }
+        });
+        
+        //任务失败后
+         Queue::failing(function (JobFailed $event) {
+            // $event-&gt;connectionName
+            // $event-&gt;job
+            // $event-&gt;exception
+        });
+        
+        //异常发生后
+        Queue::exceptionOccurred(function (JobFailed $event) {
+            // $event-&gt;connectionName
+            // $event-&gt;job
+            // $event-&gt;exception
+        });
+    }
+}
+</code></pre>
+<h2 id="任务的分发">任务的分发</h2>
+<h3 id="分发服务">分发服务</h3>
+<ul>
+<li>写好任务类后，就能通过 <code>dispatch</code> 辅助函数来分发它了。唯一需要传递给 <code>dispatch</code> 的参数是这个任务类的实例：</li>
+</ul>
+<pre><code class="language-php">class PodcastController extends Controller
+{
+    public function store(Request $request)
+    {
+        // 创建播客...
+
+        ProcessPodcast::dispatch($podcast);
+    }
+}
+
+</code></pre>
+<ul>
+<li>如果想延迟执行一个队列中的任务，可以用任务实例的 <code>delay</code> 方法。</li>
+</ul>
+<pre><code class="language-php"> ProcessPodcast::dispatch($podcast)
+                -&gt;delay(Carbon::now()-&gt;addMinutes(10));
+</code></pre>
+<ul>
+<li>通过推送任务到不同的队列，可以给队列任务分类，甚至可以控制给不同的队列分配多少任务。要指定队列的话，就调用任务实例的 <code>onQueue</code> 方法：</li>
+</ul>
+<pre><code class="language-php">ProcessPodcast::dispatch($podcast)-&gt;onQueue('processing');
+</code></pre>
+<ul>
+<li>如果使用了多个队列连接，可以将任务推到指定连接。要指定连接的话，可以在分发任务的时候使用 <code>onConnection</code> 方法：</li>
+</ul>
+<pre><code class="language-php">ProcessPodcast::dispatch($podcast)-&gt;onConnection('redis
+');
+
+</code></pre>
+<p>这些链式的函数是在 <code>trait</code>：<code>Illuminate\Foundation\Bus\Dispatchable</code> 的基础上应用的，该 <code>trait</code> 由 <code>dispatch</code> 函数启动：</p>
+<pre><code class="language-php">trait Dispatchable
+{
+    public static function dispatch()
+    {
+        return new PendingDispatch(new static(...func_get_args()));
+    }
+}
+</code></pre>
+<p><code>PendingDispatch</code> 类中定义了链式函数，该函数巧妙在析构函数中，析构函数自动调用全局函数 <code>dispatch</code>：</p>
+<pre><code class="language-php">class PendingDispatch
+{
+	public function __construct($job)
+    {
+        $this-&gt;job = $job;
+    }
+
+
+    public function onConnection($connection)
+    {
+        $this-&gt;job-&gt;onConnection($connection);
+
+        return $this;
+    }
+
+    public function onQueue($queue)
+    {
+        $this-&gt;job-&gt;onQueue($queue);
+
+        return $this;
+    }
+
+    public function delay($delay)
+    {
+        $this-&gt;job-&gt;delay($delay);
+
+        return $this;
+    }
+
+    public function __destruct()
+    {
+        dispatch($this-&gt;job);
+    }
+
+
+}
+</code></pre>
+<p>各个函数里面的 <code>onConnection</code>、<code>delay</code>、<code>onQueue</code> 等函数是任务中的 <code>trait</code>：<code>Illuminate\Bus\Queueable</code></p>
+<pre><code class="language-php">trait Queueable
+{
+	public function onConnection($connection)
+    {
+        $this-&gt;connection = $connection;
+
+        return $this;
+    }
+
+    public function onQueue($queue)
+    {
+        $this-&gt;queue = $queue;
+
+        return $this;
+    }
+
+    public function delay($delay)
+    {
+        $this-&gt;delay = $delay;
+
+        return $this;
+    }
+}
+
+</code></pre>
+<h3 id="dispatch-任务分发源码">dispatch 任务分发源码</h3>
+<p>任务的分发离不开 <code>Bus</code> 服务，可以利用全局函数 <code>dispatch</code>，还可以使用 <code>Dispatchable</code> 这个 <code>trait</code>:</p>
+<pre><code class="language-php">class Dispatcher implements QueueingDispatcher
+{
+	 public function dispatch($command)
+    {
+        if ($this-&gt;queueResolver &amp;&amp; $this-&gt;commandShouldBeQueued($command)) {
+            return $this-&gt;dispatchToQueue($command);
+        } else {
+            return $this-&gt;dispatchNow($command);
+        }
+    }
+
+    protected function commandShouldBeQueued($command)
+    {
+        return $command instanceof ShouldQueue;
+    }
+}
+
+</code></pre>
+<p>我们这里主要看异步的任务：</p>
+<pre><code class="language-php">public function dispatchToQueue($command)
+{
+    $connection = isset($command-&gt;connection) ? $command-&gt;connection : null;
+
+    $queue = call_user_func($this-&gt;queueResolver, $connection);
+
+    if (! $queue instanceof Queue) {
+        throw new RuntimeException('Queue resolver did not return a Queue implementation.');
+    }
+
+    if (method_exists($command, 'queue')) {
+        return $command-&gt;queue($queue, $command);
+    } else {
+        return $this-&gt;pushCommandToQueue($queue, $command);
+    }
+}
+
+</code></pre>
+<p>进行任务分发之前，首先要利用 <code>queueResolver</code> 连接底层驱动。如果任务类中含有 <code>queue</code> 函数，那么就会利用用户自己的 <code>queue</code> 对驱动进行推送任务。否则就会启动默认的程序：</p>
+<pre><code class="language-php">protected function pushCommandToQueue($queue, $command)
+{
+    if (isset($command-&gt;queue, $command-&gt;delay)) {
+        return $queue-&gt;laterOn($command-&gt;queue, $command-&gt;delay, $command);
+    }
+
+    if (isset($command-&gt;queue)) {
+        return $queue-&gt;pushOn($command-&gt;queue, $command);
+    }
+
+    if (isset($command-&gt;delay)) {
+        return $queue-&gt;later($command-&gt;delay, $command);
+    }
+
+    return $queue-&gt;push($command);
+}
+
+</code></pre>
+<p>我们以 <code>redis</code> 为例，<code>queue</code> 这个类就是 <code>Illuminate\Queue\RedisQueue</code>:</p>
+<pre><code class="language-php">class RedisQueue extends Queue implements QueueContract
+{
+	public function push($job, $data = '', $queue = null)
+    {
+        return $this-&gt;pushRaw($this-&gt;createPayload($job, $data), $queue);
+    }
+    
+    public function pushOn($queue, $job, $data = '')
+    {
+        return $this-&gt;push($job, $data, $queue);
+    }
+
+    public function later($delay, $job, $data = '', $queue = null)
+    {
+        return $this-&gt;laterRaw($delay, $this-&gt;createPayload($job, $data), $queue);
+    }
+
+    public function laterOn($queue, $delay, $job, $data = '')
+    {
+        return $this-&gt;later($delay, $job, $data, $queue);
+    }
+}
+
+</code></pre>
+<p>我们先看 <code>push</code>，<code>push</code> 函数调用 <code>pushRaw</code>，在调用之前，要把任务类进行序列化，并且以特定的格式进行 <code>json</code> 序列化：</p>
+<pre><code class="language-php">protected function createPayload($job, $data = '', $queue = null)
+{
+    $payload = json_encode($this-&gt;createPayloadArray($job, $data, $queue));
+
+    if (JSON_ERROR_NONE !== json_last_error()) {
+        throw new InvalidPayloadException;
+    }
+
+    return $payload;
+}
+
+protected function createPayloadArray($job, $data = '', $queue = null)
+{
+    return is_object($job)
+                ? $this-&gt;createObjectPayload($job)
+                : $this-&gt;createStringPayload($job, $data);
+}
+
+protected function createObjectPayload($job)
+{
+    return [
+        'job' =&gt; 'Illuminate\Queue\CallQueuedHandler@call',
+        'maxTries' =&gt; isset($job-&gt;tries) ? $job-&gt;tries : null,
+        'timeout' =&gt; isset($job-&gt;timeout) ? $job-&gt;timeout : null,
+        'data' =&gt; [
+            'commandName' =&gt; get_class($job),
+            'command' =&gt; serialize(clone $job),
+        ],
+    ];
+}
+
+protected function createStringPayload($job, $data)
+{
+    return ['job' =&gt; $job, 'data' =&gt; $data];
+}
+</code></pre>
+<p>格式化数据之后，就会将 <code>json</code> 推送到 <code>redis</code> 队列中，对于非延时的任务，直接调用 <code>rpush</code> 即可：</p>
+<pre><code class="language-php">public function pushRaw($payload, $queue = null, array $options = [])
+{
+    $this-&gt;getConnection()-&gt;rpush($this-&gt;getQueue($queue), $payload);
+
+    return Arr::get(json_decode($payload, true), 'id');
+}
+
+</code></pre>
+<p>对于延时的任务，会调用 <code>laterRaw</code>，调用 <code>redis</code> 的有序集合 <code>zadd</code> 函数:</p>
+<pre><code class="language-php">protected function availableAt($delay = 0)
+{
+    return $delay instanceof DateTimeInterface
+                        ? $delay-&gt;getTimestamp()
+                        : Carbon::now()-&gt;addSeconds($delay)-&gt;getTimestamp();
+}
+    
+protected function laterRaw($delay, $payload, $queue = null)
+{
+    $this-&gt;getConnection()-&gt;zadd(
+        $this-&gt;getQueue($queue).':delayed', $this-&gt;availableAt($delay), $payload
+    );
+
+    return Arr::get(json_decode($payload, true), 'id');
+}
+
+</code></pre>
+<p>这样，相关任务就会被分发到 <code>redis</code> 对应的队列中去。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/171/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/171/index.html">[译] 写给不耐烦程序员的 JavaScript</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">52页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 145个">145</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/46/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/172/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/172/index.html">Seaborn 0.9 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">76页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 32个">32</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/44/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/48/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/48/index.html">机器学习基础笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/25.html">zhjunqin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">43页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/71/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/71/index.html">使用 jMonkeyEngine 进行游戏开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/43.html">jmecn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8个">8</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7778;var bookPageRelUrl ='Laravel%20Queue——消息队列任务与分发源码剖析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

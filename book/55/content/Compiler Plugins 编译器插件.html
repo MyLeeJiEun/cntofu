@@ -1,0 +1,664 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>6.1.编译器插件-Rust 程序设计语言 中文版</title>
+<meta content='6.1.编译器插件,Rust 程序设计语言 中文版' name='keywords'>
+<meta content='6.1.编译器插件,Rust 程序设计语言 中文版' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/55/content/Nightly%20Rust%20Rust%20开发版.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">6.Rust 开发版</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/55/content/Inline%20Assembly%20内联汇编.html">
+<span class="">6.2.内联汇编</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/55/index.html">Rust 程序设计语言 中文版</a>
+<a target="_blank" rel="nofollow" href="https://github.com/hltj/rust-book-chinese" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="编译器插件">编译器插件</h1>
+<blockquote>
+<p><a href="https://github.com/rust-lang/rust/blob/master/src/doc/book/compiler-plugins.html">compiler-plugins.html</a> <br> commit 1430a3500076ad504a0b30be77fd2ad4468ea769</p>
+</blockquote>
+<h2 id="介绍">介绍</h2>
+<p><code>rustc</code>可以加载编译器插件，它是由用户提供的库用来扩充编译器的行为，例如新的语法扩展，lint检查等。</p>
+<p>一个插件是带有设计好的用来在<code>rustc</code>中注册扩展的<em>注册</em>（<em>registrar</em>）函数的一个动态库包装箱。其它包装箱可以使用<code>#![plugin(...)]</code>属性来装载这个扩展。查看<a href="http://doc.rust-lang.org/rustc/plugin/">rustc::plugin</a>文档来获取更多关于定义和装载插件的机制。</p>
+<p>如果属性存在的话，<code>#![plugin(foo(... args ...))]</code>传递的参数并不由<code>rustc</code>自身解释。它们被传递给插件的<code>Registry</code><a href="http://doc.rust-lang.org/rustc/plugin/registry/struct.Registry.html#method.args">args方法</a>。</p>
+<p>在绝大多数情况中，一个插件应该<em>只</em>通过<code>#![plugin]</code>而不通过<code>extern crate</code>来使用。链接一个插件会将<code>libsyntax</code>和<code>librustc</code>加入到你的包装箱的依赖中。基本上你不会希望如此除非你在构建另一个插件。<code>plugin_as_library</code>lint会检查这些原则。</p>
+<p>通常的做法是将插件放到它们自己的包装箱中，与任何那些会被库的调用者使用的<code>macro_rules!</code>宏或 Rust 代码分开。</p>
+<h2 id="语法扩展">语法扩展</h2>
+<p>插件可以有多种方法来扩展 Rust 的语法。一种语法扩展是宏过程。它们与[普通宏](5.35.Macros 宏.html)的调用方法一样，不过扩展是通过执行任意Rust代码在编译时操作<a href="http://doc.rust-lang.org/syntax/ast/">语法树</a>进行的。</p>
+<p>让我们写一个实现了罗马数字的插件<a href="https://github.com/rust-lang/rust/blob/master/src/test/auxiliary/roman_numerals.rs">roman_numerals.rs</a>。</p>
+<pre><code class="language-rust">#![crate_type="dylib"]
+#![feature(plugin_registrar, rustc_private)]
+
+extern crate syntax;
+extern crate rustc;
+extern crate rustc_plugin;
+
+use syntax::codemap::Span;
+use syntax::parse::token;
+use syntax::ast::TokenTree;
+use syntax::ext::base::{ExtCtxt, MacResult, DummyResult, MacEager};
+use syntax::ext::build::AstBuilder;  // trait for expr_usize
+use rustc_plugin::Registry;
+
+fn expand_rn(cx: &amp;mut ExtCtxt, sp: Span, args: &amp;[TokenTree])
+        -&gt; Box&lt;MacResult + 'static&gt; {
+
+    static NUMERALS: &amp;'static [(&amp;'static str, usize)] = &amp;[
+        ("M", 1000), ("CM", 900), ("D", 500), ("CD", 400),
+        ("C",  100), ("XC",  90), ("L",  50), ("XL",  40),
+        ("X",   10), ("IX",   9), ("V",   5), ("IV",   4),
+        ("I",    1)];
+
+    if args.len() != 1 {
+        cx.span_err(
+            sp,
+            &amp;format!("argument should be a single identifier, but got {} arguments", args.len()));
+        return DummyResult::any(sp);
+    }
+
+    let text = match args[0] {
+        TokenTree::Token(_, token::Ident(s, _)) =&gt; s.to_string(),
+        _ =&gt; {
+            cx.span_err(sp, "argument should be a single identifier");
+            return DummyResult::any(sp);
+        }
+    };
+
+    let mut text = &amp;*text;
+    let mut total = 0;
+    while !text.is_empty() {
+        match NUMERALS.iter().find(|&amp;&amp;(rn, _)| text.starts_with(rn)) {
+            Some(&amp;(rn, val)) =&gt; {
+                total += val;
+                text = &amp;text[rn.len()..];
+            }
+            None =&gt; {
+                cx.span_err(sp, "invalid Roman numeral");
+                return DummyResult::any(sp);
+            }
+        }
+    }
+
+    MacEager::expr(cx.expr_usize(sp, total))
+}
+
+#[plugin_registrar]
+pub fn plugin_registrar(reg: &amp;mut Registry) {
+    reg.register_macro("rn", expand_rn);
+}
+</code></pre>
+<p>我们可以像其它宏那样使用<code>rn!()</code>：</p>
+<pre><code class="language-rust">#![feature(plugin)]
+#![plugin(roman_numerals)]
+
+fn main() {
+    assert_eq!(rn!(MMXV), 2015);
+}
+</code></pre>
+<p>与一个简单的<code>fn(&amp;str) -&gt; u32</code>函数相比的优势有：</p>
+<ul>
+<li>（任意复杂程度的）转换都发生在编译时</li>
+<li>输入验证也在编译时进行</li>
+<li>可以扩展并允许在模式中使用，它可以有效的为任何数据类型定义新语法。</li>
+</ul>
+<p>除了宏过程，你可以定义新的类<a href="http://doc.rust-lang.org/reference.html#derive">derive</a>属性和其它类型的扩展。查看<a href="http://doc.rust-lang.org/rustc/plugin/registry/struct.Registry.html#method.register_syntax_extension">Registry::register_syntax_extension</a>和<a href="http://doc.rust-lang.org/syntax/ext/base/enum.SyntaxExtension.html">SyntaxExtension enum</a>。对于更复杂的宏例子，查看<a href="https://github.com/rust-lang/regex/blob/master/regex_macros/src/lib.rs">regex_macros</a>。</p>
+<h2 id="提示与技巧">提示与技巧</h2>
+<p>这里提供一些[宏调试的提示](5.35.Macros 宏.html#debugging-macro-code)。</p>
+<p>你可以使用<a href="http://doc.rust-lang.org/syntax/parse/">syntax::parse</a>来将记号树转换为像表达式这样的更高级的语法元素：</p>
+<pre><code class="language-rust">fn expand_foo(cx: &amp;mut ExtCtxt, sp: Span, args: &amp;[TokenTree])
+        -&gt; Box&lt;MacResult+'static&gt; {
+
+    let mut parser = cx.new_parser_from_tts(args);
+
+    let expr: P&lt;Expr&gt; = parser.parse_expr();
+</code></pre>
+<p>看完<a href="https://github.com/rust-lang/rust/blob/master/src/libsyntax/parse/parser.rs">libsyntax解析器代码</a>会给你一个解析基础设施如何工作的感觉。</p>
+<p>保留你解析所有的<a href="http://doc.rust-lang.org/syntax/codemap/struct.Span.html">Span</a>，以便更好的报告错误。你可以用<a href="http://doc.rust-lang.org/syntax/codemap/struct.Spanned.html">Spanned</a>包围你的自定数据结构。</p>
+<p>调用<a href="http://doc.rust-lang.org/syntax/ext/base/struct.ExtCtxt.html#method.span_fatal">ExtCtxt::span_fatal</a>将会立即终止编译。相反最好调用<a href="http://doc.rust-lang.org/syntax/ext/base/struct.ExtCtxt.html#method.span_err">ExtCtxt::span_err</a>并返回<a href="http://doc.rust-lang.org/syntax/ext/base/struct.DummyResult.html">DummyResult</a>，这样编译器可以继续并找到更多错误。</p>
+<p>为了打印用于调试的语法段，你可以同时使用<a href="http://doc.rust-lang.org/syntax/ext/base/struct.ExtCtxt.html#method.span_note">span_note</a>和<a href="http://doc.rust-lang.org/syntax/print/pprust/#functions">syntax::print::pprust::*_to_string</a>。</p>
+<p>上面的例子使用<a href="http://doc.rust-lang.org/syntax/ext/build/trait.AstBuilder.html#tymethod.expr_usize">AstBuilder::expr_usize</a>产生了一个普通整数。作为一个<code>AstBuilder</code>特性的额外选择，<code>libsyntax</code>提供了一个<a href="http://doc.rust-lang.org/syntax/ext/quote/">准引用宏</a>的集合。它们并没有文档并且非常边缘化。然而，这些将会是实现一个作为一个普通插件库的改进准引用的好的出发点。</p>
+<h2 id="lint插件">Lint插件</h2>
+<p>插件可以扩展<a href="http://doc.rust-lang.org/reference.html#lint-check-attributes">Rust Lint基础设施</a>来添加额外的代码风格，安全检查等。你可以查看<a href="https://github.com/rust-lang/rust/blob/master/src/test/auxiliary/lint_plugin_test.rs">src/test/auxiliary/lint_plugin_test.rs</a>来了解一个完整的例子，我们在这里重现它的核心部分：</p>
+<pre><code class="language-rust">#![feature(plugin_registrar)]
+#![feature(box_syntax, rustc_private)]
+
+extern crate syntax;
+
+// Load rustc as a plugin to get macros
+#[macro_use]
+extern crate rustc;
+extern crate rustc_plugin;
+
+use rustc::lint::{EarlyContext, LintContext, LintPass, EarlyLintPass,
+                  EarlyLintPassObject, LintArray};
+use rustc_plugin::Registry;
+use syntax::ast;
+
+declare_lint!(TEST_LINT, Warn, "Warn about items named 'lintme'");
+
+struct Pass;
+
+impl LintPass for Pass {
+    fn get_lints(&amp;self) -&gt; LintArray {
+        lint_array!(TEST_LINT)
+    }
+}
+
+impl EarlyLintPass for Pass {
+    fn check_item(&amp;mut self, cx: &amp;EarlyContext, it: &amp;ast::Item) {
+        if it.ident.name.as_str() == "lintme" {
+            cx.span_lint(TEST_LINT, it.span, "item is named 'lintme'");
+        }
+    }
+}
+
+#[plugin_registrar]
+pub fn plugin_registrar(reg: &amp;mut Registry) {
+    reg.register_early_lint_pass(box Pass as EarlyLintPassObject);
+}
+</code></pre>
+<p>那么像这样的代码：</p>
+<pre><code class="language-rust">#![plugin(lint_plugin_test)]
+
+fn lintme() { }
+</code></pre>
+<p>将产生一个编译警告：</p>
+<pre><code class="language-text">foo.rs:4:1: 4:16 warning: item is named 'lintme', #[warn(test_lint)] on by default
+foo.rs:4 fn lintme() { }
+         ^~~~~~~~~~~~~~~
+</code></pre>
+<p>Lint插件的组件有：</p>
+<ul>
+<li>一个或多个<code>declare_lint!</code>调用，它定义了<a href="http://doc.rust-lang.org/rustc/lint/struct.Lint.html">Lint</a>结构</li>
+<li>一个用来存放lint检查所需的所有状态（在我们的例子中，没有）</li>
+<li>一个定义了如何检查每个语法元素的<a href="http://doc.rust-lang.org/rustc/lint/trait.LintPass.html">LintPass</a>实现。一个单独的<code>LintPass</code>可能会对多个不同的<code>Lint</code>调用<code>span_lint</code>，不过它们都需要用<code>get_lints</code>方法进行注册。</li>
+</ul>
+<p>Lint过程是语法遍历，不过它们运行在编译的晚期，这时类型信息时可用的。<code>rustc</code>的<a href="https://github.com/rust-lang/rust/blob/master/src/librustc/lint/builtin.rs">内建lint</a>与lint插件使用相同的基础构架，并提供了如何访问类型信息的例子。</p>
+<p>由插件定义的语法通常通过<a href="http://doc.rust-lang.org/reference.html#lint-check-attributes">属性和插件标识</a>控制，例如，<code>[#[allow(test_lint)]]</code>，<code>-A test-lint</code>。这些标识符来自于<code>declare_lint!</code>的第一个参数，经过合适的大小写和标点转换。</p>
+<p>你可以运行<code>rustc -W help foo.rs</code>来见检查lint列表是否为<code>rustc</code>所知，包括由<code>foo.rs</code>加载的插件。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/192/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/rust_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/192/index.html">Rust 程序设计语言（第二版 & 2018 edition）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/108.html">KaiserY</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="rust">rust</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">105页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2020年3月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/59/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/59/index.html">TensorFlow 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/35.html">jikexueyuanwiki</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8767个">8767</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/14/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/14/index.html">Go入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/10.html">Unknwon</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8842个">8842</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/109/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/blockchain_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/109/index.html">区块链(BlockChain)技术开发相关资料</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="blockchain">blockchain</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">6页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/74/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/74/index.html">Python进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/46.html">东滨社</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">73页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2664个">2664</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/55/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="5072">前言</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/CONTRIBUTING.html" title="贡献者" data-book-page-rel-url="CONTRIBUTING.html" data-book-page-id="5073">贡献者</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/README%20介绍.html" title="1.介绍" data-book-page-rel-url="content/README%20介绍.html" data-book-page-id="5074">1.介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Getting%20Started%20准备.html" title="2.准备" data-book-page-rel-url="content/Getting%20Started%20准备.html" data-book-page-id="5075">2.准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Learn%20Rust%20学习%20Rust.html" title="3.学习 Rust" data-book-page-rel-url="content/Learn%20Rust%20学习%20Rust.html" data-book-page-id="5076">3.学习 Rust</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Guessing%20Game%20猜猜看.html" title="3.1.猜猜看" data-book-page-rel-url="content/Guessing%20Game%20猜猜看.html" data-book-page-id="5077">3.1.猜猜看</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Dining%20Philosophers%20哲学家就餐问题.html" title="3.2.哲学家就餐问题" data-book-page-rel-url="content/Dining%20Philosophers%20哲学家就餐问题.html" data-book-page-id="5078">3.2.哲学家就餐问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Rust%20Inside%20Other%20Languages%20其它语言中的%20Rust.html" title="3.3.其它语言中的 Rust" data-book-page-rel-url="content/Rust%20Inside%20Other%20Languages%20其它语言中的%20Rust.html" data-book-page-id="5079">3.3.其它语言中的 Rust</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Syntax%20and%20Semantics%20语法和语义.html" title="4.语法和语义" data-book-page-rel-url="content/Syntax%20and%20Semantics%20语法和语义.html" data-book-page-id="5080">4.语法和语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Variable%20Bindings%20变量绑定.html" title="4.1.变量绑定" data-book-page-rel-url="content/Variable%20Bindings%20变量绑定.html" data-book-page-id="5081">4.1.变量绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Functions%20函数.html" title="4.2.函数" data-book-page-rel-url="content/Functions%20函数.html" data-book-page-id="5082">4.2.函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Primitive%20Types%20原生类型.html" title="4.3.原生类型" data-book-page-rel-url="content/Primitive%20Types%20原生类型.html" data-book-page-id="5083">4.3.原生类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Comments%20注释.html" title="4.4.注释" data-book-page-rel-url="content/Comments%20注释.html" data-book-page-id="5084">4.4.注释</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/If%20If语句.html" title="4.5.If语句" data-book-page-rel-url="content/If%20If语句.html" data-book-page-id="5085">4.5.If语句</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Loops%20循环.html" title="4.6.循环" data-book-page-rel-url="content/Loops%20循环.html" data-book-page-id="5086">4.6.循环</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Ownership%20所有权.html" title="4.7.所有权" data-book-page-rel-url="content/Ownership%20所有权.html" data-book-page-id="5087">4.7.所有权</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/References%20and%20Borrowing%20引用和借用.html" title="4.8.引用和借用" data-book-page-rel-url="content/References%20and%20Borrowing%20引用和借用.html" data-book-page-id="5088">4.8.引用和借用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Lifetimes%20生命周期.html" title="4.9.生命周期" data-book-page-rel-url="content/Lifetimes%20生命周期.html" data-book-page-id="5089">4.9.生命周期</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Mutability%20可变性.html" title="4.10.可变性" data-book-page-rel-url="content/Mutability%20可变性.html" data-book-page-id="5090">4.10.可变性</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Structs%20结构体.html" title="4.11.结构体" data-book-page-rel-url="content/Structs%20结构体.html" data-book-page-id="5091">4.11.结构体</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Enums%20枚举.html" title="4.12.枚举" data-book-page-rel-url="content/Enums%20枚举.html" data-book-page-id="5092">4.12.枚举</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Match%20匹配.html" title="4.13.匹配" data-book-page-rel-url="content/Match%20匹配.html" data-book-page-id="5093">4.13.匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Patterns%20模式.html" title="4.14.模式" data-book-page-rel-url="content/Patterns%20模式.html" data-book-page-id="5094">4.14.模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Method%20Syntax%20方法语法.html" title="4.15.方法语法" data-book-page-rel-url="content/Method%20Syntax%20方法语法.html" data-book-page-id="5095">4.15.方法语法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Vectors.html" title="4.16.Vectors" data-book-page-rel-url="content/Vectors.html" data-book-page-id="5096">4.16.Vectors</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Strings%20字符串.html" title="4.17.字符串" data-book-page-rel-url="content/Strings%20字符串.html" data-book-page-id="5097">4.17.字符串</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Generics%20泛型.html" title="4.18.泛型" data-book-page-rel-url="content/Generics%20泛型.html" data-book-page-id="5098">4.18.泛型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Traits.html" title="4.19.Traits" data-book-page-rel-url="content/Traits.html" data-book-page-id="5099">4.19.Traits</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Drop.html" title="4.20.Drop" data-book-page-rel-url="content/Drop.html" data-book-page-id="5100">4.20.Drop</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/if%20let.html" title="4.21.if let" data-book-page-rel-url="content/if%20let.html" data-book-page-id="5101">4.21.if let</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Trait%20Objects%20trait%20对象.html" title="4.22.trait 对象" data-book-page-rel-url="content/Trait%20Objects%20trait%20对象.html" data-book-page-id="5102">4.22.trait 对象</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Closures%20闭包.html" title="4.23.闭包" data-book-page-rel-url="content/Closures%20闭包.html" data-book-page-id="5103">4.23.闭包</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Universal%20Function%20Call%20Syntax%20通用函数调用语法.html" title="4.24.通用函数调用语法" data-book-page-rel-url="content/Universal%20Function%20Call%20Syntax%20通用函数调用语法.html" data-book-page-id="5104">4.24.通用函数调用语法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Crates%20and%20Modules%20crate%20和模块.html" title="4.25.crate 和模块" data-book-page-rel-url="content/Crates%20and%20Modules%20crate%20和模块.html" data-book-page-id="5105">4.25.crate 和模块</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.26.`const`和`static`" disabled data-book-page-rel-url="content/`const`%20and%20`static`.html" data-book-page-id="5106">4.26.`const`和`static`</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Attributes%20属性.html" title="4.27.属性" data-book-page-rel-url="content/Attributes%20属性.html" data-book-page-id="5107">4.27.属性</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.28.`type`别名" disabled data-book-page-rel-url="content/`type`%20Aliases%20`type`别名.html" data-book-page-id="5108">4.28.`type`别名</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Casting%20Between%20Types%20类型转换.html" title="4.29.类型转换" data-book-page-rel-url="content/Casting%20Between%20Types%20类型转换.html" data-book-page-id="5109">4.29.类型转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Associated%20Types%20关联类型.html" title="4.30.关联类型" data-book-page-rel-url="content/Associated%20Types%20关联类型.html" data-book-page-id="5110">4.30.关联类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Unsized%20Types%20不定长类型.html" title="4.31.不定长类型" data-book-page-rel-url="content/Unsized%20Types%20不定长类型.html" data-book-page-id="5111">4.31.不定长类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Operators%20and%20Overloading%20运算符和重载.html" title="4.32.运算符和重载" data-book-page-rel-url="content/Operators%20and%20Overloading%20运算符和重载.html" data-book-page-id="5112">4.32.运算符和重载</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.33.`Deref`强制多态" disabled data-book-page-rel-url="content/`Deref`%20coercions%20`Deref`强制多态.html" data-book-page-id="5113">4.33.`Deref`强制多态</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Macros%20宏.html" title="4.34.宏" data-book-page-rel-url="content/Macros%20宏.html" data-book-page-id="5114">4.34.宏</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Raw%20Pointers%20裸指针.html" title="4.35.裸指针" data-book-page-rel-url="content/Raw%20Pointers%20裸指针.html" data-book-page-id="5115">4.35.裸指针</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="4.36.不安全代码" disabled data-book-page-rel-url="content/`unsafe`%20不安全代码.html" data-book-page-id="5116">4.36.不安全代码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Effective%20Rust%20高效%20Rust.html" title="5.高效 Rust" data-book-page-rel-url="content/Effective%20Rust%20高效%20Rust.html" data-book-page-id="5117">5.高效 Rust</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/The%20Stack%20and%20the%20Heap%20栈和堆.html" title="5.1.栈和堆" data-book-page-rel-url="content/The%20Stack%20and%20the%20Heap%20栈和堆.html" data-book-page-id="5118">5.1.栈和堆</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Testing%20测试.html" title="5.2.测试" data-book-page-rel-url="content/Testing%20测试.html" data-book-page-id="5119">5.2.测试</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Conditional%20Compilation%20条件编译.html" title="5.3.条件编译" data-book-page-rel-url="content/Conditional%20Compilation%20条件编译.html" data-book-page-id="5120">5.3.条件编译</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Documentation%20文档.html" title="5.4.文档" data-book-page-rel-url="content/Documentation%20文档.html" data-book-page-id="5121">5.4.文档</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Iterators%20迭代器.html" title="5.5.迭代器" data-book-page-rel-url="content/Iterators%20迭代器.html" data-book-page-id="5122">5.5.迭代器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Concurrency%20并发.html" title="5.6.并发" data-book-page-rel-url="content/Concurrency%20并发.html" data-book-page-id="5123">5.6.并发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Error%20Handling%20错误处理.html" title="5.7.错误处理" data-book-page-rel-url="content/Error%20Handling%20错误处理.html" data-book-page-id="5124">5.7.错误处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Choosing%20your%20Guarantees%20选择你的保证.html" title="5.8.选择你的保证" data-book-page-rel-url="content/Choosing%20your%20Guarantees%20选择你的保证.html" data-book-page-id="5125">5.8.选择你的保证</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Foreign%20Function%20Interface%20外部函数接口.html" title="5.9.外部函数接口" data-book-page-rel-url="content/Foreign%20Function%20Interface%20外部函数接口.html" data-book-page-id="5126">5.9.外部函数接口</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Borrow%20and%20AsRef%20Borrow%20和%20AsRef.html" title="5.10.Borrow 和 AsRef" data-book-page-rel-url="content/Borrow%20and%20AsRef%20Borrow%20和%20AsRef.html" data-book-page-id="5127">5.10.Borrow 和 AsRef</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Release%20Channels%20发布途径.html" title="5.11.发布途径" data-book-page-rel-url="content/Release%20Channels%20发布途径.html" data-book-page-id="5128">5.11.发布途径</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Nightly%20Rust%20Rust%20开发版.html" title="6.Rust 开发版" data-book-page-rel-url="content/Nightly%20Rust%20Rust%20开发版.html" data-book-page-id="5130">6.Rust 开发版</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Compiler%20Plugins%20编译器插件.html" title="6.1.编译器插件" data-book-page-rel-url="content/Compiler%20Plugins%20编译器插件.html" data-book-page-id="5131">6.1.编译器插件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Inline%20Assembly%20内联汇编.html" title="6.2.内联汇编" data-book-page-rel-url="content/Inline%20Assembly%20内联汇编.html" data-book-page-id="5132">6.2.内联汇编</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/No%20stdlib%20不使用标准库.html" title="6.3.不使用标准库" data-book-page-rel-url="content/No%20stdlib%20不使用标准库.html" data-book-page-id="5129">6.3.不使用标准库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Intrinsics%20固有功能.html" title="6.4.固有功能" data-book-page-rel-url="content/Intrinsics%20固有功能.html" data-book-page-id="5133">6.4.固有功能</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Lang%20items%20语言项.html" title="6.5.语言项" data-book-page-rel-url="content/Lang%20items%20语言项.html" data-book-page-id="5134">6.5.语言项</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Advanced%20Linking%20链接进阶.html" title="6.6.链接进阶" data-book-page-rel-url="content/Advanced%20Linking%20链接进阶.html" data-book-page-id="5135">6.6.链接进阶</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Benchmark%20tests%20基准测试.html" title="6.7.基准测试" data-book-page-rel-url="content/Benchmark%20tests%20基准测试.html" data-book-page-id="5136">6.7.基准测试</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Box%20Syntax%20and%20Patterns%20装箱语法和模式.html" title="6.8.装箱语法和模式" data-book-page-rel-url="content/Box%20Syntax%20and%20Patterns%20装箱语法和模式.html" data-book-page-id="5137">6.8.装箱语法和模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Slice%20patterns%20切片模式.html" title="6.9.切片模式" data-book-page-rel-url="content/Slice%20patterns%20切片模式.html" data-book-page-id="5138">6.9.切片模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Associated%20Constants%20关联常量.html" title="6.10.关联常量" data-book-page-rel-url="content/Associated%20Constants%20关联常量.html" data-book-page-id="5139">6.10.关联常量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Custom%20Allocators%20自定义内存分配器.html" title="6.11.自定义内存分配器" data-book-page-rel-url="content/Custom%20Allocators%20自定义内存分配器.html" data-book-page-id="5140">6.11.自定义内存分配器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Glossary%20词汇表.html" title="7.词汇表" data-book-page-rel-url="content/Glossary%20词汇表.html" data-book-page-id="5141">7.词汇表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Syntax%20Index%20语法索引.html" title="8.语法索引" data-book-page-rel-url="content/Syntax%20Index%20语法索引.html" data-book-page-id="5142">8.语法索引</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/content/Bibliography%20参考文献.html" title="9.参考文献" data-book-page-rel-url="content/Bibliography%20参考文献.html" data-book-page-id="5143">9.参考文献</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/55/名词中英文对照.html" title="附录：名词中英文对照" data-book-page-rel-url="名词中英文对照.html" data-book-page-id="5144">附录：名词中英文对照</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =55;var bookPageId =5131;var bookPageRelUrl ='content/Compiler%20Plugins%20编译器插件.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,886 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Chromium如何展示web界面-Chromium中文文档</title>
+<meta content='Chromium如何展示web界面,Chromium中文文档' name='keywords'>
+<meta content='Chromium如何展示web界面,Chromium中文文档' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/101/zh/Start_Here_Background_Reading/Multi-process_Architecture.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">多进程架构</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/101/zh/Design_docs_in_source_code.html">
+<span class="">源代码中的设计文档</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/101/index.html">Chromium中文文档</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/Chromium_doc_zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="chromium如何展示网页">Chromium如何展示网页</h1>
+<p>这个文档从底层描述了Chromium是如何展示网页的。请确认你已经读过<a href="Multi-process_Architecture.html">多进程架构</a>这篇文章。你会特别想要了解主要组件的框架。你也可能对<a href="General_Architecture/Multi-process_Resource_Loading.html">多进程资源加载</a>感兴趣，以了解网页是如何从网络中获取到的。</p>
+<h2 id="应用概念层">应用概念层</h2>
+<p><a href="https://img.cntofu.com/book/Chromium_doc_zh/zh/layer.png" data-uk-lightbox><img src="https://img.cntofu.com/book/Chromium_doc_zh/zh/layer.png" alt="img"></a></p>
+<p>(关于这个阐述的原始Google文档是http://goo.gl/MsEJX，开放给所有@chromium.org的人编辑)</p>
+<p>每个矩形代表了一个应用概念层，每一层都不了解上一层，也对上一层没有依赖。</p>
+<ul>
+<li> <p>WebKit：Safari，Chromium和其他所有基于WebKit的浏览器共享的渲染引擎。WebKit Port是WebKit的一个部分，用来集成平台独立的系统服务，比如资源加载与图像。</p> </li>
+<li> <p>Glue：将WebKit的类型转为Chromium的类型。这就是我们的“WebKit嵌入层”。这是两个browser，Chromium，和test_shell（允许我们测试WebKit）的基础。</p> </li>
+<li> <p>Renderer / Render host： 这是Chromium的“多进程嵌入层”。它代理通知，并跨过进程边界执行指令。</p> </li>
+<li> <p>WebContents：一个可重用的组件，是内容模块的主类。它易于嵌入，允许多进程将HTML绘制成View。查看<a href="Other/content_module___content_API.html">content module pages</a>以获得更多信息。</p> </li>
+<li> <p>Browser: 代表浏览器窗口，包含多个WebContent。</p> </li>
+<li> <p>Tab Helpers：可以被绑定到WebContent的独立对象（通过WebContentsUserData混杂）。浏览器将这些独立对象中的一种绑定到WebContent给它持有，一个给网站图标，一个给信息栏，等等。</p> </li>
+</ul>
+<h2 id="webkit">WebKit</h2>
+<p>我们使用WebKit开源工程来布局web页面。这部分代码是从Apple中pull过来的，存储在/third_party/WebKit目录。WebKit主要由“WebCore”组成，这代表了核心的布局功能，还有“JavaScriptCore”，这被用来运行JavaScript。我们只在测试时运行JavaScriptCore，通常情况下，我们用我们自己高性能的V8 Javascript引擎来代替它。事实上，我们不完全是使用Apple称之为“WebKit”的那一层，这是WebCore和OS X应用程序（比如Safari）之间的嵌入API。为了方便，我们通常把从Apple学到的代码称为“WebKit”。</p>
+<h3 id="the-webkit-port">The WebKit port</h3>
+<p>在最低层，我们有我们的WebKit “port”。这是我们对于需要的平台相关功能的实现，它们与平台无关的WebCore代码交互。这些文件在WebKit树上，通常在chromium目录，或以Chromium为后缀的文件中。我们的port中的大部分其实是与操作系统无关的：你可以把它认为WebCore的“Chromium port”。但某些方面，比如字体渲染，必须在不同平台上做不同的处理。</p>
+<ul>
+<li>网络交流由我们的<a href="General_Architecture/Multi-process_Resource_Loading.html">多进程资源加载</a>系统处理，而非直接从渲染线程跳到操作系统处理</li>
+<li>图像使用了为Android开发的Skia图形库。这是一个跨平台的图形库，处理所有的图形和图像，除了文本。Skia在/third_party/skia里。图形操作的主要入口是/webkit/port/platform/graphics/GraphicsContextSkia.cpp。它在这个目录里，使用了许多其他的文件，还有那些/base/gfx里的文件。</li>
+</ul>
+<h3 id="the-webkit-glue胶水">The WebKit glue（胶水）</h3>
+<p>Chromium应用程序使用不同的类型，编码风格，以及代码布局和第三方的WebKit代码。WebKit胶水使用Google编码传统与类型为WebKit提供了一个更加方便的嵌入式API（例如，我们使用std::string而非WebCore::String，使用GURL而非KURL）。胶水代码位于/webkit/glue。glue对象通常有与WebKit对象相似的命名，但在开头有Web前缀。例如， WebCore::Frame变成了WebFrame。</p>
+<p>WebKit胶水层将Chromium代码的其他部分与WebCore数据类型隔离开，以帮助减少WebCore的改变对Chromium代码基础的影响。因此，WebCore数据类型从不直接被Chromium使用。为了Chromium的便利，需要碰一些WebCore对象时，会把API加入WebKit的胶水层。</p>
+<p>test shell应用程序是一个为测试我们的WebKit port和胶水代码的裸web浏览器。它在与WebKit交流时，像Chromium那样使用一样的胶水接口。它为开发者提供了简单的方式去测试新的代码，而不用理会许多复杂的浏览器特性，线程和进程。这个应用程序也被用于运行自动化WebKit测试。然而，test shell的缺点在于，它不像Chromium那样用多进程方式实践WebKit。内容模块嵌入在一个被称为“content shell”的应用程序，它很快就能用于测试工作。</p>
+<h2 id="渲染器进程">渲染器进程</h2>
+<p><a href="https://img.cntofu.com/book/Chromium_doc_zh/zh/Renderingintherenderer-v2.png" data-uk-lightbox><img src="https://img.cntofu.com/book/Chromium_doc_zh/zh/Renderingintherenderer-v2.png" alt="img"></a></p>
+<p>Chromium的浏览器进程使用胶水接口嵌入在我们的WebKit port中，它不包含很多代码：它的工作主要是作为渲染器端到浏览器的<a href="General_Architecture">IPC</a>通道。渲染器中最重要的类是RenderView，位于/content/renderer/render_view_impl.cc。这个对象代表一个web页面。它处理与浏览器之间所有导航相关的命令。它驱动RenderWidget提供绘图和输入事件处理。</p>
+<p>RenderView与浏览器进程通过全局（每个渲染器进程）RenderProcess对象与浏览器进程交流。</p>
+<p>**FAQ:RenderWidget和RenderViewHost之间的区别在哪里？**RenderWidget通过在胶水层实现抽象接口（称为WebWidgetDelegate）映射到一个WebCore::Widget对象。基本一个屏幕上的window接收输入事件和我们画进去的东西。一个RenderView继承自RenderWidget，并且是一个标签页或一个填出窗口的内容。除了绘制与组件输入事件外，它还处理导航指令。只有一种情况下，RenderWidget可以在没有RenderView时存在，就是网页中的下拉选择框（select box）。下拉选择框必须用native window来渲染，这样他们可以在任何其他空间上方出现，并在必要时弹出。这些window需要绘制和接受输入，但他们没有独立的web页面（RenderView）。</p>
+<h3 id="渲染器中的线程">渲染器中的线程</h3>
+<p>每个渲染器有两个线程（查看<a href="Multi-process_Architecture.html">多进程架构</a>页面来查看图表，或者<a href="General_Architecture/Threading.html">threading in Chromium</a>来理解如何用它们编程）。渲染线程是主要的对象，比如RenderView和所有的WebKit代码运行的地方。当它与浏览器交流时，消息一开始发送到主线程，主线程轮流分发消息给浏览器进程。在其他情况里，这允许我们从渲染器同步发送消息到浏览器。当一个来自浏览器的结果是用于后续操作时，这可以用于小量的操作。一个例子是，JavaScript从网页请求cookie。渲染器线程会阻塞，主线程会让所有的接收到的消息排队，直到得到正确的响应。此时任何接收到的消息会突然发送给渲染器线程以执行普通的处理。</p>
+<h2 id="浏览器进程">浏览器进程</h2>
+<p><a href="https://img.cntofu.com/book/Chromium_doc_zh/zh/rendering_browser.png" data-uk-lightbox><img src="https://img.cntofu.com/book/Chromium_doc_zh/zh/rendering_browser.png" alt="img"></a></p>
+<h3 id="底层浏览器进程对象">底层浏览器进程对象</h3>
+<p>所有的与渲染器进程交流的<a href="General_Architecture">IPC</a>是在浏览器的I/O线程完成的。这个线程也处理所有的<a href="Multi-process_Resource_Loading.html">网络交流</a>,使得它不受用户界面的干扰。</p>
+<p>当一个RenderProcessHost对象在主线程完成初始化（当用户界面运行时），它会创造新的渲染器进程和一个通道代理<a href="General_Architecture">IPC</a>对象（有一个命名了的管道通向渲染器），自动转发所有的消息回给UI线程的RenderProcessHost。一个ResourceMessageFilter会安装在这个通道，它会过滤我们指定的消息，以直接在I/O线程处理（比如网络请求）。这个过滤器发生在ResourceMessageFilter::OnMessageReceived里。</p>
+<p>UI线程中的RenderProcessHost负责分发所有view相关消息给合适的RenderViewHost（它自己处理有限数量的与View相关的消息）。这种分发发生在RenderProcessHost::OnMessageReceived。</p>
+<h3 id="上层浏览器进程对象">上层浏览器进程对象</h3>
+<p>View相关消息出现在RenderViewHost::OnMessageReceived。这里处理的大部分消息，剩下的部分转发给RenderWidgetHost基类。这两个对象在渲染器里里映射到RenderView和RenderWidget（查看上面的“渲染器进程”来理解它们的含义）。每个平台有一个view类(RenderWidgetHostView[Aura|Gtk|Mac|Win])以集成到native view系统。</p>
+<p>在RenderView/Widget上面是WebContents对象，大部分的消息事实上结束于这个对象的函数调用。一个WebContent代表网页的内容。它是内容模块的顶层对象，并且负责在一个矩形的view中展示网页。查看<a href="Other/content_module___content_API.html">内容模块页面</a>获取更多信息。</p>
+<p>WebContents对象包含在一个TabContentsWrapper中，它位于chrome/。负责标签页。</p>
+<h2 id="说明样例">说明样例</h2>
+<p>额外的例子（包含了导航和启动相关代码）在<a href="https://www.chromium.org/developers/how-tos/getting-around-the-chrome-source-code">Getting Around the Chromium Source Code</a>里。</p>
+<h3 id="设置光标消息的生命周期">“设置光标”消息的生命周期</h3>
+<p>设置光标是一个渲染器发往浏览器的典型消息的例子。在渲染器端，以下是发生的事情：</p>
+<ul>
+<li> <p>设置光标消息由WebKit内部生成，通常是作为输入事件的响应。设置光标消息开始于 content/renderer/render_widget.cc中的RenderWidget::SetCursor。</p> </li>
+<li> <p>它会调用RenderWidget::Send来分发消息。这个方法也用于RenderView向browser分发消息。它会调用 RenderThread::Send.</p> </li>
+<li> <p>这会调用IPC::SyncChannel，它在内部代理消息到渲染器的主线程，并将其发送给命名的管道以发送给浏览器。</p> </li>
+</ul>
+<p>然后浏览器获得了控制权：</p>
+<ul>
+<li> <p>RenderProcessHost中的IPC::ChannelProxy通过浏览器的I/O线程接收所有的消息。它首先把他们通过ResourceMessageFilter（它在I/O线程上直接分发网络请求与相关的消息）发送出去。由于我们的消息没有被过滤掉，它继续发送到浏览器的UI线程（IPC::ChannelProxy在内部完成这个事情）。</p> <p>content/browser/renderer_host/render_process_host_impl.cc中的RenderProcessHost::OnMessageReceived为所有的View在对应的渲染进程获取消息。它直接处理几种消息，并把剩下的部分转发到合适的与发送消息的源RenderView对应的RenderViewHost。</p> <p>消息到达content/browser/renderer_host/render_view_host_impl.cc中的RenderViewHost::OnMessageReceived。许多消息是在这里处理的，但我们这时的消息不是，因为它是一个从RenderWidget来，由RenderWidgetHost处理的消息。</p> <p>RenderViewHost中所有未处理的消息自动转发给了RenderWidgetHost，包括我们的设置光标消息。</p> <p>这个映射到content/browser/renderer_host/render_view_host_impl.cc的消息最终在RenderWidgetHost::OnMsgSetCursor接收到消息，并调用合适的UI函数来设置鼠标的光标。</p> </li>
+</ul>
+<h3 id="鼠标点击消息的生命周期">“鼠标点击”消息的生命周期</h3>
+<p>发送一个鼠标点击是一个经典的浏览器到渲染器的例子。</p>
+<ul>
+<li> <p>Windows消息在浏览器的UI线程被RenderWidgetHostViewWin::OnMouseEvent接收，然后在同一个类中调用ForwardMouseEventToRenderer。</p> </li>
+<li> <p>转发函数打包输入时间为一个跨平台的WebMouseEvent，最后把它发送到它所关联的RenderWidgetHost.</p> </li>
+<li> <p>RenderWidgetHost::ForwardInputEvent创建一个IPC消息ViewMsg_HandleInputEvent，将这个WebInputEvent对象序列化进去，然后调用RenderWidgetHost::Send。</p> </li>
+<li> <p>这只是转发到自己的RenderProcessHost::Send函数，它会轮流将消息发送给IPC::ChannelProxy。</p> </li>
+<li> <p>在内部，IPC::ChannelProxy会将消息代理到浏览器的I/O线程，将它写入渲染器对应的命名管道。</p> </li>
+</ul>
+<p>注意，许多种消息创建于WebContents，特别是导航类的消息。这些消息遵循一个相似的从WebContents到RenderViewHost的路径。</p>
+<p>然后渲染器得到了控制权：</p>
+<ul>
+<li> <p>渲染器主线程的IPC::Channel读取浏览器发送的消息，然后IPC::ChannelProxy将消息代理到渲染线程。</p> </li>
+<li> <p>RenderView::OnMessageReceived拿到这个消息。许多种消息在这里直接处理。由于点击事件不是，它继续往下走（和其他所有没有被处理的消息一起）到RenderWidget::OnMessageReceived，它会轮流把消息转发给RenderWidget::OnHandleInputEvent。</p> </li>
+<li> <p>输入事件被交给WebWidgetImpl::HandleInputEvent，在这里它被转换成一个WebKit PlatformMouseEvent类，然后交给WebKit内的WebCore::Widget类。</p> </li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/68/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/68/index.html">Python 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10237个">10237</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/23/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/23/index.html">数据结构思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 286个">286</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/147/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/147/index.html">JSON风格指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/79.html">darcyliu</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1139个">1139</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/37/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/37/index.html">安卓逆向系列教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 87个">87</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/3/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/11/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/gradle_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/11/index.html">Gradle实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/7.html">EZLippi</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gradle">gradle</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 299个">299</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/101/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Start_Here_Background_Reading/README.html" title="Start Here: 背景阅读" data-book-page-rel-url="zh/Start_Here_Background_Reading/README.html" data-book-page-id="7247">Start Here: 背景阅读</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Start_Here_Background_Reading/Multi-process_Architecture.html" title="多进程架构" data-book-page-rel-url="zh/Start_Here_Background_Reading/Multi-process_Architecture.html" data-book-page-id="7248">多进程架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Start_Here_Background_Reading/How_Chromium_Displays_Web_Pages.html" title="Chromium如何展示web界面" data-book-page-rel-url="zh/Start_Here_Background_Reading/How_Chromium_Displays_Web_Pages.html" data-book-page-id="7249">Chromium如何展示web界面</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Design_docs_in_source_code.html" title="源代码中的设计文档" data-book-page-rel-url="zh/Design_docs_in_source_code.html" data-book-page-id="7250">源代码中的设计文档</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/README.html" title="整体架构" data-book-page-rel-url="zh/General_Architecture/README.html" data-book-page-id="7251">整体架构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Conventions_and_patterns_for_multi-platform_development.html" title="跨平台开发的约定与模式" data-book-page-rel-url="zh/General_Architecture/Conventions_and_patterns_for_multi-platform_development.html" data-book-page-id="7252">跨平台开发的约定与模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Extension_Security_Architecture.html" title="扩展安全架构" data-book-page-rel-url="zh/General_Architecture/Extension_Security_Architecture.html" data-book-page-id="7253">扩展安全架构</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="硬件视频加速" disabled data-book-page-rel-url="zh/General_Architecture/HW_Video_Acceleration_in_Chrom{eium}{OS}.html" data-book-page-id="7254">硬件视频加速</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Inter-process_Communication.html" title="跨进程通信" data-book-page-rel-url="zh/General_Architecture/Inter-process_Communication.html" data-book-page-id="7255">跨进程通信</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Multi-process_Resource_Loading.html" title="多进程资源加载" data-book-page-rel-url="zh/General_Architecture/Multi-process_Resource_Loading.html" data-book-page-id="7256">多进程资源加载</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Plugin_Architecture.html" title="插件架构" data-book-page-rel-url="zh/General_Architecture/Plugin_Architecture.html" data-book-page-id="7257">插件架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Process_Models.html" title="进程模型" data-book-page-rel-url="zh/General_Architecture/Process_Models.html" data-book-page-id="7258">进程模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Profile_Architecture.html" title="Profile架构" data-book-page-rel-url="zh/General_Architecture/Profile_Architecture.html" data-book-page-id="7259">Profile架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/SafeBrowsing.html" title="安全浏览" data-book-page-rel-url="zh/General_Architecture/SafeBrowsing.html" data-book-page-id="7260">安全浏览</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Sandbox.html" title="沙箱" data-book-page-rel-url="zh/General_Architecture/Sandbox.html" data-book-page-id="7261">沙箱</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Sandbox_FAQ.html" title="沙箱FAQ" data-book-page-rel-url="zh/General_Architecture/Sandbox_FAQ.html" data-book-page-id="7262">沙箱FAQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/OSX_Sandbox_design.html" title="OSX中的沙箱设计" data-book-page-rel-url="zh/General_Architecture/OSX_Sandbox_design.html" data-book-page-id="7263">OSX中的沙箱设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Security_Architecture.html" title="安全架构" data-book-page-rel-url="zh/General_Architecture/Security_Architecture.html" data-book-page-id="7264">安全架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Startup.html" title="启动" data-book-page-rel-url="zh/General_Architecture/Startup.html" data-book-page-id="7265">启动</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/Threading.html" title="线程" data-book-page-rel-url="zh/General_Architecture/Threading.html" data-book-page-id="7266">线程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/General_Architecture/JavaScript_engine.html" title="JavaScript引擎" data-book-page-rel-url="zh/General_Architecture/JavaScript_engine.html" data-book-page-id="7267">JavaScript引擎</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/README.html" title="UI Framework" data-book-page-rel-url="zh/UI_Framework/README.html" data-book-page-id="7268">UI Framework</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/UI_Development_Practices.html" title="UI开发实践" data-book-page-rel-url="zh/UI_Framework/UI_Development_Practices.html" data-book-page-id="7269">UI开发实践</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/Views_framework.html" title="Views framework" data-book-page-rel-url="zh/UI_Framework/Views_framework.html" data-book-page-id="7270">Views framework</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/views_Windowing_system.html" title="views Windowing系统" data-book-page-rel-url="zh/UI_Framework/views_Windowing_system.html" data-book-page-id="7271">views Windowing系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/Aura.html" title="Aura" data-book-page-rel-url="zh/UI_Framework/Aura.html" data-book-page-id="7272">Aura</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/UI_Framework/NativeControls.html" title="Native控制" data-book-page-rel-url="zh/UI_Framework/NativeControls.html" data-book-page-id="7273">Native控制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/README.html" title="Graphics" data-book-page-rel-url="zh/Graphics/README.html" data-book-page-id="7274">Graphics</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Overview.html" title="概述" data-book-page-rel-url="zh/Graphics/Overview.html" data-book-page-id="7275">概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/GPU_Accelerated_Compositing_in_Chrome.html" title="Chrome中使用的GPU加速" data-book-page-rel-url="zh/Graphics/GPU_Accelerated_Compositing_in_Chrome.html" data-book-page-id="7276">Chrome中使用的GPU加速</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/GPU_Feature_Status_Dashboard.html" title="GPU特性状态仪表盘" data-book-page-rel-url="zh/Graphics/GPU_Feature_Status_Dashboard.html" data-book-page-id="7277">GPU特性状态仪表盘</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Rendering_Architecture_Diagrams.html" title="绘制架构图" data-book-page-rel-url="zh/Graphics/Rendering_Architecture_Diagrams.html" data-book-page-id="7278">绘制架构图</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Graphics_and_Skia.html" title="Graphics和Skia" data-book-page-rel-url="zh/Graphics/Graphics_and_Skia.html" data-book-page-id="7279">Graphics和Skia</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/RenderText_and_Chrome_UI_text_drawing.html" title="绘制文本以及Chrome UI 文本绘制" data-book-page-rel-url="zh/Graphics/RenderText_and_Chrome_UI_text_drawing.html" data-book-page-id="7280">绘制文本以及Chrome UI 文本绘制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/GPU_Command_Buffer.html" title="GPU命令缓冲区" data-book-page-rel-url="zh/Graphics/GPU_Command_Buffer.html" data-book-page-id="7281">GPU命令缓冲区</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/GPU_Program_Caching.html" title="GPU程序缓冲区" data-book-page-rel-url="zh/Graphics/GPU_Program_Caching.html" data-book-page-id="7282">GPU程序缓冲区</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Compositing_in_Blink_WebCore.html" title="Blink/WebCore中的组合" data-book-page-rel-url="zh/Graphics/Compositing_in_Blink_WebCore.html" data-book-page-id="7283">Blink/WebCore中的组合</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Compositor_Thread_Architecture.html" title="排版线程架构" data-book-page-rel-url="zh/Graphics/Compositor_Thread_Architecture.html" data-book-page-id="7284">排版线程架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Rendering_Benchmarks.html" title="绘制标准" data-book-page-rel-url="zh/Graphics/Rendering_Benchmarks.html" data-book-page-id="7285">绘制标准</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Impl-side_Painting.html" title="实现层绘制" data-book-page-rel-url="zh/Graphics/Impl-side_Painting.html" data-book-page-id="7286">实现层绘制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/Video_Playback_and_Compositor.html" title="视频回放与排版" data-book-page-rel-url="zh/Graphics/Video_Playback_and_Compositor.html" data-book-page-id="7287">视频回放与排版</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Graphics/ANGLE_architecture_presentation.html" title="ANGLE架构表示" data-book-page-rel-url="zh/Graphics/ANGLE_architecture_presentation.html" data-book-page-id="7288">ANGLE架构表示</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/README.html" title="网络栈" data-book-page-rel-url="zh/Network_stack/README.html" data-book-page-id="7289">网络栈</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Overview.html" title="概述" data-book-page-rel-url="zh/Network_stack/Overview.html" data-book-page-id="7290">概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Network_Stack_Objectives.html" title="网络栈的目标" data-book-page-rel-url="zh/Network_stack/Network_Stack_Objectives.html" data-book-page-id="7291">网络栈的目标</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Crypto.html" title="Crypto" data-book-page-rel-url="zh/Network_stack/Crypto.html" data-book-page-id="7292">Crypto</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Disk_Cache.html" title="磁盘缓存" data-book-page-rel-url="zh/Network_stack/Disk_Cache.html" data-book-page-id="7293">磁盘缓存</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/HTTP_Cache.html" title="HTTP缓存" data-book-page-rel-url="zh/Network_stack/HTTP_Cache.html" data-book-page-id="7294">HTTP缓存</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="进程外代理解决草案[unimplemented]" disabled data-book-page-rel-url="zh/Network_stack/Out_of_Process_Proxy_Resolving_Draft_[unimplemented].html" data-book-page-id="7295">进程外代理解决草案[unimplemented]</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Proxy_Settings_and_Fallback.html" title="代理设置与回退" data-book-page-rel-url="zh/Network_stack/Proxy_Settings_and_Fallback.html" data-book-page-id="7296">代理设置与回退</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Debugging_network_proxy_problems.html" title="调试网络代理问题" data-book-page-rel-url="zh/Network_stack/Debugging_network_proxy_problems.html" data-book-page-id="7297">调试网络代理问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/HTTP_Authentication.html" title="HTTP授权" data-book-page-rel-url="zh/Network_stack/HTTP_Authentication.html" data-book-page-id="7298">HTTP授权</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/View_network_internals_tool.html" title="查看网络内部情况的工具" data-book-page-rel-url="zh/Network_stack/View_network_internals_tool.html" data-book-page-id="7299">查看网络内部情况的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Make_the_web_faster_with_SPDY_pages.html" title="用SPDY页面使得网络更快" data-book-page-rel-url="zh/Network_stack/Make_the_web_faster_with_SPDY_pages.html" data-book-page-id="7300">用SPDY页面使得网络更快</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/_the_web_even_faster_with_QUIC_pages.html" title="用OUIC页面使得网络更快" data-book-page-rel-url="zh/Network_stack/_the_web_even_faster_with_QUIC_pages.html" data-book-page-id="7301">用OUIC页面使得网络更快</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Network_stack/Cookie_storage_and_retrieval.html" title="Cookie存储与获取" data-book-page-rel-url="zh/Network_stack/Cookie_storage_and_retrieval.html" data-book-page-id="7302">Cookie存储与获取</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/README.html" title="安全" data-book-page-rel-url="zh/Security/README.html" data-book-page-id="7303">安全</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/Security_Overview.html" title="概述" data-book-page-rel-url="zh/Security/Security_Overview.html" data-book-page-id="7304">概述</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/Protecting_Cached_User_Data.html" title="保护缓存用户数据" data-book-page-rel-url="zh/Security/Protecting_Cached_User_Data.html" data-book-page-id="7305">保护缓存用户数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/System_Hardening.html" title="系统强化" data-book-page-rel-url="zh/Security/System_Hardening.html" data-book-page-id="7306">系统强化</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/Chaps_Technical_Design.html" title="Chaps技术设计" data-book-page-rel-url="zh/Security/Chaps_Technical_Design.html" data-book-page-id="7307">Chaps技术设计</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/TPM_Usage.html" title="TPM使用" data-book-page-rel-url="zh/Security/TPM_Usage.html" data-book-page-id="7308">TPM使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/Per-page_Suborigins.html" title="每个页面的子源" data-book-page-rel-url="zh/Security/Per-page_Suborigins.html" data-book-page-id="7309">每个页面的子源</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Security/Encrypted_Partition_Recovery.html" title="加密分割恢复" data-book-page-rel-url="zh/Security/Encrypted_Partition_Recovery.html" data-book-page-id="7310">加密分割恢复</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Input/README.html" title="Input" data-book-page-rel-url="zh/Input/README.html" data-book-page-id="7311">Input</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Input/chromium_input.html" title="chromium input" data-book-page-rel-url="zh/Input/chromium_input.html" data-book-page-id="7312">chromium input</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Rendering/README.html" title="绘制" data-book-page-rel-url="zh/Rendering/README.html" data-book-page-id="7313">绘制</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Rendering/Multi-column_layout.html" title="多列布局" data-book-page-rel-url="zh/Rendering/Multi-column_layout.html" data-book-page-id="7314">多列布局</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Rendering/Style_Invalidation_in_Blink.html" title="刷新时重置Style" data-book-page-rel-url="zh/Rendering/Style_Invalidation_in_Blink.html" data-book-page-id="7315">刷新时重置Style</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Rendering/Blink_Coordinate_Spaces.html" title="刷新与空间的协调" data-book-page-rel-url="zh/Rendering/Blink_Coordinate_Spaces.html" data-book-page-id="7316">刷新与空间的协调</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Building/README.html" title="构建" data-book-page-rel-url="zh/Building/README.html" data-book-page-id="7317">构建</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Building/IDL_build.html" title="IDL构建" data-book-page-rel-url="zh/Building/IDL_build.html" data-book-page-id="7318">IDL构建</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Building/IDL_compiler.html" title="IDL编译器" data-book-page-rel-url="zh/Building/IDL_compiler.html" data-book-page-id="7319">IDL编译器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Building/GYP_the_build_script_generation_tool..html" title="GYP" data-book-page-rel-url="zh/Building/GYP_the_build_script_generation_tool..html" data-book-page-id="7320">GYP</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Testing/README.html" title="测试" data-book-page-rel-url="zh/Testing/README.html" data-book-page-id="7321">测试</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Testing/Layout_test_results_dashboard.html" title="Layout测试结果面板" data-book-page-rel-url="zh/Testing/Layout_test_results_dashboard.html" data-book-page-id="7322">Layout测试结果面板</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Testing/Generic_theme_for_Test_Shell.html" title="Test shell中的真实主题" data-book-page-rel-url="zh/Testing/Generic_theme_for_Test_Shell.html" data-book-page-id="7323">Test shell中的真实主题</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Testing/Moving_LayoutTests_fully_upstream.html" title="完全回退移除layout测试" data-book-page-rel-url="zh/Testing/Moving_LayoutTests_fully_upstream.html" data-book-page-id="7324">完全回退移除layout测试</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/README.html" title="特性相关" data-book-page-rel-url="zh/Feature-Specific/README.html" data-book-page-id="7325">特性相关</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/aboutconflicts.html" title="关于冲突" data-book-page-rel-url="zh/Feature-Specific/aboutconflicts.html" data-book-page-id="7326">关于冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Accessibility.html" title="可用性" data-book-page-rel-url="zh/Feature-Specific/Accessibility.html" data-book-page-id="7327">可用性</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Auto-Throttled_Screen_Capture_and_Mirroring.html" title="自适应屏幕截图与镜像" data-book-page-rel-url="zh/Feature-Specific/Auto-Throttled_Screen_Capture_and_Mirroring.html" data-book-page-id="7328">自适应屏幕截图与镜像</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Browser_Window.html" title="浏览器window" data-book-page-rel-url="zh/Feature-Specific/Browser_Window.html" data-book-page-id="7329">浏览器window</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Chromium_Print_Proxy.html" title="Chromium打印代理" data-book-page-rel-url="zh/Feature-Specific/Chromium_Print_Proxy.html" data-book-page-id="7330">Chromium打印代理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Constrained_Popup_Windows.html" title="强制弹出窗口" data-book-page-rel-url="zh/Feature-Specific/Constrained_Popup_Windows.html" data-book-page-id="7331">强制弹出窗口</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Desktop_Notifications.html" title="桌面通知" data-book-page-rel-url="zh/Feature-Specific/Desktop_Notifications.html" data-book-page-id="7332">桌面通知</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/DirectWrite_Font_Cache_for_Chrome_on_Windows.html" title="Chrome on Windows的直写式Cache" data-book-page-rel-url="zh/Feature-Specific/DirectWrite_Font_Cache_for_Chrome_on_Windows.html" data-book-page-id="7333">Chrome on Windows的直写式Cache</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/DNS_Prefetching.html" title="DNS预拉取" data-book-page-rel-url="zh/Feature-Specific/DNS_Prefetching.html" data-book-page-id="7334">DNS预拉取</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Embedding_Flash_Fullscreen_in_the_Browser_Window.html" title="在浏览器窗口中,嵌入式Flash的全屏" data-book-page-rel-url="zh/Feature-Specific/Embedding_Flash_Fullscreen_in_the_Browser_Window.html" data-book-page-id="7335">在浏览器窗口中,嵌入式Flash的全屏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Extensions_Design_documents_and_proposed_APIs..html" title="拓展: 设计文档与推荐的api" data-book-page-rel-url="zh/Feature-Specific/Extensions_Design_documents_and_proposed_APIs..html" data-book-page-id="7336">拓展: 设计文档与推荐的api</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Find_Bar.html" title="查找栏" data-book-page-rel-url="zh/Feature-Specific/Find_Bar.html" data-book-page-id="7337">查找栏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Form_Autofill.html" title="表单自动填充" data-book-page-rel-url="zh/Feature-Specific/Form_Autofill.html" data-book-page-id="7338">表单自动填充</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Geolocation.html" title="地理信息" data-book-page-rel-url="zh/Feature-Specific/Geolocation.html" data-book-page-id="7339">地理信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/IDN_in_Google_Chrome.html" title="IDN in Google Chrome" data-book-page-rel-url="zh/Feature-Specific/IDN_in_Google_Chrome.html" data-book-page-id="7340">IDN in Google Chrome</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/IndexedDB__early_draft_.html" title="索引式DB(早期草稿)" data-book-page-rel-url="zh/Feature-Specific/IndexedDB__early_draft_.html" data-book-page-id="7341">索引式DB(早期草稿)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Info_Bars.html" title="信息栏" data-book-page-rel-url="zh/Feature-Specific/Info_Bars.html" data-book-page-id="7342">信息栏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Installer.html" title="安装" data-book-page-rel-url="zh/Feature-Specific/Installer.html" data-book-page-id="7343">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Instant.html" title="即时" data-book-page-rel-url="zh/Feature-Specific/Instant.html" data-book-page-id="7344">即时</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Isolated_Sites.html" title="独立网站" data-book-page-rel-url="zh/Feature-Specific/Isolated_Sites.html" data-book-page-id="7345">独立网站</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Linux_Resources_and_Localized_Strings.html" title="Linux资源与本地化字符串" data-book-page-rel-url="zh/Feature-Specific/Linux_Resources_and_Localized_Strings.html" data-book-page-id="7346">Linux资源与本地化字符串</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Media_Router_&_Web_Presentation_API.html" title="媒体路由 & Web Presentation API" data-book-page-rel-url="zh/Feature-Specific/Media_Router_&_Web_Presentation_API.html" data-book-page-id="7347">媒体路由 & Web Presentation API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Memory_Usage_Backgrounder.html" title="内存使用统计后端" data-book-page-rel-url="zh/Feature-Specific/Memory_Usage_Backgrounder.html" data-book-page-id="7348">内存使用统计后端</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Mouse_Lock.html" title="鼠标锁定" data-book-page-rel-url="zh/Feature-Specific/Mouse_Lock.html" data-book-page-id="7349">鼠标锁定</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Omnibox_Autocomplete/README.html" title="地址栏自动完成" data-book-page-rel-url="zh/Feature-Specific/Omnibox_Autocomplete/README.html" data-book-page-id="7350">地址栏自动完成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Omnibox_Autocomplete/HistoryQuickProvider.html" title="快速提供历史" data-book-page-rel-url="zh/Feature-Specific/Omnibox_Autocomplete/HistoryQuickProvider.html" data-book-page-id="7351">快速提供历史</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Omnibox_IME_Coordination.html" title="搜索栏/IME协作" data-book-page-rel-url="zh/Feature-Specific/Omnibox_IME_Coordination.html" data-book-page-id="7352">搜索栏/IME协作</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Ozone_Porting_Abstraction.html" title="Ozone移植抽象" data-book-page-rel-url="zh/Feature-Specific/Ozone_Porting_Abstraction.html" data-book-page-id="7353">Ozone移植抽象</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Password_Generation.html" title="密码生成" data-book-page-rel-url="zh/Feature-Specific/Password_Generation.html" data-book-page-id="7354">密码生成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Pepper_plugin_implementation.html" title="Pepper插件实现" data-book-page-rel-url="zh/Feature-Specific/Pepper_plugin_implementation.html" data-book-page-id="7355">Pepper插件实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Plugin_Power_Saver.html" title="插件能力保存" data-book-page-rel-url="zh/Feature-Specific/Plugin_Power_Saver.html" data-book-page-id="7356">插件能力保存</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Preferences.html" title="选项" data-book-page-rel-url="zh/Feature-Specific/Preferences.html" data-book-page-id="7357">选项</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Prerender.html" title="预渲染" data-book-page-rel-url="zh/Feature-Specific/Prerender.html" data-book-page-id="7358">预渲染</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Print_Preview.html" title="打印预览" data-book-page-rel-url="zh/Feature-Specific/Print_Preview.html" data-book-page-id="7359">打印预览</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Printing.html" title="打印" data-book-page-rel-url="zh/Feature-Specific/Printing.html" data-book-page-id="7360">打印</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Rect-based_event_targeting_in_views.html" title="view中基于矩形的事件目标" data-book-page-rel-url="zh/Feature-Specific/Rect-based_event_targeting_in_views.html" data-book-page-id="7361">view中基于矩形的事件目标</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Replace_the_modal_cookie_prompt.html" title="替换语义cookie提示" data-book-page-rel-url="zh/Feature-Specific/Replace_the_modal_cookie_prompt.html" data-book-page-id="7362">替换语义cookie提示</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/SafeSearch.html" title="安全搜索" data-book-page-rel-url="zh/Feature-Specific/SafeSearch.html" data-book-page-id="7363">安全搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Sane_Time.html" title="Sane Time" data-book-page-rel-url="zh/Feature-Specific/Sane_Time.html" data-book-page-id="7364">Sane Time</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Secure_Web_Proxy.html" title="安全web代理" data-book-page-rel-url="zh/Feature-Specific/Secure_Web_Proxy.html" data-book-page-id="7365">安全web代理</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Service_Processes.html" title="服务进程" data-book-page-rel-url="zh/Feature-Specific/Service_Processes.html" data-book-page-id="7366">服务进程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Site_Isolation.html" title="站点隔离" data-book-page-rel-url="zh/Feature-Specific/Site_Isolation.html" data-book-page-id="7367">站点隔离</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Software_Updates_Courgette.html" title="软件更新: Courgette" data-book-page-rel-url="zh/Feature-Specific/Software_Updates_Courgette.html" data-book-page-id="7368">软件更新: Courgette</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Sync.html" title="同步" data-book-page-rel-url="zh/Feature-Specific/Sync.html" data-book-page-id="7369">同步</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Tab_Helpers.html" title="Tab助手" data-book-page-rel-url="zh/Feature-Specific/Tab_Helpers.html" data-book-page-id="7370">Tab助手</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Tab_to_search.html" title="Tab搜索" data-book-page-rel-url="zh/Feature-Specific/Tab_to_search.html" data-book-page-id="7371">Tab搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Tabtastic2_Requirements.html" title="Tabtastic2需求" data-book-page-rel-url="zh/Feature-Specific/Tabtastic2_Requirements.html" data-book-page-id="7372">Tabtastic2需求</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Temporary_downloads.html" title="临时下载" data-book-page-rel-url="zh/Feature-Specific/Temporary_downloads.html" data-book-page-id="7373">临时下载</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Time_Sources.html" title="时间资源" data-book-page-rel-url="zh/Feature-Specific/Time_Sources.html" data-book-page-id="7374">时间资源</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/TimeTicks.html" title="时钟" data-book-page-rel-url="zh/Feature-Specific/TimeTicks.html" data-book-page-id="7375">时钟</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/UI_Mirroring_Infrastructure.html" title="UI镜像基础设施" data-book-page-rel-url="zh/Feature-Specific/UI_Mirroring_Infrastructure.html" data-book-page-id="7376">UI镜像基础设施</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/UI_Localization.html" title="UI定位" data-book-page-rel-url="zh/Feature-Specific/UI_Localization.html" data-book-page-id="7377">UI定位</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/User_scripts.html" title="用户脚本" data-book-page-rel-url="zh/Feature-Specific/User_scripts.html" data-book-page-id="7378">用户脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Video.html" title="视频" data-book-page-rel-url="zh/Feature-Specific/Video.html" data-book-page-id="7379">视频</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/WebSocket.html" title="WebSocket" data-book-page-rel-url="zh/Feature-Specific/WebSocket.html" data-book-page-id="7380">WebSocket</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/Web_MIDI.html" title="Web MIDI" data-book-page-rel-url="zh/Feature-Specific/Web_MIDI.html" data-book-page-id="7381">Web MIDI</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Feature-Specific/WebNavigation_API_internals.html" title="Web导航 API内部实现" data-book-page-rel-url="zh/Feature-Specific/WebNavigation_API_internals.html" data-book-page-id="7382">Web导航 API内部实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/README.html" title="OS-相关" data-book-page-rel-url="zh/OS-Specific/README.html" data-book-page-id="7383">OS-相关</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Android/README.html" title="Android" data-book-page-rel-url="zh/OS-Specific/Android/README.html" data-book-page-id="7384">Android</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Android/Java_Resources_on_Android.html" title="Android上的Java资源" data-book-page-rel-url="zh/OS-Specific/Android/Java_Resources_on_Android.html" data-book-page-id="7385">Android上的Java资源</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Android/JNI_Bindings.html" title="JNI绑定" data-book-page-rel-url="zh/OS-Specific/Android/JNI_Bindings.html" data-book-page-id="7386">JNI绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Android/WebView_code_organization.html" title="WebView代码组织" data-book-page-rel-url="zh/OS-Specific/Android/WebView_code_organization.html" data-book-page-id="7387">WebView代码组织</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Chrome_OS/README.html" title="Chrome OS" data-book-page-rel-url="zh/OS-Specific/Chrome_OS/README.html" data-book-page-id="7388">Chrome OS</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/README.html" title="Mac OS X" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/README.html" data-book-page-id="7389">Mac OS X</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/AppleScript_Support.html" title="Apple脚本Support" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/AppleScript_Support.html" data-book-page-id="7390">Apple脚本Support</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/BrowserWindowController_Object_Ownership.html" title="BrowserWindowController对象所有权" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/BrowserWindowController_Object_Ownership.html" data-book-page-id="7391">BrowserWindowController对象所有权</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Confirm_to_Quit.html" title="确认退出" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Confirm_to_Quit.html" data-book-page-id="7392">确认退出</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Mac_App_Mode__Draft_.html" title="Mac App模式(草案)" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Mac_App_Mode__Draft_.html" data-book-page-id="7393">Mac App模式(草案)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Mac_Fullscreen_Mode__Draft_.html" title="Mac全屏模式(草案)" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Mac_Fullscreen_Mode__Draft_.html" data-book-page-id="7394">Mac全屏模式(草案)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Mac_NPAPI_Plugin_Hosting.html" title="Mac NPAPI插件托管" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Mac_NPAPI_Plugin_Hosting.html" data-book-page-id="7395">Mac NPAPI插件托管</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Mac_specific_notes_on_UI_Localization.html" title="Mac上UI定位的相关记录" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Mac_specific_notes_on_UI_Localization.html" data-book-page-id="7396">Mac上UI定位的相关记录</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Menus_Hotkeys_&_Command_Dispatch.html" title="菜单,快捷键和命令调度" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Menus_Hotkeys_&_Command_Dispatch.html" data-book-page-id="7397">菜单,快捷键和命令调度</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Notes_from_meeting_on_IOSurface_usage_and_semantics.html" title="IOSurface使用与语义相关会议的一些记录" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Notes_from_meeting_on_IOSurface_usage_and_semantics.html" data-book-page-id="7398">IOSurface使用与语义相关会议的一些记录</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/OS_X_Interprocess_Communication__Obsolete_.html" title="OS X跨进程通信(已过时)" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/OS_X_Interprocess_Communication__Obsolete_.html" data-book-page-id="7399">OS X跨进程通信(已过时)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Password_Manager_Keychain_Integration.html" title="密码管理/密码链集成" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Password_Manager_Keychain_Integration.html" data-book-page-id="7400">密码管理/密码链集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Sandboxing_Design.html" title="沙箱设计" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Sandboxing_Design.html" data-book-page-id="7401">沙箱设计</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Tab_Strip_Design__Includes_tab_layout_and_tab_dragging_.html" title="Tab切换设计(包括标签布局与标签拖动)" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Tab_Strip_Design__Includes_tab_layout_and_tab_dragging_.html" data-book-page-id="7402">Tab切换设计(包括标签布局与标签拖动)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/OS-Specific/Mac_OS_X/Wrench_Menu_Buttons.html" title="扳手状菜单按钮" data-book-page-rel-url="zh/OS-Specific/Mac_OS_X/Wrench_Menu_Buttons.html" data-book-page-id="7403">扳手状菜单按钮</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/README.html" title="Other" data-book-page-rel-url="zh/Other/README.html" data-book-page-id="7404">Other</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/64-bit_Support.html" title="64位支持" data-book-page-rel-url="zh/Other/64-bit_Support.html" data-book-page-id="7405">64位支持</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/Browser_Components___Layered_Components.html" title="浏览器组件/层级组件" data-book-page-rel-url="zh/Other/Browser_Components___Layered_Components.html" data-book-page-id="7406">浏览器组件/层级组件</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/Closure_Compiling_Chrome_Code.html" title="闭合编译Chrome代码" data-book-page-rel-url="zh/Other/Closure_Compiling_Chrome_Code.html" data-book-page-id="7407">闭合编译Chrome代码</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/content_module___content_API.html" title="内容模块/内容API" data-book-page-rel-url="zh/Other/content_module___content_API.html" data-book-page-id="7408">内容模块/内容API</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/Design_docs_that_still_need_to_be_written__wiki_.html" title="正在编写的设计文档(wiki)" data-book-page-rel-url="zh/Other/Design_docs_that_still_need_to_be_written__wiki_.html" data-book-page-id="7409">正在编写的设计文档(wiki)</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/In_progress_refactoring_of_key_browser-process_architecture_for_porting.html" title="可移植性:进程内重构关键浏览器进程架构" data-book-page-rel-url="zh/Other/In_progress_refactoring_of_key_browser-process_architecture_for_porting.html" data-book-page-id="7410">可移植性:进程内重构关键浏览器进程架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/Network_Experiments.html" title="网络实验" data-book-page-rel-url="zh/Other/Network_Experiments.html" data-book-page-id="7411">网络实验</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/101/zh/Other/Transitioning_InlineBoxes_from_floats_to_LayoutUnits.html" title="将float的inlinebox转为layout单元" data-book-page-rel-url="zh/Other/Transitioning_InlineBoxes_from_floats_to_LayoutUnits.html" data-book-page-id="7412">将float的inlinebox转为layout单元</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =101;var bookPageId =7249;var bookPageRelUrl ='zh/Start_Here_Background_Reading/How_Chromium_Displays_Web_Pages.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

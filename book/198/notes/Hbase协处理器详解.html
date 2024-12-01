@@ -1,0 +1,982 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>HBase 协处理器详解-大数据入门指南</title>
+<meta content='HBase 协处理器详解,大数据入门指南' name='keywords'>
+<meta content='HBase 协处理器详解,大数据入门指南' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/198/notes/Hbase过滤器详解.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">HBase 过滤器详解</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/198/notes/Hbase容灾与备份.html">
+<span class="">HBase 容灾与备份</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/198/index.html">大数据入门指南</a>
+<a target="_blank" rel="nofollow" href="https://github.com/heibaiying/BigData-Notes" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="hbase-协处理器">Hbase 协处理器</h1>
+<nav>
+<a href="#一简述">一、简述</a>
+<br>
+<a href="#二协处理器类型">二、协处理器类型</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#21-Observer协处理器">2.1 Observer协处理器</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#22--Endpoint协处理器">2.2 Endpoint协处理器</a>
+<br>
+<a href="#三协处理的加载方式">三、协处理的加载方式</a>
+<br>
+<a href="#四静态加载与卸载">四、静态加载与卸载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#41-静态加载">4.1 静态加载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#42-静态卸载">4.2 静态卸载</a>
+<br>
+<a href="#五动态加载与卸载">五、动态加载与卸载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#51-HBase-Shell动态加载">5.1 HBase Shell动态加载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#52-HBase-Shell动态卸载">5.2 HBase Shell动态卸载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#53-Java-API-动态加载">5.3 Java API 动态加载</a>
+<br> &nbsp;&nbsp;&nbsp;&nbsp;
+<a href="#54-Java-API-动态卸载">5.4 Java API 动态卸载</a>
+<br>
+<a href="#六协处理器案例">六、协处理器案例</a>
+<br>
+</nav>
+<h2 id="一简述">一、简述</h2>
+<p>在使用 HBase 时，如果你的数据量达到了数十亿行或数百万列，此时能否在查询中返回大量数据将受制于网络的带宽，即便网络状况允许，但是客户端的计算处理也未必能够满足要求。在这种情况下，协处理器（Coprocessors）应运而生。它允许你将业务计算代码放入在 RegionServer 的协处理器中，将处理好的数据再返回给客户端，这可以极大地降低需要传输的数据量，从而获得性能上的提升。同时协处理器也允许用户扩展实现 HBase 目前所不具备的功能，如权限校验、二级索引、完整性约束等。</p>
+<h2 id="二协处理器类型">二、协处理器类型</h2>
+<h3 id="21-observer协处理器">2.1 Observer协处理器</h3>
+<h4 id="1-功能">1. 功能</h4>
+<p>Observer 协处理器类似于关系型数据库中的触发器，当发生某些事件的时候这类协处理器会被 Server 端调用。通常可以用来实现下面功能：</p>
+<ul>
+<li><strong>权限校验</strong>：在执行 <code>Get</code> 或 <code>Put</code> 操作之前，您可以使用 <code>preGet</code> 或 <code>prePut</code> 方法检查权限；</li>
+<li><strong>完整性约束</strong>： HBase 不支持关系型数据库中的外键功能，可以通过触发器在插入或者删除数据的时候，对关联的数据进行检查；</li>
+<li><strong>二级索引</strong>： 可以使用协处理器来维护二级索引。</li>
+</ul>
+<br>
+<h4 id="2-类型">2. 类型</h4>
+<p>当前 Observer 协处理器有以下四种类型：</p>
+<ul>
+<li><strong>RegionObserver</strong> : 允许您观察 Region 上的事件，例如 Get 和 Put 操作。</li>
+<li><strong>RegionServerObserver</strong> : 允许您观察与 RegionServer 操作相关的事件，例如启动，停止或执行合并，提交或回滚。</li>
+<li><strong>MasterObserver</strong> : 允许您观察与 HBase Master 相关的事件，例如表创建，删除或 schema 修改。</li>
+<li><strong>WalObserver</strong> : 允许您观察与预写日志（WAL）相关的事件。</li>
+</ul>
+<br>
+<h4 id="3-接口">3. 接口</h4>
+<p>以上四种类型的 Observer 协处理器均继承自 <code>Coprocessor</code> 接口，这四个接口中分别定义了所有可用的钩子方法，以便在对应方法前后执行特定的操作。通常情况下，我们并不会直接实现上面接口，而是继承其 Base 实现类，Base 实现类只是简单空实现了接口中的方法，这样我们在实现自定义的协处理器时，就不必实现所有方法，只需要重写必要方法即可。</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-coprocessor.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-coprocessor.png"></a>
+</div>
+<p>这里以 <code>RegionObservers</code> 为例，其接口类中定义了所有可用的钩子方法，下面截取了部分方法的定义，多数方法都是成对出现的，有 <code>pre</code> 就有 <code>post</code>：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/RegionObserver.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/RegionObserver.png"></a>
+</div>
+<br>
+<h4 id="4-执行流程">4. 执行流程</h4>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/RegionObservers-works.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/RegionObservers-works.png"></a>
+</div>
+<ul>
+<li>客户端发出 put 请求</li>
+<li>该请求被分派给合适的 RegionServer 和 region</li>
+<li>coprocessorHost 拦截该请求，然后在该表的每个 RegionObserver 上调用 prePut()</li>
+<li>如果没有被 <code>prePut()</code> 拦截，该请求继续送到 region，然后进行处理</li>
+<li>region 产生的结果再次被 CoprocessorHost 拦截，调用 <code>postPut()</code></li>
+<li>假如没有 <code>postPut()</code> 拦截该响应，最终结果被返回给客户端</li>
+</ul>
+<p>如果大家了解 Spring，可以将这种执行方式类比于其 AOP 的执行原理即可，官方文档当中也是这样类比的：</p>
+<blockquote>
+<p>If you are familiar with Aspect Oriented Programming (AOP), you can think of a coprocessor as applying advice by intercepting a request and then running some custom code,before passing the request on to its final destination (or even changing the destination).</p>
+<p>如果您熟悉面向切面编程（AOP），您可以将协处理器视为通过拦截请求然后运行一些自定义代码来使用 Advice，然后将请求传递到其最终目标（或者更改目标）。</p>
+</blockquote>
+<h3 id="22--endpoint协处理器">2.2 Endpoint协处理器</h3>
+<p>Endpoint 协处理器类似于关系型数据库中的存储过程。客户端可以调用 Endpoint 协处理器在服务端对数据进行处理，然后再返回。</p>
+<p>以聚集操作为例，如果没有协处理器，当用户需要找出一张表中的最大数据，即 max 聚合操作，就必须进行全表扫描，然后在客户端上遍历扫描结果，这必然会加重了客户端处理数据的压力。利用 Coprocessor，用户可以将求最大值的代码部署到 HBase Server 端，HBase 将利用底层 cluster 的多个节点并发执行求最大值的操作。即在每个 Region 范围内执行求最大值的代码，将每个 Region 的最大值在 Region Server 端计算出来，仅仅将该 max 值返回给客户端。之后客户端只需要将每个 Region 的最大值进行比较而找到其中最大的值即可。</p>
+<h2 id="三协处理的加载方式">三、协处理的加载方式</h2>
+<p>要使用我们自己开发的协处理器，必须通过静态（使用 HBase 配置）或动态（使用 HBase Shell 或 Java API）加载它。</p>
+<ul>
+<li>静态加载的协处理器称之为 <strong>System Coprocessor</strong>（系统级协处理器）,作用范围是整个 HBase 上的所有表，需要重启 HBase 服务；</li>
+<li>动态加载的协处理器称之为 <strong>Table Coprocessor</strong>（表处理器），作用于指定的表，不需要重启 HBase 服务。</li>
+</ul>
+<p>其加载和卸载方式分别介绍如下。</p>
+<h2 id="四静态加载与卸载">四、静态加载与卸载</h2>
+<h3 id="41-静态加载">4.1 静态加载</h3>
+<p>静态加载分以下三步：</p>
+<ol>
+<li>在 <code>hbase-site.xml</code> 定义需要加载的协处理器。</li>
+</ol>
+<pre><code class="language-xml">&lt;property&gt;
+    &lt;name&gt;hbase.coprocessor.region.classes&lt;/name&gt;
+    &lt;value&gt;org.myname.hbase.coprocessor.endpoint.SumEndPoint&lt;/value&gt;
+&lt;/property&gt;
+</code></pre>
+<p><code>&lt;name&gt;</code> 标签的值必须是下面其中之一：</p>
+<ul>
+<li>RegionObservers 和 Endpoints 协处理器：<code>hbase.coprocessor.region.classes</code></li>
+<li>WALObservers 协处理器： <code>hbase.coprocessor.wal.classes</code></li>
+<li>MasterObservers 协处理器：<code>hbase.coprocessor.master.classes</code></li>
+</ul>
+<p><code>&lt;value&gt;</code> 必须是协处理器实现类的全限定类名。如果为加载指定了多个类，则类名必须以逗号分隔。</p>
+<ol start="2">
+<li> <p>将 jar(包含代码和所有依赖项) 放入 HBase 安装目录中的 <code>lib</code> 目录下；</p> </li>
+<li> <p>重启 HBase。</p> </li>
+</ol>
+<br>
+<h3 id="42-静态卸载">4.2 静态卸载</h3>
+<ol>
+<li> <p>从 hbase-site.xml 中删除配置的协处理器的&lt;property&gt;元素及其子元素；</p> </li>
+<li> <p>从类路径或 HBase 的 lib 目录中删除协处理器的 JAR 文件（可选）；</p> </li>
+<li> <p>重启 HBase。</p> </li>
+</ol>
+<h2 id="五动态加载与卸载">五、动态加载与卸载</h2>
+<p>使用动态加载协处理器，不需要重新启动 HBase。但动态加载的协处理器是基于每个表加载的，只能用于所指定的表。 此外，在使用动态加载必须使表脱机（disable）以加载协处理器。动态加载通常有两种方式：Shell 和 Java API 。</p>
+<blockquote>
+<p>以下示例基于两个前提：</p>
+<ol>
+<li>coprocessor.jar 包含协处理器实现及其所有依赖项。</li>
+<li>JAR 包存放在 HDFS 上的路径为：hdfs：// &lt;namenode&gt;：&lt;port&gt; / user / &lt;hadoop-user&gt; /coprocessor.jar</li>
+</ol>
+</blockquote>
+<h3 id="51-hbase-shell动态加载">5.1 HBase Shell动态加载</h3>
+<ol>
+<li>使用 HBase Shell 禁用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt; disable 'tableName'
+</code></pre>
+<ol start="2">
+<li>使用如下命令加载协处理器</li>
+</ol>
+<pre><code class="language-shell">hbase &gt; alter 'tableName', METHOD =&gt; 'table_att', 'Coprocessor'=&gt;'hdfs://&lt;namenode&gt;:&lt;port&gt;/
+user/&lt;hadoop-user&gt;/coprocessor.jar| org.myname.hbase.Coprocessor.RegionObserverExample|1073741823|
+arg1=1,arg2=2'
+</code></pre>
+<p><code>Coprocessor</code> 包含由管道（|）字符分隔的四个参数，按顺序解释如下：</p>
+<ul>
+<li> <p><strong>JAR 包路径</strong>：通常为 JAR 包在 HDFS 上的路径。关于路径以下两点需要注意：</p> </li>
+<li> <p>允许使用通配符，例如：<code>hdfs://&lt;namenode&gt;:&lt;port&gt;/user/&lt;hadoop-user&gt;/*.jar</code> 来添加指定的 JAR 包；</p> </li>
+<li> <p>可以使指定目录，例如：<code>hdfs://&lt;namenode&gt;:&lt;port&gt;/user/&lt;hadoop-user&gt;/</code> ，这会添加目录中的所有 JAR 包，但不会搜索子目录中的 JAR 包。</p> </li>
+<li> <p><strong>类名</strong>：协处理器的完整类名。</p> </li>
+<li> <p><strong>优先级</strong>：协处理器的优先级，遵循数字的自然序，即值越小优先级越高。可以为空，在这种情况下，将分配默认优先级值。</p> </li>
+<li> <p><strong>可选参数</strong> ：传递的协处理器的可选参数。</p> </li>
+</ul>
+<ol start="3">
+<li>启用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt; enable 'tableName'
+</code></pre>
+<ol start="4">
+<li>验证协处理器是否已加载</li>
+</ol>
+<pre><code class="language-shell">hbase &gt; describe 'tableName'
+</code></pre>
+<p>协处理器出现在 <code>TABLE_ATTRIBUTES</code> 属性中则代表加载成功。</p>
+<br>
+<h3 id="52-hbase-shell动态卸载">5.2 HBase Shell动态卸载</h3>
+<ol>
+<li>禁用表</li>
+</ol>
+<pre><code class="language-shell">hbase&gt; disable 'tableName'
+</code></pre>
+<ol start="2">
+<li>移除表协处理器</li>
+</ol>
+<pre><code class="language-shell">hbase&gt; alter 'tableName', METHOD =&gt; 'table_att_unset', NAME =&gt; 'coprocessor$1'
+</code></pre>
+<ol start="3">
+<li>启用表</li>
+</ol>
+<pre><code class="language-shell">hbase&gt; enable 'tableName'
+</code></pre>
+<br>
+<h3 id="53-java-api-动态加载">5.3 Java API 动态加载</h3>
+<pre><code class="language-java">TableName tableName = TableName.valueOf("users");
+String path = "hdfs://&lt;namenode&gt;:&lt;port&gt;/user/&lt;hadoop-user&gt;/coprocessor.jar";
+Configuration conf = HBaseConfiguration.create();
+Connection connection = ConnectionFactory.createConnection(conf);
+Admin admin = connection.getAdmin();
+admin.disableTable(tableName);
+HTableDescriptor hTableDescriptor = new HTableDescriptor(tableName);
+HColumnDescriptor columnFamily1 = new HColumnDescriptor("personalDet");
+columnFamily1.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily1);
+HColumnDescriptor columnFamily2 = new HColumnDescriptor("salaryDet");
+columnFamily2.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily2);
+hTableDescriptor.setValue("COPROCESSOR$1", path + "|"
++ RegionObserverExample.class.getCanonicalName() + "|"
++ Coprocessor.PRIORITY_USER);
+admin.modifyTable(tableName, hTableDescriptor);
+admin.enableTable(tableName);
+</code></pre>
+<p>在 HBase 0.96 及其以后版本中，HTableDescriptor 的 addCoprocessor() 方法提供了一种更为简便的加载方法。</p>
+<pre><code class="language-java">TableName tableName = TableName.valueOf("users");
+Path path = new Path("hdfs://&lt;namenode&gt;:&lt;port&gt;/user/&lt;hadoop-user&gt;/coprocessor.jar");
+Configuration conf = HBaseConfiguration.create();
+Connection connection = ConnectionFactory.createConnection(conf);
+Admin admin = connection.getAdmin();
+admin.disableTable(tableName);
+HTableDescriptor hTableDescriptor = new HTableDescriptor(tableName);
+HColumnDescriptor columnFamily1 = new HColumnDescriptor("personalDet");
+columnFamily1.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily1);
+HColumnDescriptor columnFamily2 = new HColumnDescriptor("salaryDet");
+columnFamily2.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily2);
+hTableDescriptor.addCoprocessor(RegionObserverExample.class.getCanonicalName(), path,
+Coprocessor.PRIORITY_USER, null);
+admin.modifyTable(tableName, hTableDescriptor);
+admin.enableTable(tableName);
+</code></pre>
+<h3 id="54-java-api-动态卸载">5.4 Java API 动态卸载</h3>
+<p>卸载其实就是重新定义表但不设置协处理器。这会删除所有表上的协处理器。</p>
+<pre><code class="language-java">TableName tableName = TableName.valueOf("users");
+String path = "hdfs://&lt;namenode&gt;:&lt;port&gt;/user/&lt;hadoop-user&gt;/coprocessor.jar";
+Configuration conf = HBaseConfiguration.create();
+Connection connection = ConnectionFactory.createConnection(conf);
+Admin admin = connection.getAdmin();
+admin.disableTable(tableName);
+HTableDescriptor hTableDescriptor = new HTableDescriptor(tableName);
+HColumnDescriptor columnFamily1 = new HColumnDescriptor("personalDet");
+columnFamily1.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily1);
+HColumnDescriptor columnFamily2 = new HColumnDescriptor("salaryDet");
+columnFamily2.setMaxVersions(3);
+hTableDescriptor.addFamily(columnFamily2);
+admin.modifyTable(tableName, hTableDescriptor);
+admin.enableTable(tableName);
+</code></pre>
+<h2 id="六协处理器案例">六、协处理器案例</h2>
+<p>这里给出一个简单的案例，实现一个类似于 Redis 中 <code>append</code> 命令的协处理器，当我们对已有列执行 put 操作时候，HBase 默认执行的是 update 操作，这里我们修改为执行 append 操作。</p>
+<pre><code class="language-shell"># redis append 命令示例
+redis&gt;  EXISTS mykey
+(integer) 0
+redis&gt;  APPEND mykey "Hello"
+(integer) 5
+redis&gt;  APPEND mykey " World"
+(integer) 11
+redis&gt;  GET mykey 
+"Hello World"
+</code></pre>
+<h3 id="61-创建测试表">6.1 创建测试表</h3>
+<pre><code class="language-shell"># 创建一张杂志表 有文章和图片两个列族
+hbase &gt;  create 'magazine','article','picture'
+</code></pre>
+<h3 id="62-协处理器编程">6.2 协处理器编程</h3>
+<blockquote>
+<p>完整代码可见本仓库：<a href="https://github.com/heibaiying/BigData-Notes/tree/master/code/Hbase\hbase-observer-coprocessor">hbase-observer-coprocessor</a></p>
+</blockquote>
+<p>新建 Maven 工程，导入下面依赖：</p>
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.hbase&lt;/groupId&gt;
+    &lt;artifactId&gt;hbase-common&lt;/artifactId&gt;
+    &lt;version&gt;1.2.0&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.hbase&lt;/groupId&gt;
+    &lt;artifactId&gt;hbase-server&lt;/artifactId&gt;
+    &lt;version&gt;1.2.0&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+<p>继承 <code>BaseRegionObserver</code> 实现我们自定义的 <code>RegionObserver</code>,对相同的 <code>article:content</code> 执行 put 命令时，将新插入的内容添加到原有内容的末尾，代码如下：</p>
+<pre><code class="language-java">public class AppendRegionObserver extends BaseRegionObserver {
+
+    private byte[] columnFamily = Bytes.toBytes("article");
+    private byte[] qualifier = Bytes.toBytes("content");
+
+    @Override
+    public void prePut(ObserverContext&lt;RegionCoprocessorEnvironment&gt; e, Put put, WALEdit edit,
+                       Durability durability) throws IOException {
+        if (put.has(columnFamily, qualifier)) {
+            // 遍历查询结果，获取指定列的原值
+            Result rs = e.getEnvironment().getRegion().get(new Get(put.getRow()));
+            String oldValue = "";
+            for (Cell cell : rs.rawCells())
+                if (CellUtil.matchingColumn(cell, columnFamily, qualifier)) {
+                    oldValue = Bytes.toString(CellUtil.cloneValue(cell));
+                }
+
+            // 获取指定列新插入的值
+            List&lt;Cell&gt; cells = put.get(columnFamily, qualifier);
+            String newValue = "";
+            for (Cell cell : cells) {
+                if (CellUtil.matchingColumn(cell, columnFamily, qualifier)) {
+                    newValue = Bytes.toString(CellUtil.cloneValue(cell));
+                }
+            }
+
+            // Append 操作
+            put.addColumn(columnFamily, qualifier, Bytes.toBytes(oldValue + newValue));
+        }
+    }
+}
+</code></pre>
+<h3 id="63-打包项目">6.3 打包项目</h3>
+<p>使用 maven 命令进行打包，打包后的文件名为 <code>hbase-observer-coprocessor-1.0-SNAPSHOT.jar</code></p>
+<pre><code class="language-shell"># mvn clean package
+</code></pre>
+<h3 id="64-上传jar包到hdfs">6.4 上传JAR包到HDFS</h3>
+<pre><code class="language-shell"># 上传项目到HDFS上的hbase目录
+hadoop fs -put /usr/app/hbase-observer-coprocessor-1.0-SNAPSHOT.jar /hbase
+# 查看上传是否成功
+hadoop fs -ls /hbase
+</code></pre>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-hdfs.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-hdfs.png"></a>
+</div>
+<h3 id="65-加载协处理器">6.5 加载协处理器</h3>
+<ol>
+<li>加载协处理器前需要先禁用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  disable 'magazine'
+</code></pre>
+<ol start="2">
+<li>加载协处理器</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;   alter 'magazine', METHOD =&gt; 'table_att', 'Coprocessor'=&gt;'hdfs://hadoop001:8020/hbase/hbase-observer-coprocessor-1.0-SNAPSHOT.jar|com.heibaiying.AppendRegionObserver|1001|'
+</code></pre>
+<ol start="3">
+<li>启用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  enable 'magazine'
+</code></pre>
+<ol start="4">
+<li>查看协处理器是否加载成功</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  desc 'magazine'
+</code></pre>
+<p>协处理器出现在 <code>TABLE_ATTRIBUTES</code> 属性中则代表加载成功，如下图：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-load.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-load.png"></a>
+</div>
+<h3 id="66-测试加载结果">6.6 测试加载结果</h3>
+<p>插入一组测试数据：</p>
+<pre><code class="language-shell">hbase &gt; put 'magazine', 'rowkey1','article:content','Hello'
+hbase &gt; get 'magazine','rowkey1','article:content'
+hbase &gt; put 'magazine', 'rowkey1','article:content','World'
+hbase &gt; get 'magazine','rowkey1','article:content'
+</code></pre>
+<p>可以看到对于指定列的值已经执行了 append 操作：</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-helloworld.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-helloworld.png"></a>
+</div>
+<p>插入一组对照数据：</p>
+<pre><code class="language-shell">hbase &gt; put 'magazine', 'rowkey1','article:author','zhangsan'
+hbase &gt; get 'magazine','rowkey1','article:author'
+hbase &gt; put 'magazine', 'rowkey1','article:author','lisi'
+hbase &gt; get 'magazine','rowkey1','article:author'
+</code></pre>
+<p>可以看到对于正常的列还是执行 update 操作:</p>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-lisi.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-cp-lisi.png"></a>
+</div>
+<h3 id="67-卸载协处理器">6.7 卸载协处理器</h3>
+<ol>
+<li>卸载协处理器前需要先禁用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  disable 'magazine'
+</code></pre>
+<ol start="2">
+<li>卸载协处理器</li>
+</ol>
+<pre><code class="language-shell">hbase &gt; alter 'magazine', METHOD =&gt; 'table_att_unset', NAME =&gt; 'coprocessor$1'
+</code></pre>
+<ol start="3">
+<li>启用表</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  enable 'magazine'
+</code></pre>
+<ol start="4">
+<li>查看协处理器是否卸载成功</li>
+</ol>
+<pre><code class="language-shell">hbase &gt;  desc 'magazine'
+</code></pre>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-co-unload.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-co-unload.png"></a>
+</div>
+<h3 id="68-测试卸载结果">6.8 测试卸载结果</h3>
+<p>依次执行下面命令可以测试卸载是否成功</p>
+<pre><code class="language-shell">hbase &gt; get 'magazine','rowkey1','article:content'
+hbase &gt; put 'magazine', 'rowkey1','article:content','Hello'
+hbase &gt; get 'magazine','rowkey1','article:content'
+</code></pre>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-unload-test.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/hbase-unload-test.png"></a>
+</div>
+<h2 id="参考资料">参考资料</h2>
+<ol>
+<li><a href="http://hbase.apache.org/book.html#cp">Apache HBase Coprocessors</a></li>
+<li><a href="https://blogs.apache.org/hbase/entry/coprocessor_introduction">Apache HBase Coprocessor Introduction</a></li>
+<li><a href="https://www.itread01.com/content/1546245908.html">HBase 高階知識</a></li>
+</ol>
+<div align="center">
+<a href="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/weixin-desc.png" data-uk-lightbox><img src="https://gitee.com/heibaiying/BigData-Notes/raw/master/pictures/weixin-desc.png"></a>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/108/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/108/index.html">Apache Storm 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/96/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/96/index.html">零基础学Python</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/59.html">qiwsir</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1635个">1635</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/89/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/118/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/influxdb_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/118/index.html">Influxdb 简明手册 教程 入门 文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="influxdb">influxdb</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/198/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/大数据学习路线.html" title="大数据学习路线" data-book-page-rel-url="notes/大数据学习路线.html" data-book-page-id="13354">大数据学习路线</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/大数据技术栈思维导图.html" title="大数据技术栈思维导图" data-book-page-rel-url="notes/大数据技术栈思维导图.html" data-book-page-id="13355">大数据技术栈思维导图</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/大数据常用软件安装指南.html" title="大数据常用软件安装指南" data-book-page-rel-url="notes/大数据常用软件安装指南.html" data-book-page-id="13356">大数据常用软件安装指南</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hadoop-HDFS.html" title="分布式文件存储系统 —— HDFS" data-book-page-rel-url="notes/Hadoop-HDFS.html" data-book-page-id="13357">分布式文件存储系统 —— HDFS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hadoop-MapReduce.html" title="分布式计算框架 —— MapReduce" data-book-page-rel-url="notes/Hadoop-MapReduce.html" data-book-page-id="13358">分布式计算框架 —— MapReduce</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hadoop-YARN.html" title="集群资源管理器 —— YARN" data-book-page-rel-url="notes/Hadoop-YARN.html" data-book-page-id="13359">集群资源管理器 —— YARN</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Hadoop单机环境搭建.html" title="Hadoop 单机伪集群环境搭建" data-book-page-rel-url="notes/installation/Hadoop单机环境搭建.html" data-book-page-id="13360">Hadoop 单机伪集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Hadoop集群环境搭建.html" title="Hadoop 集群环境搭建" data-book-page-rel-url="notes/installation/Hadoop集群环境搭建.html" data-book-page-id="13361">Hadoop 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/HDFS常用Shell命令.html" title="HDFS 常用 Shell 命令" data-book-page-rel-url="notes/HDFS常用Shell命令.html" data-book-page-id="13362">HDFS 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/HDFS-Java-API.html" title="HDFS Java API 的使用" data-book-page-rel-url="notes/HDFS-Java-API.html" data-book-page-id="13363">HDFS Java API 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/基于Zookeeper搭建Hadoop高可用集群.html" title="基于 Zookeeper 搭建 Hadoop 高可用集群" data-book-page-rel-url="notes/installation/基于Zookeeper搭建Hadoop高可用集群.html" data-book-page-id="13364">基于 Zookeeper 搭建 Hadoop 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive简介及核心概念.html" title="Hive 简介及核心概念" data-book-page-rel-url="notes/Hive简介及核心概念.html" data-book-page-id="13365">Hive 简介及核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Linux环境下Hive的安装部署.html" title="Linux 环境下 Hive 的安装部署" data-book-page-rel-url="notes/installation/Linux环境下Hive的安装部署.html" data-book-page-id="13366">Linux 环境下 Hive 的安装部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/HiveCLI和Beeline命令行的基本使用.html" title="Hive CLI 和 Beeline 命令行的基本使用" data-book-page-rel-url="notes/HiveCLI和Beeline命令行的基本使用.html" data-book-page-id="13367">Hive CLI 和 Beeline 命令行的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive常用DDL操作.html" title="Hive 常用 DDL 操作" data-book-page-rel-url="notes/Hive常用DDL操作.html" data-book-page-id="13368">Hive 常用 DDL 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive分区表和分桶表.html" title="Hive 分区表和分桶表" data-book-page-rel-url="notes/Hive分区表和分桶表.html" data-book-page-id="13369">Hive 分区表和分桶表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive视图和索引.html" title="Hive 视图和索引" data-book-page-rel-url="notes/Hive视图和索引.html" data-book-page-id="13370">Hive 视图和索引</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive常用DML操作.html" title="Hive 常用 DML 操作" data-book-page-rel-url="notes/Hive常用DML操作.html" data-book-page-id="13371">Hive 常用 DML 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hive数据查询详解.html" title="Hive 数据查询详解" data-book-page-rel-url="notes/Hive数据查询详解.html" data-book-page-id="13372">Hive 数据查询详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark简介.html" title="Spark 简介" data-book-page-rel-url="notes/Spark简介.html" data-book-page-id="13373">Spark 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Spark开发环境搭建.html" title="Spark 开发环境搭建" data-book-page-rel-url="notes/installation/Spark开发环境搭建.html" data-book-page-id="13374">Spark 开发环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_RDD.html" title="弹性式数据集 RDD" data-book-page-rel-url="notes/Spark_RDD.html" data-book-page-id="13375">弹性式数据集 RDD</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Transformation和Action算子.html" title="RDD 常用算子详解" data-book-page-rel-url="notes/Spark_Transformation和Action算子.html" data-book-page-id="13376">RDD 常用算子详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark部署模式与作业提交.html" title="Spark 运行模式与作业提交" data-book-page-rel-url="notes/Spark部署模式与作业提交.html" data-book-page-id="13377">Spark 运行模式与作业提交</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark累加器与广播变量.html" title="Spark 累加器与广播变量" data-book-page-rel-url="notes/Spark累加器与广播变量.html" data-book-page-id="13378">Spark 累加器与广播变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Spark集群环境搭建.html" title="基于 Zookeeper 搭建 Spark 高可用集群" data-book-page-rel-url="notes/installation/Spark集群环境搭建.html" data-book-page-id="13379">基于 Zookeeper 搭建 Spark 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/SparkSQL_Dataset和DataFrame简介.html" title="DateFrame 和 DataSet" data-book-page-rel-url="notes/SparkSQL_Dataset和DataFrame简介.html" data-book-page-id="13380">DateFrame 和 DataSet</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Structured_API的基本使用.html" title="Structured API 的基本使用" data-book-page-rel-url="notes/Spark_Structured_API的基本使用.html" data-book-page-id="13381">Structured API 的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/SparkSQL外部数据源.html" title="Spark SQL 外部数据源" data-book-page-rel-url="notes/SparkSQL外部数据源.html" data-book-page-id="13382">Spark SQL 外部数据源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/SparkSQL常用聚合函数.html" title="Spark SQL 常用聚合函数" data-book-page-rel-url="notes/SparkSQL常用聚合函数.html" data-book-page-id="13383">Spark SQL 常用聚合函数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/SparkSQL联结操作.html" title="Spark SQL JOIN 操作" data-book-page-rel-url="notes/SparkSQL联结操作.html" data-book-page-id="13384">Spark SQL JOIN 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Streaming与流处理.html" title="Spark Streaming 简介" data-book-page-rel-url="notes/Spark_Streaming与流处理.html" data-book-page-id="13385">Spark Streaming 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Streaming基本操作.html" title="Spark Streaming 基本操作" data-book-page-rel-url="notes/Spark_Streaming基本操作.html" data-book-page-id="13386">Spark Streaming 基本操作</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Streaming整合Flume.html" title="Spark Streaming 整合 Flume" data-book-page-rel-url="notes/Spark_Streaming整合Flume.html" data-book-page-id="13387">Spark Streaming 整合 Flume</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spark_Streaming整合Kafka.html" title="Spark Streaming 整合 Kafka" data-book-page-rel-url="notes/Spark_Streaming整合Kafka.html" data-book-page-id="13388">Spark Streaming 整合 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm和流处理简介.html" title="Storm 和流处理简介" data-book-page-rel-url="notes/Storm和流处理简介.html" data-book-page-id="13389">Storm 和流处理简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm核心概念详解.html" title="Storm 核心概念详解" data-book-page-rel-url="notes/Storm核心概念详解.html" data-book-page-id="13390">Storm 核心概念详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Storm单机环境搭建.html" title="Storm 单机环境搭建" data-book-page-rel-url="notes/installation/Storm单机环境搭建.html" data-book-page-id="13391">Storm 单机环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Storm集群环境搭建.html" title="Storm 集群环境搭建" data-book-page-rel-url="notes/installation/Storm集群环境搭建.html" data-book-page-id="13392">Storm 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm编程模型详解.html" title="Storm 编程模型详解" data-book-page-rel-url="notes/Storm编程模型详解.html" data-book-page-id="13393">Storm 编程模型详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm三种打包方式对比分析.html" title="Storm 项目三种打包方式对比分析" data-book-page-rel-url="notes/Storm三种打包方式对比分析.html" data-book-page-id="13394">Storm 项目三种打包方式对比分析</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm集成Redis详解.html" title="Storm 集成 Redis 详解" data-book-page-rel-url="notes/Storm集成Redis详解.html" data-book-page-id="13395">Storm 集成 Redis 详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm集成HBase和HDFS.html" title="Storm 集成 HDFS/HBase" data-book-page-rel-url="notes/Storm集成HBase和HDFS.html" data-book-page-id="13396">Storm 集成 HDFS/HBase</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Storm集成Kakfa.html" title="Storm 集成 Kafka" data-book-page-rel-url="notes/Storm集成Kakfa.html" data-book-page-id="13397">Storm 集成 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink核心概念综述.html" title="Flink 核心概念综述" data-book-page-rel-url="notes/Flink核心概念综述.html" data-book-page-id="13398">Flink 核心概念综述</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink开发环境搭建.html" title="Flink 开发环境搭建" data-book-page-rel-url="notes/Flink开发环境搭建.html" data-book-page-id="13399">Flink 开发环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink_Data_Source.html" title="Flink Data Source" data-book-page-rel-url="notes/Flink_Data_Source.html" data-book-page-id="13400">Flink Data Source</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink_Data_Transformation.html" title="Flink Data Transformation" data-book-page-rel-url="notes/Flink_Data_Transformation.html" data-book-page-id="13401">Flink Data Transformation</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink_Data_Sink.html" title="Flink Data Sink" data-book-page-rel-url="notes/Flink_Data_Sink.html" data-book-page-id="13402">Flink Data Sink</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink_Windows.html" title="Flink 窗口模型" data-book-page-rel-url="notes/Flink_Windows.html" data-book-page-id="13403">Flink 窗口模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flink状态管理与检查点机制.html" title="Flink 状态管理与检查点机制" data-book-page-rel-url="notes/Flink状态管理与检查点机制.html" data-book-page-id="13404">Flink 状态管理与检查点机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Flink_Standalone_Cluster.html" title="Flink Standalone 集群部署" data-book-page-rel-url="notes/installation/Flink_Standalone_Cluster.html" data-book-page-id="13405">Flink Standalone 集群部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase简介.html" title="Hbase 简介" data-book-page-rel-url="notes/Hbase简介.html" data-book-page-id="13406">Hbase 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase系统架构及数据结构.html" title="HBase 系统架构及数据结构" data-book-page-rel-url="notes/Hbase系统架构及数据结构.html" data-book-page-id="13407">HBase 系统架构及数据结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/HBase单机环境搭建.html" title="HBase 基本环境搭建 (Standalone /pseudo-distributed mode)" data-book-page-rel-url="notes/installation/HBase单机环境搭建.html" data-book-page-id="13408">HBase 基本环境搭建 (Standalone /pseudo-distributed mode)</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/HBase集群环境搭建.html" title="HBase 集群环境搭建" data-book-page-rel-url="notes/installation/HBase集群环境搭建.html" data-book-page-id="13409">HBase 集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase_Shell.html" title="HBase 常用 Shell 命令" data-book-page-rel-url="notes/Hbase_Shell.html" data-book-page-id="13410">HBase 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase_Java_API.html" title="HBase Java API" data-book-page-rel-url="notes/Hbase_Java_API.html" data-book-page-id="13411">HBase Java API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase过滤器详解.html" title="HBase 过滤器详解" data-book-page-rel-url="notes/Hbase过滤器详解.html" data-book-page-id="13412">HBase 过滤器详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase协处理器详解.html" title="HBase 协处理器详解" data-book-page-rel-url="notes/Hbase协处理器详解.html" data-book-page-id="13413">HBase 协处理器详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase容灾与备份.html" title="HBase 容灾与备份" data-book-page-rel-url="notes/Hbase容灾与备份.html" data-book-page-id="13414">HBase 容灾与备份</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Hbase的SQL中间层_Phoenix.html" title="HBase的 SQL 中间层 —— Phoenix" data-book-page-rel-url="notes/Hbase的SQL中间层_Phoenix.html" data-book-page-id="13415">HBase的 SQL 中间层 —— Phoenix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Spring+Mybtais+Phoenix整合.html" title="Spring/Spring Boot 整合 Mybatis + Phoenix" data-book-page-rel-url="notes/Spring+Mybtais+Phoenix整合.html" data-book-page-id="13416">Spring/Spring Boot 整合 Mybatis + Phoenix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Kafka简介.html" title="Kafka 简介" data-book-page-rel-url="notes/Kafka简介.html" data-book-page-id="13417">Kafka 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/基于Zookeeper搭建Kafka高可用集群.html" title="基于 Zookeeper 搭建 Kafka 高可用集群" data-book-page-rel-url="notes/installation/基于Zookeeper搭建Kafka高可用集群.html" data-book-page-id="13418">基于 Zookeeper 搭建 Kafka 高可用集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Kafka生产者详解.html" title="Kafka 生产者详解" data-book-page-rel-url="notes/Kafka生产者详解.html" data-book-page-id="13419">Kafka 生产者详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Kafka消费者详解.html" title="Kafka 消费者详解" data-book-page-rel-url="notes/Kafka消费者详解.html" data-book-page-id="13420">Kafka 消费者详解</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Kafka深入理解分区副本机制.html" title="深入理解 Kafka 副本机制" data-book-page-rel-url="notes/Kafka深入理解分区副本机制.html" data-book-page-id="13421">深入理解 Kafka 副本机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Zookeeper简介及核心概念.html" title="Zookeeper 简介及核心概念" data-book-page-rel-url="notes/Zookeeper简介及核心概念.html" data-book-page-id="13422">Zookeeper 简介及核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Zookeeper单机环境和集群环境搭建.html" title="Zookeeper 单机环境和集群环境搭建" data-book-page-rel-url="notes/installation/Zookeeper单机环境和集群环境搭建.html" data-book-page-id="13423">Zookeeper 单机环境和集群环境搭建</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Zookeeper常用Shell命令.html" title="Zookeeper 常用 Shell 命令" data-book-page-rel-url="notes/Zookeeper常用Shell命令.html" data-book-page-id="13424">Zookeeper 常用 Shell 命令</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Zookeeper_Java客户端Curator.html" title="Zookeeper Java 客户端 —— Apache Curator" data-book-page-rel-url="notes/Zookeeper_Java客户端Curator.html" data-book-page-id="13425">Zookeeper Java 客户端 —— Apache Curator</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Zookeeper_ACL权限控制.html" title="Zookeeper  ACL 权限控制" data-book-page-rel-url="notes/Zookeeper_ACL权限控制.html" data-book-page-id="13426">Zookeeper ACL 权限控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flume简介及基本使用.html" title="Flume 简介及基本使用" data-book-page-rel-url="notes/Flume简介及基本使用.html" data-book-page-id="13427">Flume 简介及基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Linux下Flume的安装.html" title="Linux 环境下 Flume 的安装部署" data-book-page-rel-url="notes/installation/Linux下Flume的安装.html" data-book-page-id="13428">Linux 环境下 Flume 的安装部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Flume整合Kafka.html" title="Flume 整合 Kafka" data-book-page-rel-url="notes/Flume整合Kafka.html" data-book-page-id="13429">Flume 整合 Kafka</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Sqoop简介与安装.html" title="Sqoop 简介与安装" data-book-page-rel-url="notes/Sqoop简介与安装.html" data-book-page-id="13430">Sqoop 简介与安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Sqoop基本使用.html" title="Sqoop 的基本使用" data-book-page-rel-url="notes/Sqoop基本使用.html" data-book-page-id="13431">Sqoop 的基本使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Azkaban简介.html" title="Azkaban 简介" data-book-page-rel-url="notes/Azkaban简介.html" data-book-page-id="13432">Azkaban 简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/installation/Azkaban_3.x_编译及部署.html" title="Azkaban3.x 编译及部署" data-book-page-rel-url="notes/installation/Azkaban_3.x_编译及部署.html" data-book-page-id="13433">Azkaban3.x 编译及部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Azkaban_Flow_1.0_的使用.html" title="Azkaban Flow 1.0 的使用" data-book-page-rel-url="notes/Azkaban_Flow_1.0_的使用.html" data-book-page-id="13434">Azkaban Flow 1.0 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Azkaban_Flow_2.0_的使用.html" title="Azkaban Flow 2.0 的使用" data-book-page-rel-url="notes/Azkaban_Flow_2.0_的使用.html" data-book-page-id="13435">Azkaban Flow 2.0 的使用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala简介及开发环境配置.html" title="Scala 简介及开发环境配置" data-book-page-rel-url="notes/Scala简介及开发环境配置.html" data-book-page-id="13436">Scala 简介及开发环境配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala基本数据类型和运算符.html" title="基本数据类型和运算符" data-book-page-rel-url="notes/Scala基本数据类型和运算符.html" data-book-page-id="13437">基本数据类型和运算符</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala流程控制语句.html" title="流程控制语句" data-book-page-rel-url="notes/Scala流程控制语句.html" data-book-page-id="13438">流程控制语句</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala数组.html" title="数组 —— Array" data-book-page-rel-url="notes/Scala数组.html" data-book-page-id="13439">数组 —— Array</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala集合类型.html" title="集合类型综述" data-book-page-rel-url="notes/Scala集合类型.html" data-book-page-id="13440">集合类型综述</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala列表和集.html" title="常用集合类型之 —— List & Set" data-book-page-rel-url="notes/Scala列表和集.html" data-book-page-id="13441">常用集合类型之 —— List & Set</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala映射和元组.html" title="常用集合类型之 —— Map & Tuple" data-book-page-rel-url="notes/Scala映射和元组.html" data-book-page-id="13442">常用集合类型之 —— Map & Tuple</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala类和对象.html" title="类和对象" data-book-page-rel-url="notes/Scala类和对象.html" data-book-page-id="13443">类和对象</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala继承和特质.html" title="继承和特质" data-book-page-rel-url="notes/Scala继承和特质.html" data-book-page-id="13444">继承和特质</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala函数和闭包.html" title="函数 & 闭包 & 柯里化" data-book-page-rel-url="notes/Scala函数和闭包.html" data-book-page-id="13445">函数 & 闭包 & 柯里化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala模式匹配.html" title="模式匹配" data-book-page-rel-url="notes/Scala模式匹配.html" data-book-page-id="13446">模式匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala类型参数.html" title="类型参数" data-book-page-rel-url="notes/Scala类型参数.html" data-book-page-id="13447">类型参数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/Scala隐式转换和隐式参数.html" title="隐式转换和隐式参数" data-book-page-rel-url="notes/Scala隐式转换和隐式参数.html" data-book-page-id="13448">隐式转换和隐式参数</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/大数据应用常用打包方式.html" title="大数据应用常用打包方式" data-book-page-rel-url="notes/大数据应用常用打包方式.html" data-book-page-id="13449">大数据应用常用打包方式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/198/notes/资料分享与工具推荐.html" title="资料分享与开发工具推荐" data-book-page-rel-url="notes/资料分享与工具推荐.html" data-book-page-id="13450">资料分享与开发工具推荐</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =198;var bookPageId =13413;var bookPageRelUrl ='notes/Hbase协处理器详解.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

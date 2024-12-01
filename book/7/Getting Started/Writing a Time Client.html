@@ -1,0 +1,413 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Writing a Time Client 写个时间客户端-Netty 4.x 用户指南(Netty 4.x User Guide)</title>
+<meta content='Writing a Time Client 写个时间客户端,Netty 4.x 用户指南,Netty 4.x User Guide' name='keywords'>
+<meta content='Writing a Time Client 写个时间客户端,Netty 4.x 用户指南,Netty 4.x User Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Server.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Writing a T..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/7/Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html">
+<span class="">Dealing wit..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/7/index.html">Netty 4.x 用户指南 (Netty 4.x User Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/waylau/netty-4-user-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="writing-a-time-client-写个时间客户端">Writing a Time Client 写个时间客户端</h1>
+<p>不像 DISCARD 和 ECHO 的服务端，对于 TIME 协议我们需要一个客户端,因为人们不能把一个32位的二进制数据翻译成一个日期或者日历。在这一部分，我们将会讨论如何确保服务端是正常工作的，并且学习怎样用Netty 编写一个客户端。</p>
+<p>在 Netty 中,编写服务端和客户端最大的并且唯一不同的使用了不同的<a href="http://netty.io/4.0/api/io/netty/bootstrap/Bootstrap.html">BootStrap</a> 和 <a href="http://netty.io/4.0/api/io/netty/channel/Channel.html">Channel</a>的实现。请看一下下面的代码：</p>
+<pre><code>public class TimeClient {
+
+	public static void main(String[] args) throws Exception {
+		
+		String host = args[0];
+        int port = Integer.parseInt(args[1]);
+        EventLoopGroup workerGroup = new NioEventLoopGroup();
+
+        try {
+            Bootstrap b = new Bootstrap(); // (1)
+            b.group(workerGroup); // (2)
+            b.channel(NioSocketChannel.class); // (3)
+            b.option(ChannelOption.SO_KEEPALIVE, true); // (4)
+            b.handler(new ChannelInitializer&lt;SocketChannel&gt;() {
+                @Override
+                public void initChannel(SocketChannel ch) throws Exception {
+                    ch.pipeline().addLast(new TimeClientHandler());
+                }
+            });
+
+            // 启动客户端
+            ChannelFuture f = b.connect(host, port).sync(); // (5)
+
+            // 等待连接关闭
+            f.channel().closeFuture().sync();
+        } finally {
+            workerGroup.shutdownGracefully();
+        }
+	}
+}
+</code></pre>
+<p>1.BootStrap 和 <a href="http://netty.io/4.0/api/io/netty/bootstrap/ServerBootstrap.html">ServerBootstrap</a> 类似,不过他是对非服务端的 channel 而言，比如客户端或者无连接传输模式的 channel。</p>
+<p>2.如果你只指定了一个 <a href="http://netty.io/4.0/api/io/netty/channel/EventLoopGroup.html">EventLoopGroup</a>，那他就会即作为一个 boss group ，也会作为一个 workder group，尽管客户端不需要使用到 boss worker 。</p>
+<p>3.代替<a href="http://netty.io/4.0/api/io/netty/channel/socket/nio/NioServerSocketChannel.html">NioServerSocketChannel</a>的是<a href="http://netty.io/4.0/api/io/netty/channel/socket/nio/NioSocketChannel.html">NioSocketChannel</a>,这个类在客户端channel 被创建时使用。</p>
+<p>4.不像在使用 ServerBootstrap 时需要用 childOption() 方法，因为客户端的 <a href="http://netty.io/4.0/api/io/netty/channel/socket/SocketChannel.html">SocketChannel</a> 没有父亲。</p>
+<p>5.我们用 connect() 方法代替了 bind() 方法。</p>
+<p>正如你看到的，他和服务端的代码是不一样的。<a href="http://netty.io/4.0/api/io/netty/channel/ChannelHandler.html">ChannelHandler</a> 是如何实现的?他应该从服务端接受一个32位的整数消息，把他翻译成人们能读懂的格式，并打印翻译好的时间，最后关闭连接:</p>
+<pre><code>import java.util.Date;
+
+public class TimeClientHandler extends ChannelInboundHandlerAdapter {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        ByteBuf m = (ByteBuf) msg; // (1)
+        try {
+            long currentTimeMillis = (m.readUnsignedInt() - 2208988800L) * 1000L;
+            System.out.println(new Date(currentTimeMillis));
+            ctx.close();
+        } finally {
+            m.release();
+        }
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        cause.printStackTrace();
+        ctx.close();
+    }
+}
+</code></pre>
+<p>1.在TCP/IP中，Netty 会把读到的数据放到 ByteBuf 的数据结构中。</p>
+<p><a href="http://99btgc01.info/uploads/2015/02/time.jpg" data-uk-lightbox><img src="http://99btgc01.info/uploads/2015/02/time.jpg" alt=""></a></p>
+<p>这样看起来非常简单，并且和服务端的那个例子的代码也相差不多。然而，处理器有时候会因为抛出 IndexOutOfBoundsException 而拒绝工作。在下个部分我们会讨论为什么会发生这种情况。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/8/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/8/index.html">Netty 实战(精髓)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">101页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 817个">817</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/78/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/78/index.html">阿里巴巴Java开发手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/49.html">Alibaba</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9831个">9831</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/137/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/137/index.html">Growth: 全栈增长工程师指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 6161个">6161</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/86/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/scala_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/86/index.html">《快学Scala》读书笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/55.html">xuexingdong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="scala">scala</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">7页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/198/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/storm_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/198/index.html">大数据入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/113.html">heibaiying</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="storm">storm</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">98页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/116/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/116/index.html">Protocol Buffer 3学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/7/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Preface 前言" disabled data-book-page-rel-url="" data-book-page-id="643">Preface 前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Problem.html" title="The Problem 问题" data-book-page-rel-url="Preface/The%20Problem.html" data-book-page-id="644">The Problem 问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Preface/The%20Solution.html" title="The Solution 解决" data-book-page-rel-url="Preface/The%20Solution.html" data-book-page-id="645">The Solution 解决</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Getting%20Started.html" title="Getting Started 开始" data-book-page-rel-url="Getting%20Started/Getting%20Started.html" data-book-page-id="646">Getting Started 开始</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Before%20Getting%20Started.html" title="Before Getting Started 开始之前" data-book-page-rel-url="Getting%20Started/Before%20Getting%20Started.html" data-book-page-id="647">Before Getting Started 开始之前</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Discard%20Server.html" title="Writing a Discard Server 写个抛弃服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Discard%20Server.html" data-book-page-id="648">Writing a Discard Server 写个抛弃服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Looking%20into%20the%20Received%20Data.html" title="Looking into the Received Data 查看收到的数据" data-book-page-rel-url="Getting%20Started/Looking%20into%20the%20Received%20Data.html" data-book-page-id="649">Looking into the Received Data 查看收到的数据</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20an%20Echo%20Server.html" title="Writing an Echo Server 写个应答服务器" data-book-page-rel-url="Getting%20Started/Writing%20an%20Echo%20Server.html" data-book-page-id="650">Writing an Echo Server 写个应答服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Server.html" title="Writing a Time Server 写个时间服务器" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Server.html" data-book-page-id="651">Writing a Time Server 写个时间服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Writing%20a%20Time%20Client.html" title="Writing a Time Client 写个时间客户端" data-book-page-rel-url="Getting%20Started/Writing%20a%20Time%20Client.html" data-book-page-id="652">Writing a Time Client 写个时间客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" title="Dealing with a Stream-based Transport 处理一个基于流的传输" data-book-page-rel-url="Getting%20Started/Dealing%20with%20a%20Stream%20based%20Transport.html" data-book-page-id="653">Dealing with a Stream-based Transport 处理一个基于流的传输</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" title="Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf" data-book-page-rel-url="Getting%20Started/Speaking%20in%20POJO%20instead%20of%20ByteBuf.html" data-book-page-id="654">Speaking in POJO instead of ByteBuf 用POJO代替ByteBuf</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Shutting%20Down%20Your%20Application.html" title="Shutting Down Your Application 关闭你的应用" data-book-page-rel-url="Getting%20Started/Shutting%20Down%20Your%20Application.html" data-book-page-id="655">Shutting Down Your Application 关闭你的应用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Getting%20Started/Summary.html" title="Summary 总结" data-book-page-rel-url="Getting%20Started/Summary.html" data-book-page-id="656">Summary 总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Architectural%20Overview.html" title="Architectural Overview 架构总览" data-book-page-rel-url="Architectural%20Overview/Architectural%20Overview.html" data-book-page-id="657">Architectural Overview 架构总览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" title="Rich Buffer Data Structure 丰富的缓冲实现" data-book-page-rel-url="Architectural%20Overview/Rich%20Buffer%20Data%20Structure.html" data-book-page-id="658">Rich Buffer Data Structure 丰富的缓冲实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" title="Universal Asynchronous I/O API 统一的异步 I/O API" data-book-page-rel-url="Architectural%20Overview/Universal%20Asynchronous%20IO%20API.html" data-book-page-id="659">Universal Asynchronous I/O API 统一的异步 I/O API</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" title="Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型" data-book-page-rel-url="Architectural%20Overview/Event%20Model%20based%20on%20the%20Interceptor%20Chain%20Pattern.html" data-book-page-id="660">Event Model based on the Interceptor Chain Pattern 基于拦截链模式的事件模型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" title="Advanced Components for More Rapid Development 适用快速开发的高级组件" data-book-page-rel-url="Architectural%20Overview/Advanced%20Components%20for%20More%20Rapid%20Development.html" data-book-page-id="661">Advanced Components for More Rapid Development 适用快速开发的高级组件</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/7/Architectural%20Overview/Summary.html" title="Summary 总结" data-book-page-rel-url="Architectural%20Overview/Summary.html" data-book-page-id="662">Summary 总结</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =7;var bookPageId =652;var bookPageRelUrl ='Getting%20Started/Writing%20a%20Time%20Client.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

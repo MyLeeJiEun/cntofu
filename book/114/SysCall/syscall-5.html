@@ -1,0 +1,824 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>open 系统调用的实现-Linux 内核揭密</title>
+<meta content='open 系统调用的实现,Linux 内核揭密' name='keywords'>
+<meta content='open 系统调用的实现,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/SysCall/syscall-4.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Linux 内核如何运..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Timers/README.html">
+<span class="">定时器和时钟管理</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="how-does-the-open-system-call-work">How does the <code>open</code> system call work</h2>
+<h2 id="introduction">Introduction</h2>
+<p>This is the fifth part of the chapter that describes <a href="https://en.wikipedia.org/wiki/System_call">system calls</a> mechanism in the Linux kernel. Previous parts of this chapter described this mechanism in general. Now I will try to describe implementation of different system calls in the Linux kernel. Previous parts from this chapter and parts from other chapters of the books describe mostly deep parts of the Linux kernel that are faintly visible or fully invisible from the userspace. But the Linux kernel code is not only about itself. The vast of the Linux kernel code provides ability to our code. Due to the linux kernel our programs can read/write from/to files and don't know anything about sectors, tracks and other parts of a disk structures, we can send data over network and don't build encapsulated network packets by hand and etc.</p>
+<p>I don't know how about you, but it is interesting to me not only how an operating system works, but how do my software interacts with it. As you may know, our programs interacts with the kernel through the special mechanism which is called <a href="https://en.wikipedia.org/wiki/System_call">system call</a>. So, I've decided to write series of parts which will describe implementation and behavior of system calls which we are using every day like <code>read</code>, <code>write</code>, <code>open</code>, <code>close</code>, <code>dup</code> and etc.</p>
+<p>I have decided to start from the description of the <a href="http://man7.org/linux/man-pages/man2/open.2.html">open</a> system call. if you have written at least one <code>C</code> program, you should know that before we are able to read/write or execute other manipulations with a file we need to open it with the <code>open</code> function:</p>
+<pre><code class="language-C">#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;sys/types.h&gt;
+
+int main(int argc, char *argv) {
+        int fd = open("test", O_RDONLY);
+
+        if fd &lt; 0 {
+                perror("Opening of the file is failed\n");
+        }
+        else {
+                printf("file sucessfully opened\n");
+        }
+
+        close(fd); 
+        return 0;
+}
+</code></pre>
+<p>In this case, the open is the function from standard library, but not system call. The standard library will call related system call for us. The <code>open</code> call will return a <a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a> which is just a unique number within our process which is associated with the opened file. Now as we opened a file and got file descriptor as result of <code>open</code> call, we may start to interact with this file. We can write into, read from it and etc. List of opened file by a process is available via <a href="https://en.wikipedia.org/wiki/Procfs">proc</a> filesystem:</p>
+<pre><code>$ sudo ls /proc/1/fd/
+
+0  10  12  14  16  2   21  23  25  27  29  30  32  34  36  38  4   41  43  45  47  49  50  53  55  58  6   61  63  67  8
+1  11  13  15  19  20  22  24  26  28  3   31  33  35  37  39  40  42  44  46  48  5   51  54  57  59  60  62  65  7   9
+</code></pre>
+<p>I am not going to describe more details about the <code>open</code> routine from the userspace view in this post, but mostly from the kernel side. if you are not very familiar with, you can get more info in the <a href="http://man7.org/linux/man-pages/man2/open.2.html">man page</a>.</p>
+<p>So let's start.</p>
+<h2 id="definition-of-the-open-system-call">Definition of the open system call</h2>
+<p>If you have read the <a href="https://github.com/0xAX/linux-insides/blob/master/SysCall/syscall-4.html">fourth part</a> of the <a href="https://0xax.gitbooks.io/linux-insides/content/index.html">linux-insides</a> book, you should know that system calls are defined with the help of <code>SYSCALL_DEFINE</code> macro. So, the <code>open</code> system call is not exception.</p>
+<p>Definition of the <code>open</code> system call is located in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/open.c">fs/open.c</a> source code file and looks pretty small for the first view:</p>
+<pre><code class="language-C">SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+{
+	if (force_o_largefile())
+		flags |= O_LARGEFILE;
+
+	return do_sys_open(AT_FDCWD, filename, flags, mode);
+}
+</code></pre>
+<p>As you may guess, the <code>do_sys_open</code> function from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/open.c">same</a> source code file does the main job. But before this function will be called, let's consider the <code>if</code> clause from which the implementation of the <code>open</code> system call starts:</p>
+<pre><code class="language-C">if (force_o_largefile())
+	flags |= O_LARGEFILE;
+</code></pre>
+<p>Here we apply the <code>O_LARGEFILE</code> flag to the flags which were passed to <code>open</code> system call in a case when the <code>force_o_largefile()</code> will return true. What is <code>O_LARGEFILE</code>? We may read this in the <a href="http://man7.org/linux/man-pages/man2/open.2.html">man page</a> for the <code>open(2)</code> system call:</p>
+<blockquote>
+<p>O_LARGEFILE</p>
+<p>(LFS) Allow files whose sizes cannot be represented in an off_t (but can be represented in an off64_t) to be opened.</p>
+</blockquote>
+<p>As we may read in the <a href="https://www.gnu.org/software/libc/manual/html_mono/libc.html#File-Position-Primitive">GNU C Library Reference Manual</a>:</p>
+<blockquote>
+<p>off_t</p>
+<p>This is a signed integer type used to represent file sizes. In the GNU C Library, this type is no narrower than int. If the source is compiled with _FILE_OFFSET_BITS == 64 this type is transparently replaced by off64_t.</p>
+</blockquote>
+<p>and</p>
+<blockquote>
+<p>off64_t</p>
+<p>This type is used similar to off_t. The difference is that even on 32 bit machines, where the off_t type would have 32 bits, off64_t has 64 bits and so is able to address files up to 2^63 bytes in length. When compiling with _FILE_OFFSET_BITS == 64 this type is available under the name off_t.</p>
+</blockquote>
+<p>So it is not hard to guess that the <code>off_t</code>, <code>off64_t</code> and <code>O_LARGEFILE</code> are about a file size. In the case of the Linux kernel, the <code>O_LARGEFILE</code> is used to disallow opening large files on 32bit systems if the caller didn't specify <code>O_LARGEFILE</code> flag during opening of a file. On 64bit systems we force on this flag in open system call. And the <code>force_o_largefile</code> macro from the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/include/linux/fcntl.h#L7">include/linux/fcntl.h</a> linux kernel header file confirms this:</p>
+<pre><code class="language-C">#ifndef force_o_largefile
+#define force_o_largefile() (BITS_PER_LONG != 32)
+#endif
+</code></pre>
+<p>This macro may be architecture-specific as for example for <a href="https://en.wikipedia.org/wiki/IA-64">IA-64</a> architecture, but in our case the <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> does not provide definition of the <code>force_o_largefile</code> and it will be used from <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/include/linux/fcntl.h#L7">include/linux/fcntl.h</a>.</p>
+<p>So, as we may see the <code>force_o_largefile</code> is just a macro which expands to the <code>true</code> value in our case of <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture. As we are considering 64-bit architecture, the <code>force_o_largefile</code> will be expanded to <code>true</code> and the <code>O_LARGEFILE</code> flag will be added to the set of flags which were passed to the <code>open</code> system call.</p>
+<p>Now as we considered meaning of the <code>O_LARGEFILE</code> flag and <code>force_o_largefile</code> macro, we can proceed to the consideration of the implementation of the <code>do_sys_open</code> function. As I wrote above, this function is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/open.c">same</a> source code file and looks:</p>
+<pre><code class="language-C">long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
+{
+	struct open_flags op;
+	int fd = build_open_flags(flags, mode, &amp;op);
+	struct filename *tmp;
+
+	if (fd)
+		return fd;
+
+	tmp = getname(filename);
+	if (IS_ERR(tmp))
+		return PTR_ERR(tmp);
+
+	fd = get_unused_fd_flags(flags);
+	if (fd &gt;= 0) {
+		struct file *f = do_filp_open(dfd, tmp, &amp;op);
+		if (IS_ERR(f)) {
+			put_unused_fd(fd);
+			fd = PTR_ERR(f);
+		} else {
+			fsnotify_open(f);
+			fd_install(fd, f);
+		}
+	}
+	putname(tmp);
+	return fd;
+}
+</code></pre>
+<p>Let's try to understand how the <code>do_sys_open</code> works step by step.</p>
+<h2 id="open2-flags">open(2) flags</h2>
+<p>As you know the <code>open</code> system call takes set of <code>flags</code> as second argument that control opening a file and <code>mode</code> as third argument that specifies permission the permissions of a file if it is created. The <code>do_sys_open</code> function starts from the call of the <code>build_open_flags</code> function which does some checks that set of the given flags is valid and handles different conditions of flags and mode.</p>
+<p>Let's look at the implementation of the <code>build_open_flags</code>. This function is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/open.c">same</a> kernel file and takes three arguments:</p>
+<ul>
+<li>flags - flags that control opening of a file;</li>
+<li>mode - permissions for newly created file;</li>
+</ul>
+<p>The last argument - <code>op</code> is represented with the <code>open_flags</code> structure:</p>
+<pre><code class="language-C">struct open_flags {
+        int open_flag;
+        umode_t mode;
+        int acc_mode;
+        int intent;
+        int lookup_flags;
+};
+</code></pre>
+<p>which is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/internal.h#L99">fs/internal.h</a> header file and as we may see it holds information about flags and access mode for internal kernel purposes. As you already may guess the main goal of the <code>build_open_flags</code> function is to fill an instance of this structure.</p>
+<p>Implementation of the <code>build_open_flags</code> function starts from the definition of local variables and one of them is:</p>
+<pre><code class="language-C">int acc_mode = ACC_MODE(flags);
+</code></pre>
+<p>This local variable represents access mode and its initial value will be equal to the value of expanded <code>ACC_MODE</code> macro. This macro is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/include/linux/fs.h">include/linux/fs.h</a> and looks pretty interesting:</p>
+<pre><code class="language-C">#define ACC_MODE(x) ("\004\002\006\006"[(x)&amp;O_ACCMODE])
+#define O_ACCMODE   00000003
+</code></pre>
+<p>The <code>"\004\002\006\006"</code> is an array of four chars:</p>
+<pre><code>"\004\002\006\006" == {'\004', '\002', '\006', '\006'}
+</code></pre>
+<p>So, the <code>ACC_MODE</code> macro just expands to the accession to this array by <code>[(x) &amp; O_ACCMODE]</code> index. As we just saw, the <code>O_ACCMODE</code> is <code>00000003</code>. By applying <code>x &amp; O_ACCMODE</code> we will take the two least significant bits which are represents <code>read</code>, <code>write</code> or <code>read/write</code> access modes:</p>
+<pre><code class="language-C">#define O_RDONLY        00000000
+#define O_WRONLY        00000001
+#define O_RDWR          00000002
+</code></pre>
+<p>After getting value from the array by the calculated index, the <code>ACC_MODE</code> will be expanded to access mode mask of a file which will hold <code>MAY_WRITE</code>, <code>MAY_READ</code> and other information.</p>
+<p>We may see following condition after we have calculated initial access mode:</p>
+<pre><code class="language-C">if (flags &amp; (O_CREAT | __O_TMPFILE))
+	op-&gt;mode = (mode &amp; S_IALLUGO) | S_IFREG;
+else
+	op-&gt;mode = 0;
+</code></pre>
+<p>Here we reset permissions in <code>open_flags</code> instance if a opened file wasn't temporary and wasn't open for creation. This is because:</p>
+<blockquote>
+<p>if neither O_CREAT nor O_TMPFILE is specified, then mode is ignored.</p>
+</blockquote>
+<p>In other case if <code>O_CREAT</code> or <code>O_TMPFILE</code> were passed we canonicalize it to a regular file because a directory should be created with the <a href="http://man7.org/linux/man-pages/man3/opendir.3.html">opendir</a> system call.</p>
+<p>At the next step we check that a file is not tried to be opened via <a href="http://man7.org/linux/man-pages/man7/fanotify.7.html">fanotify</a> and without the <code>O_CLOEXEC</code> flag:</p>
+<pre><code class="language-C">flags &amp;= ~FMODE_NONOTIFY &amp; ~O_CLOEXEC;
+</code></pre>
+<p>We do this to not leak a <a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a>. By default, the new file descriptor is set to remain open across an <code>execve</code> system call, but the <code>open</code> system call supports <code>O_CLOEXEC</code> flag that can be used to change this default behaviour. So we do this to prevent leaking of a file descriptor when one thread opens a file to set <code>O_CLOEXEC</code> flag and in the same time the second process does a <a href="https://en.wikipedia.org/wiki/Fork_(system_call)">fork</a> + <a href="https://en.wikipedia.org/wiki/Exec_(system_call)">execve</a> and as you may remember that child will have copies of the parent's set of open file descriptors.</p>
+<p>At the next step we check that if our flags contains <code>O_SYNC</code> flag, we apply <code>O_DSYNC</code> flag too:</p>
+<pre><code>if (flags &amp; __O_SYNC)
+	flags |= O_DSYNC;
+</code></pre>
+<p>The <code>O_SYNC</code> flag guarantees that the any write call will not return before all data has been transferred to the disk. The <code>O_DSYNC</code> is like <code>O_SYNC</code> except that there is no requirement to wait for any metadata (like <code>atime</code>, <code>mtime</code> and etc.) changes will be written. We apply <code>O_DSYNC</code> in a case of <code>__O_SYNC</code> because it is implemented as <code>__O_SYNC|O_DSYNC</code> in the Linux kernel.</p>
+<p>After this we must be sure that if a user wants to create temporary file, the flags should contain <code>O_TMPFILE_MASK</code> or in other words it should contain or <code>O_CREAT</code> or <code>O_TMPFILE</code> or both and also it should be writeable:</p>
+<pre><code class="language-C">if (flags &amp; __O_TMPFILE) {
+	if ((flags &amp; O_TMPFILE_MASK) != O_TMPFILE)
+		return -EINVAL;
+	if (!(acc_mode &amp; MAY_WRITE))
+		return -EINVAL;
+} else if (flags &amp; O_PATH) {
+       	flags &amp;= O_DIRECTORY | O_NOFOLLOW | O_PATH;
+        acc_mode = 0;
+}
+</code></pre>
+<p>as it is written in in the manual page:</p>
+<blockquote>
+<p>O_TMPFILE must be specified with one of O_RDWR or O_WRONLY</p>
+</blockquote>
+<p>If we didn't pass <code>O_TMPFILE</code> for creation of a temporary file, we check the <code>O_PATH</code> flag at the next condition. The <code>O_PATH</code> flag allows us to obtain a file descriptor that may be used for two following purposes:</p>
+<ul>
+<li>to indicate a location in the filesystem tree;</li>
+<li>to perform operations that act purely at the file descriptor level.</li>
+</ul>
+<p>So, in this case the file itself is not opened, but operations like <code>dup</code>, <code>fcntl</code> and other can be used. So, if all file content related operations like <code>read</code>, <code>write</code> and other are permitted, only <code>O_DIRECTORY | O_NOFOLLOW | O_PATH</code> flags can be used. We have finished with flags for this moment in the <code>build_open_flags</code> for this moment and we may fill our <code>open_flags-&gt;open_flag</code> with them:</p>
+<pre><code class="language-C">op-&gt;open_flag = flags;
+</code></pre>
+<p>Now we have filled <code>open_flag</code> field which represents flags that will control opening of a file and <code>mode</code> that will represent <code>umask</code> of a new file if we open file for creation. There are still to fill last flags in the our <code>open_flags</code> structure. The next is <code>op-&gt;acc_mode</code> which represents access mode to a opened file. We already filled the <code>acc_mode</code> local variable with the initial value at the beginning of the <code>build_open_flags</code> and now we check last two flags related to access mode:</p>
+<pre><code class="language-C">if (flags &amp; O_TRUNC)
+        acc_mode |= MAY_WRITE;
+if (flags &amp; O_APPEND)
+	acc_mode |= MAY_APPEND;
+op-&gt;acc_mode = acc_mode;
+</code></pre>
+<p>These flags are - <code>O_TRUNC</code> that will truncate an opened file to length <code>0</code> if it existed before we open it and the <code>O_APPEND</code> flag allows to open a file in <code>append mode</code>. So the opened file will be appended during write but not overwritten.</p>
+<p>The next field of the <code>open_flags</code> structure is - <code>intent</code>. It allows us to know about our intention or in other words what do we really want to do with file, open it, create, rename it or something else. So we set it to zero if our flags contains the <code>O_PATH</code> flag as we can't do anything related to a file content with this flag:</p>
+<pre><code class="language-C">op-&gt;intent = flags &amp; O_PATH ? 0 : LOOKUP_OPEN;
+</code></pre>
+<p>or just to <code>LOOKUP_OPEN</code> intention. Additionally we set <code>LOOKUP_CREATE</code> intention if we want to create new file and to be sure that a file didn't exist before with <code>O_EXCL</code> flag:</p>
+<pre><code class="language-C">if (flags &amp; O_CREAT) {
+	op-&gt;intent |= LOOKUP_CREATE;
+	if (flags &amp; O_EXCL)
+		op-&gt;intent |= LOOKUP_EXCL;
+}
+</code></pre>
+<p>The last flag of the <code>open_flags</code> structure is the <code>lookup_flags</code>:</p>
+<pre><code class="language-C">if (flags &amp; O_DIRECTORY)
+	lookup_flags |= LOOKUP_DIRECTORY;
+if (!(flags &amp; O_NOFOLLOW))
+	lookup_flags |= LOOKUP_FOLLOW;
+op-&gt;lookup_flags = lookup_flags;
+
+return 0;
+</code></pre>
+<p>We fill it with <code>LOOKUP_DIRECTORY</code> if we want to open a directory and <code>LOOKUP_FOLLOW</code> if we don't want to follow (open) <a href="https://en.wikipedia.org/wiki/Symbolic_link">symlink</a>. That's all. It is the end of the <code>build_open_flags</code> function. The <code>open_flags</code> structure is filled with modes and flags for a file opening and we can return back to the <code>do_sys_open</code>.</p>
+<h2 id="actual-opening-of-a-file">Actual opening of a file</h2>
+<p>At the next step after <code>build_open_flags</code> function is finished and we have formed flags and modes for our file we should get the <code>filename</code> structure with the help of the <code>getname</code> function by name of a file which was passed to the <code>open</code> system call:</p>
+<pre><code class="language-C">tmp = getname(filename);
+if (IS_ERR(tmp))
+	return PTR_ERR(tmp);
+</code></pre>
+<p>The <code>getname</code> function is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/namei.c">fs/namei.c</a> source code file and looks:</p>
+<pre><code class="language-C">struct filename *
+getname(const char __user * filename)
+{
+        return getname_flags(filename, 0, NULL);
+}
+</code></pre>
+<p>So, it just calls the <code>getname_flags</code> function and returns its result. The main goal of the <code>getname_flags</code> function is to copy a file path given from userland to kernel space. The <code>filename</code> structure is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/include/linux/fs.h">include/linux/fs.h</a> linux kernel header file and contains following fields:</p>
+<ul>
+<li>name - pointer to a file path in kernel space;</li>
+<li>uptr - original pointer from userland;</li>
+<li>aname - filename from <a href="https://linux.die.net/man/8/auditd">audit</a> context;</li>
+<li>refcnt - reference counter;</li>
+<li>iname - a filename in a case when it will be less than <code>PATH_MAX</code>.</li>
+</ul>
+<p>As I already wrote above, the main goal of the <code>getname_flags</code> function is to copy name of a file which was passed to the <code>open</code> system call from user space to kernel space with the strncpy_from_user function. The next step after a filename will be copied to kernel space is getting of new non-busy file descriptor:</p>
+<pre><code class="language-C">fd = get_unused_fd_flags(flags);
+</code></pre>
+<p>The <code>get_unused_fd_flags</code> function takes table of open files of the current process, minimum (<code>0</code>) and maximum (<code>RLIMIT_NOFILE</code>) possible number of a file descriptor in the system and flags that we have passed to the <code>open</code> system call and allocates file descriptor and mark it busy in the file descriptor table of the current process. The <code>get_unused_fd_flags</code> function sets or clears the <code>O_CLOEXEC</code> flag depends on its state in the passed flags.</p>
+<p>The last and main step in the <code>do_sys_open</code> is the <code>do_filp_open</code> function:</p>
+<pre><code class="language-C">struct file *f = do_filp_open(dfd, tmp, &amp;op);
+
+if (IS_ERR(f)) {
+	put_unused_fd(fd);
+	fd = PTR_ERR(f);
+} else {
+	fsnotify_open(f);
+	fd_install(fd, f);
+}
+</code></pre>
+<p>The main goal of this function is to resolve given path name into <code>file</code> structure which represents an opened file of a process. If something going wrong and execution of the <code>do_filp_open</code> function will be failed, we should free new file descriptor with the <code>put_unused_fd</code> or in other way the <code>file</code> structure returned by the <code>do_filp_open</code> will be stored in the file descriptor table of the current process.</p>
+<p>Now let's take a short look at the implementation of the <code>do_filp_open</code> function. This function is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/namei.c">fs/namei.c</a> linux kernel source code file and starts from initialization of the <code>nameidata</code> structure. This structure will provide a link to a file <a href="https://en.wikipedia.org/wiki/Inode">inode</a>. Actually this is one of the main point of the <code>do_filp_open</code> function to acquire an <code>inode</code> by the filename given to <code>open</code> system call. After the <code>nameidata</code> structure will be initialized, the <code>path_openat</code> function will be called:</p>
+<pre><code class="language-C">filp = path_openat(&amp;nd, op, flags | LOOKUP_RCU);
+
+if (unlikely(filp == ERR_PTR(-ECHILD)))
+	filp = path_openat(&amp;nd, op, flags);
+if (unlikely(filp == ERR_PTR(-ESTALE)))
+	filp = path_openat(&amp;nd, op, flags | LOOKUP_REVAL);
+</code></pre>
+<p>Note that it is called three times. Actually, the Linux kernel will open the file in <a href="https://www.kernel.org/doc/Documentation/RCU/whatisRCU.txt">RCU</a> mode. This is the most efficient way to open a file. If this try will be failed, the kernel enters the normal mode. The third call is relatively rare, only in the <a href="https://en.wikipedia.org/wiki/Network_File_System">nfs</a> file system is likely to be used. The <code>path_openat</code> function executes <code>path lookup</code> or in other words it tries to find a <code>dentry</code> (what the Linux kernel uses to keep track of the hierarchy of files in directories) corresponding to a path.</p>
+<p>The <code>path_openat</code> function starts from the call of the <code>get_empty_flip()</code> function that allocates a new <code>file</code> structure with some additional checks like do we exceed amount of opened files in the system or not and etc. After we have got allocated new <code>file</code> structure we call the <code>do_tmpfile</code> or <code>do_o_path</code> functions in a case if we have passed <code>O_TMPFILE | O_CREATE</code> or <code>O_PATH</code> flags during call of the <code>open</code> system call. These both cases are quite specific, so let's consider quite usual case when we want to open already existed file and want to read/write from/to it.</p>
+<p>In this case the <code>path_init</code> function will be called. This function performs some preporatory work before actual path lookup. This includes search of start position of path traversal and its metadata like <code>inode</code> of the path, <code>dentry inode</code> and etc. This can be <code>root</code> directory - <code>/</code> or current directory as in our case, because we use <code>AT_CWD</code> as starting point (see call of the <code>do_sys_open</code> at the beginning of the post).</p>
+<p>The next step after the <code>path_init</code> is the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/namei.c#L3457">loop</a> which executes the <code>link_path_walk</code> and <code>do_last</code>. The first function executes name resolution or in other words this function starts process of walking along a given path. It handles everything step by step except the last component of a file path. This handling includes checking of a permissions and getting a file component. As a file component is gotten, it is passed to <code>walk_component</code> that updates current directory entry from the <code>dcache</code> or asks underlying filesystem. This repeats before all path's components will not be handled in such way. After the <code>link_path_walk</code> will be executed, the <code>do_last</code> function will populate a <code>file</code> structure based on the result of the <code>link_path_walk</code>. As we reached last component of the given file path the <code>vfs_open</code> function from the <code>do_last</code> will be called.</p>
+<p>This function is defined in the <a href="https://github.com/torvalds/linux/blob/16f73eb02d7e1765ccab3d2018e0bd98eb93d973/fs/open.c">fs/open.c</a> linux kernel source code file and the main goal of this function is to call an <code>open</code> operation of underlying filesystem.</p>
+<p>That's all for now. We didn't consider <strong>full</strong> implementation of the <code>open</code> system call. We skip some parts like handling case when we want to open a file from other filesystem with different mount point, resolving symlinks and etc., but it should be not so hard to follow this stuff. This stuff does not included in <strong>generic</strong> implementation of open system call and depends on underlying filesystem. If you are interested in, you may lookup the <code>file_operations.open</code> callback function for a certain <a href="https://github.com/torvalds/linux/tree/master/fs">filesystem</a>.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fifth part of the implementation of different system calls in the Linux kernel. If you have questions or suggestions, ping me on twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me an <a href="anotherworldofworld@gmail.com">email</a>, or just create an <a href="https://github.com/0xAX/linux-internals/issues/new">issue</a>. In the next part, we will continue to dive into system calls in the Linux kernel and see the implementation of the <a href="http://man7.org/linux/man-pages/man2/read.2.html">read</a> system call.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/0xAX/linux-internals">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/System_call">system call</a></li>
+<li><a href="http://man7.org/linux/man-pages/man2/open.2.html">open</a></li>
+<li><a href="https://en.wikipedia.org/wiki/File_descriptor">file descriptor</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Procfs">proc</a></li>
+<li><a href="https://www.gnu.org/software/libc/manual/html_mono/libc.html#File-Position-Primitive">GNU C Library Reference Manual</a></li>
+<li><a href="https://en.wikipedia.org/wiki/IA-64">IA-64</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="http://man7.org/linux/man-pages/man3/opendir.3.html">opendir</a></li>
+<li><a href="http://man7.org/linux/man-pages/man7/fanotify.7.html">fanotify</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Fork_(system_call)">fork</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Exec_(system_call)">execve</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Symbolic_link">symlink</a></li>
+<li><a href="https://linux.die.net/man/8/auditd">audit</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Inode">inode</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/RCU/whatisRCU.txt">RCU</a></li>
+<li><a href="http://man7.org/linux/man-pages/man2/read.2.html">read</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-4.html">previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/104/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/169/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/169/index.html">PyTorch 1.0 中文文档 & 教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">87页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 874个">874</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/77/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/openstack_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/77/index.html">深入理解 Neutron -- OpenStack 网络实现</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="openstack">openstack</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 136个">136</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8099;var bookPageRelUrl ='SysCall/syscall-5.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

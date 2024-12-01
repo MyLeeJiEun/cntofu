@@ -1,0 +1,2469 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>控制相关度-Elasticsearch权威指南(Elasticsearch Definitive Guide)</title>
+<meta content='控制相关度,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='keywords'>
+<meta content='控制相关度,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/asciidoc.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/40/partial-matching.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">部分匹配</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/40/languages.html">
+<span class="">处理人类语言</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/40/index.html">Elasticsearch权威指南 (Elasticsearch Definitive Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/elasticsearch-cn/elasticsearch-definitive-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  asc-content-section  uk-margin-bottom">
+<h2 id="controlling-relevance">控制相关度</h2>
+<div class="paragraph">
+<p>处理结构化数据（比如：时间、数字、字符串、枚举）的数据库，只需检查文档（或关系数据库里的行）是否与查询匹配。</p>
+</div>
+<div class="paragraph">
+<p>布尔的是/非匹配是全文搜索的基础，但不止如此，我们还要知道每个文档与查询的相关度，在全文搜索引擎中不仅需要找到匹配的文档，还需根据它们相关度的高低进行排序。</p>
+</div>
+<div class="paragraph">
+<p>全文相关的公式或 <em>相似算法（similarity algorithms）</em> 会将多个因素合并起来，为每个文档生成一个相关度评分 <code>_score</code> 。本章中，我们会验证各种可变部分，然后讨论如何来控制它们。</p>
+</div>
+<div class="paragraph">
+<p>当然，相关度不只与全文查询有关，也需要将结构化的数据考虑其中。可能我们正在找一个度假屋，需要一些的详细特征（空调、海景、免费 WiFi ），匹配的特征越多相关度越高。可能我们还希望有一些其他的考虑因素，如回头率、价格、受欢迎度或距离，当然也同时考虑全文查询的相关度。</p>
+</div>
+<div class="paragraph">
+<p>所有的这些都可以通过 Elasticsearch 强大的评分基础来实现。</p>
+</div>
+<div class="paragraph">
+<p>本章会先从理论上介绍 Lucene 是如何计算相关度的，然后通过实际例子说明如何控制相关度的计算过程。</p>
+</div>
+<div class="sect2">
+<h3 id="scoring-theory">相关度评分背后的理论</h3>
+<div class="paragraph">
+<p>Lucene（或 Elasticsearch）使用 <a href="http://en.wikipedia.org/wiki/Standard_Boolean_model"><em>布尔模型（Boolean model）</em></a> 查找匹配文档，并用一个名为 <a href="#practical-scoring-function"><em>实用评分函数（practical scoring function）</em></a> 的公式来计算相关度。这个公式借鉴了 <a href="http://en.wikipedia.org/wiki/Tfidf"><em>词频/逆向文档频率（term frequency/inverse document frequency）</em></a> 和 <a href="http://en.wikipedia.org/wiki/Vector_space_model"><em>向量空间模型（vector space model）</em></a>，同时也加入了一些现代的新特性，如协调因子（coordination factor），字段长度归一化（field length normalization），以及词或查询语句权重提升。</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>不要紧张！这些概念并没有像它们字面看起来那么复杂，尽管本小节提到了算法、公式和数学模型，但内容还是让人容易理解的，与理解算法本身相比，了解这些因素如何影响结果更为重要。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="boolean-model">布尔模型</h4>
+<div class="paragraph">
+<p><em>布尔模型（Boolean Model）</em> 只是在查询中使用 <code>AND</code> 、 <code>OR</code> 和 <code>NOT</code> （与、或和非）这样的条件来查找匹配的文档，以下查询：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>full AND text AND search AND (elasticsearch OR lucene)</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>会将所有包括词 <code>full</code> 、 <code>text</code> 和 <code>search</code> ，以及 <code>elasticsearch</code> 或 <code>lucene</code> 的文档作为结果集。</p>
+</div>
+<div class="paragraph">
+<p>这个过程简单且快速，它将所有可能不匹配的文档排除在外。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="tfidf">词频/逆向文档频率（TF/IDF）</h4>
+<div class="paragraph">
+<p>当匹配到一组文档后，需要根据相关度排序这些文档，不是所有的文档都包含所有词，有些词比其他的词更重要。一个文档的相关度评分部分取决于每个查询词在文档中的 <em>权重</em> 。</p>
+</div>
+<div class="paragraph">
+<p>词的权重由三个因素决定，在 <a href="#relevance-intro">什么是相关</a> 中已经有所介绍，有兴趣可以了解下面的公式，但并不要求记住。</p>
+</div>
+<div class="sect4">
+<h5 id="tf">词频</h5>
+<div class="paragraph">
+<p>词在文档中出现的频度是多少？频度越高，权重 <em>越高</em> 。 5 次提到同一词的字段比只提到 1 次的更相关。词频的计算方式如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>tf(t in d) = √frequency <b class="conum">(1)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>词 <code>t</code> 在文档 <code>d</code> 的词频（ <code>tf</code> ）是该词在文档中出现次数的平方根。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>如果不在意词在某个字段中出现的频次，而只在意是否出现过，则可以在字段映射中禁用词频统计：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "mappings": {
+    "doc": {
+      "properties": {
+        "text": {
+          "type":          "string",
+          "index_options": "docs" <b class="conum">(1)</b>
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>将参数 <code>index_options</code> 设置为 <code>docs</code> 可以禁用词频统计及词频位置，这个映射的字段不会计算词的出现次数，对于短语或近似查询也不可用。要求精确查询的 <code>not_analyzed</code> 字符串字段会默认使用该设置。</p> </li>
+</ol>
+</div>
+</div>
+<div class="sect4">
+<h5 id="idf">逆向文档频率</h5>
+<div class="paragraph">
+<p>词在集合所有文档里出现的频率是多少？频次越高，权重 <em>越低</em> 。常用词如 <code>and</code> 或 <code>the</code> 对相关度贡献很少，因为它们在多数文档中都会出现，一些不常见词如 <code>elastic</code> 或 <code>hippopotamus</code> 可以帮助我们快速缩小范围找到感兴趣的文档。逆向文档频率的计算公式如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>idf(t) = 1 + log ( numDocs / (docFreq + 1)) <b class="conum">(1)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>词 <code>t</code> 的逆向文档频率（ <code>idf</code> ）是：索引中文档数量除以所有包含该词的文档数，然后求其对数。</p> </li>
+</ol>
+</div>
+</div>
+<div class="sect4">
+<h5 id="field-norm">字段长度归一值</h5>
+<div class="paragraph">
+<p>字段的长度是多少？字段越短，字段的权重 <em>越高</em> 。如果词出现在类似标题 <code>title</code> 这样的字段，要比它出现在内容 <code>body</code> 这样的字段中的相关度更高。字段长度的归一值公式如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>norm(d) = 1 / √numTerms <b class="conum">(1)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>字段长度归一值（ <code>norm</code> ）是字段中词数平方根的倒数。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>字段长度的归一值对全文搜索非常重要，许多其他字段不需要有归一值。无论文档是否包括这个字段，索引中每个文档的每个 <code>string</code> 字段都大约占用 1 个 byte 的空间。对于 <code>not_analyzed</code> 字符串字段的归一值默认是禁用的，而对于 <code>analyzed</code> 字段也可以通过修改字段映射禁用归一值：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "mappings": {
+    "doc": {
+      "properties": {
+        "text": {
+          "type": "string",
+          "norms": { "enabled": false } <b class="conum">(1)</b>
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>这个字段不会将字段长度归一值考虑在内，长字段和短字段会以相同长度计算评分。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>对于有些应用场景如日志，归一值不是很有用，要关心的只是字段是否包含特殊的错误码或者特定的浏览器唯一标识符。字段的长度对结果没有影响，禁用归一值可以节省大量内存空间。</p>
+</div>
+</div>
+<div class="sect4">
+<h5 id="_结合使用">结合使用</h5>
+<div class="paragraph">
+<p>以下三个因素——词频（term frequency）、逆向文档频率（inverse document frequency）和字段长度归一值（field-length norm）——是在索引时计算并存储的。最后将它们结合在一起计算单个词在特定文档中的 <em>权重</em> 。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>前面公式中提到的 <em>文档</em> 实际上是指文档里的某个字段，每个字段都有它自己的倒排索引，因此字段的 TF/IDF 值就是文档的 TF/IDF 值。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>当用 <code>explain</code> 查看一个简单的 <code>term</code> 查询时（参见 <a href="#explain">explain</a> ），可以发现与计算相关度评分的因子就是前面章节介绍的这些：</p>
+</div>
+<div class="listingblock pagebreak-before">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index/doc/1
+{ "text" : "quick brown fox" }
+
+GET /my_index/doc/_search?explain
+{
+  "query": {
+    "term": {
+      "text": "fox"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>以上请求（简化）的 <code>explanation</code> 解释如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>weight(text:fox in 0) [PerFieldSimilarity]:  0.15342641 <b class="conum">(1)</b>
+result of:
+    fieldWeight in 0                         0.15342641
+    product of:
+        tf(freq=1.0), with freq of 1:        1.0 <b class="conum">(2)</b>
+        idf(docFreq=1, maxDocs=1):           0.30685282 <b class="conum">(3)</b>
+        fieldNorm(doc=0):                    0.5 <b class="conum">(4)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>词 <code>fox</code> 在文档的内部 Lucene doc ID 为 <code>0</code> ，字段是 <code>text</code> 里的最终评分。</p> </li>
+<li> <p>词 <code>fox</code> 在该文档 <code>text</code> 字段中只出现了一次。</p> </li>
+<li> <p><code>fox</code> 在所有文档 <code>text</code> 字段索引的逆向文档频率。</p> </li>
+<li> <p>该字段的字段长度归一值。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>当然，查询通常不止一个词，所以需要一种合并多词权重的方式——向量空间模型（vector space model）。</p>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="vector-space-model">向量空间模型</h4>
+<div class="paragraph">
+<p><em>向量空间模型（vector space model）</em> 提供一种比较多词查询的方式，单个评分代表文档与查询的匹配程度，为了做到这点，这个模型将文档和查询都以 <em>向量（vectors）</em> 的形式表示：</p>
+</div>
+<div class="paragraph">
+<p>向量实际上就是包含多个数的一维数组，例如：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>[1,2,5,22,3,8]</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>在向量空间模型里，向量空间模型里的每个数字都代表一个词的 <em>权重</em> ，与 <a href="#tfidf">词频/逆向文档频率（term frequency/inverse document frequency）</a> 计算方式类似。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>尽管 TF/IDF 是向量空间模型计算词权重的默认方式，但不是唯一方式。Elasticsearch 还有其他模型如 Okapi-BM25 。TF/IDF 是默认的因为它是个经检验过的简单又高效的算法，可以提供高质量的搜索结果。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>设想如果查询 “happy hippopotamus” ，常见词 <code>happy</code> 的权重较低，不常见词 <code>hippopotamus</code> 权重较高，假设 <code>happy</code> 的权重是 2 ， <code>hippopotamus</code> 的权重是 5 ，可以将这个二维向量—— <code>[2,5]</code> ——在坐标系下作条直线，线的起点是 (0,0) 终点是 (2,5) ，如图 <a href="#img-vector-query">表示 “happy hippopotamus” 的二维查询向量</a> 。</p>
+</div>
+<div id="img-vector-query" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_17in01.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_17in01.png" alt="查询向量绘点图"></a>
+</div>
+<div class="title">
+Figure 27. 表示 “happy hippopotamus” 的二维查询向量
+</div>
+</div>
+<div class="paragraph">
+<p>现在，设想我们有三个文档：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>I am <em>happy</em> in summer 。</p> </li>
+<li> <p>After Christmas I’m a <em>hippopotamus</em> 。</p> </li>
+<li> <p>The <em>happy hippopotamus</em> helped Harry 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>可以为每个文档都创建包括每个查询词—— <code>happy</code> 和 <code>hippopotamus</code> ——权重的向量，然后将这些向量置入同一个坐标系中，如图 <a href="#img-vector-docs">“happy hippopotamus” 查询及文档向量</a> ：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>文档 1： <code>(happy,<em><em></em><em></em></em>__)</code> —— <code>[2,0]</code></p> </li>
+<li> <p>文档 2： <code>( <em>_</em> ,hippopotamus)</code> —— <code>[0,5]</code></p> </li>
+<li> <p>文档 3： <code>(happy,hippopotamus)</code> —— <code>[2,5]</code></p> </li>
+</ul>
+</div>
+<div id="img-vector-docs" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_17in02.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_17in02.png" alt="查询及文档向量绘点图"></a>
+</div>
+<div class="title">
+Figure 28. “happy hippopotamus” 查询及文档向量
+</div>
+</div>
+<div class="paragraph">
+<p>向量之间是可以比较的，只要测量查询向量和文档向量之间的角度就可以得到每个文档的相关度，文档 1 与查询之间的角度最大，所以相关度低；文档 2 与查询间的角度较小，所以更相关；文档 3 与查询的角度正好吻合，完全匹配。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>在实际中，只有二维向量（两个词的查询）可以在平面上表示，幸运的是， <em>线性代数</em> ——作为数学中处理向量的一个分支——为我们提供了计算两个多维向量间角度工具，这意味着可以使用如上同样的方式来解释多个词的查询。</p>
+</div>
+<div class="paragraph">
+<p>关于比较两个向量的更多信息可以参考 <a href="http://en.wikipedia.org/wiki/Cosine_similarity"><em>余弦近似度（cosine similarity）</em></a>。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>现在已经讲完评分计算的基本理论，我们可以继续了解 Lucene 是如何实现评分计算的。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="practical-scoring-function">Lucene 的实用评分函数</h3>
+<div class="paragraph">
+<p>对于多词查询， Lucene 使用 <a href="#boolean-model">布尔模型（Boolean model）</a> 、 <a href="#tfidf">TF/IDF</a> 以及 <a href="#vector-space-model">向量空间模型（vector space model）</a> ，然后将它们组合到单个高效的包里以收集匹配文档并进行评分计算。</p>
+</div>
+<div class="paragraph">
+<p>一个多词查询</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /my_index/doc/_search
+{
+  "query": {
+    "match": {
+      "text": "quick fox"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>会在内部被重写为：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /my_index/doc/_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        {"term": { "text": "quick" }},
+        {"term": { "text": "fox"   }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>bool</code> 查询实现了布尔模型，在这个例子中，它会将包括词 <code>quick</code> 和 <code>fox</code> 或两者兼有的文档作为查询结果。</p>
+</div>
+<div class="paragraph">
+<p>只要一个文档与查询匹配，Lucene 就会为查询计算评分，然后合并每个匹配词的评分结果。这里使用的评分计算公式叫做 <em>实用评分函数（practical scoring function）</em> 。看似很高大上，但是别被吓到——多数的组件都已经介绍过，下一步会讨论它引入的一些新元素。</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>score(q,d)  =  <b class="conum">(1)</b>
+            queryNorm(q)  <b class="conum">(2)</b>
+          · coord(q,d)    <b class="conum">(3)</b>
+          · ∑ (           <b class="conum">(4)</b>
+                tf(t in d)   <b class="conum">(5)</b>
+              · idf(t)²      <b class="conum">(6)</b>
+              · t.getBoost() <b class="conum">(7)</b>
+              · norm(t,d)    <b class="conum">(8)</b>
+            ) (t in q)    <b class="conum">(4)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>score(q,d)</code> 是文档 <code>d</code> 与查询 <code>q</code> 的相关度评分。</p> </li>
+<li> <p><code>queryNorm(q)</code> 是 <a href="#query-norm"><em>查询归一化</em> 因子</a> （新）。</p> </li>
+<li> <p><code>coord(q,d)</code> 是 <a href="#coord"><em>协调</em> 因子</a> （新）。</p> </li>
+<li> <p>查询 <code>q</code> 中每个词 <code>t</code> 对于文档 <code>d</code> 的权重和。</p> </li>
+<li> <p><code>tf(t in d)</code> 是词 <code>t</code> 在文档 <code>d</code> 中的 <a href="#tf">词频</a> 。</p> </li>
+<li> <p><code>idf(t)</code> 是词 <code>t</code> 的 <a href="#idf">逆向文档频率</a> 。</p> </li>
+<li> <p><code>t.getBoost()</code> 是查询中使用的 <a href="#query-time-boosting"><em>boost</em></a>（新）。</p> </li>
+<li> <p><code>norm(t,d)</code> 是 <a href="#field-norm">字段长度归一值</a> ，与 <a href="#index-boost">索引时字段层 boost</a> （如果存在）的和（新）。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>上节已介绍过 <code>score</code> 、 <code>tf</code> 和 <code>idf</code> 。现在来介绍 <code>queryNorm</code> 、 <code>coord</code> 、 <code>t.getBoost</code> 和 <code>norm</code> 。</p>
+</div>
+<div class="paragraph">
+<p>我们会在本章后面继续探讨 <a href="#query-time-boosting">查询时的权重提升</a> 的问题，但是首先需要了解查询归一化、协调和索引时字段层面的权重提升等概念。</p>
+</div>
+<div class="sect3">
+<h4 id="query-norm">查询归一因子</h4>
+<div class="paragraph">
+<p><em>查询归一因子</em> （ <code>queryNorm</code> ）试图将查询 <em>归一化</em> ，这样就能将两个不同的查询结果相比较。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>尽管查询归一值的目的是为了使查询结果之间能够相互比较，但是它并不十分有效，因为相关度评分 <code>_score</code> 的目的是为了将当前查询的结果进行排序，比较不同查询结果的相关度评分没有太大意义。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>这个因子是在查询过程的最前面计算的，具体的计算依赖于具体查询，一个典型的实现如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>queryNorm = 1 / √sumOfSquaredWeights <b class="conum">(1)</b></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>sumOfSquaredWeights</code> 是查询里每个词的 IDF 的平方和。</p> </li>
+</ol>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content"> 相同查询归一化因子会被应用到每个文档，不能被更改，总而言之，可以被忽略。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="coord">查询协调</h4>
+<div class="paragraph">
+<p><em>协调因子</em> （ <code>coord</code> ）可以为那些查询词包含度高的文档提供奖励，文档里出现的查询词越多，它越有机会成为好的匹配结果。</p>
+</div>
+<div class="paragraph">
+<p>设想查询 <code>quick brown fox</code> ，每个词的权重都是 1.5 。如果没有协调因子，最终评分会是文档里所有词权重的总和。例如：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>文档里有 <code>fox</code> → 评分： 1.5</p> </li>
+<li> <p>文档里有 <code>quick fox</code> → 评分： 3.0</p> </li>
+<li> <p>文档里有 <code>quick brown fox</code> → 评分： 4.5</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>协调因子将评分与文档里匹配词的数量相乘，然后除以查询里所有词的数量，如果使用协调因子，评分会变成：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>文档里有 <code>fox</code> → 评分： <code>1.5 * 1 / 3</code> = 0.5</p> </li>
+<li> <p>文档里有 <code>quick fox</code> → 评分： <code>3.0 * 2 / 3</code> = 2.0</p> </li>
+<li> <p>文档里有 <code>quick brown fox</code> → 评分： <code>4.5 * 3 / 3</code> = 4.5</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>协调因子能使包含所有三个词的文档比只包含两个词的文档评分要高出很多。</p>
+</div>
+<div class="paragraph">
+<p>回想将查询 <code>quick brown fox</code> 重写成 <code>bool</code> 查询的形式：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "term": { "text": "quick" }},
+        { "term": { "text": "brown" }},
+        { "term": { "text": "fox"   }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>bool</code> 查询默认会对所有 <code>should</code> 语句使用协调功能，不过也可以将其禁用。为什么要这样做？通常的回答是——无须这样。查询协调通常是件好事，当使用 <code>bool</code> 查询将多个高级查询如 <code>match</code> 查询包裹的时候，让协调功能开启是有意义的，匹配的语句越多，查询请求与返回文档间的重叠度就越高。</p>
+</div>
+<div class="paragraph">
+<p>但在某些高级应用中，将协调功能关闭可能更好。设想正在查找同义词 <code>jump</code> 、 <code>leap</code> 和 <code>hop</code> 时，并不关心会出现多少个同义词，因为它们都表示相同的意思，实际上，只有其中一个同义词会出现，这是不使用协调因子的一个好例子：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "disable_coord": true,
+      "should": [
+        { "term": { "text": "jump" }},
+        { "term": { "text": "hop"  }},
+        { "term": { "text": "leap" }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>当使用同义词的时候（参照： <a href="#synonyms">同义词</a> ），Lucene 内部是这样的：重写的查询会禁用同义词的协调功能。大多数禁用操作的应用场景是自动处理的，无须为此担心。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="index-boost">索引时字段层权重提升</h4>
+<div class="paragraph">
+<p>我们会讨论 <a href="#query-time-boosting">查询时的权重提升</a>，让字段 <em>权重提升</em> 就是让某个字段比其他字段更重要。当然在索引时也能做到如此。实际上，权重的提升会被应用到字段的每个词，而不是字段本身。</p>
+</div>
+<div class="paragraph">
+<p>将提升值存储在索引中无须更多空间，这个字段层索引时的提升值与字段长度归一值（参见 <a href="#field-norm">字段长度归一值</a> ）一起作为单个字节存于索引， <code>norm(t,d)</code> 是前面公式的返回值。</p>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Warning
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>我们不建议在建立索引时对字段提升权重，有以下原因：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>将提升值与字段长度归一值合在单个字节中存储会丢失字段长度归一值的精度，这样会导致 Elasticsearch 不知如何区分包含三个词的字段和包含五个词的字段。</p> </li>
+<li> <p>要想改变索引时的提升值，就必须重新为所有文档建立索引，与此不同的是，查询时的提升值可以随着每次查询的不同而更改。</p> </li>
+<li> <p>如果一个索引时权重提升的字段有多个值，提升值会按照每个值来自乘，这会导致该字段的权重急剧上升。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p><a href="#query-time-boosting">查询时赋予权重</a> 是更为简单、清楚、灵活的选择。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>了解了查询归一化、协同和索引时权重提升这些方式后，可以进一步了解相关度计算最有用的工具：查询时的权重提升。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="query-time-boosting">查询时权重提升</h3>
+<div class="paragraph">
+<p>在 <a href="#prioritising-clauses">语句优先级（Prioritizing Clauses）</a> 中，我们解释过如何在搜索时使用 <code>boost</code> 参数让一个查询语句比其他语句更重要。例如：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        {
+          "match": {
+            "title": {
+              "query": "quick brown fox",
+              "boost": 2 <b class="conum">(1)</b>
+            }
+          }
+        },
+        {
+          "match": { <b class="conum">(2)</b>
+            "content": "quick brown fox"
+          }
+        }
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>title</code> 查询语句的重要性是 <code>content</code> 查询的 2 倍，因为它的权重提升值为 <code>2</code> 。</p> </li>
+<li> <p>没有设置 <code>boost</code> 的查询语句的值为 <code>1</code> 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p><em>查询时的权重提升</em> 是可以用来影响相关度的主要工具，任意类型的查询都能接受 <code>boost</code> 参数。将 <code>boost</code> 设置为 <code>2</code> ，并不代表最终的评分 <code>_score</code> 是原值的两倍；实际的权重值会经过归一化和一些其他内部优化过程。尽管如此，它确实想要表明一个提升值为 <code>2</code> 的句子的重要性是提升值为 <code>1</code> 语句的两倍。</p>
+</div>
+<div class="paragraph">
+<p>在实际应用中，无法通过简单的公式得出某个特定查询语句的 <code>正确'' 权重提升值，只能通过不断尝试获得。需要记住的是 <code>boost</code> 只是影响相关度评分的其中一个因子；它还需要与其他因子相互竞争。在前例中， <code>title</code> 字段相对 <code>content</code> 字段可能已经有一个 </code>缺省的'' 权重提升值，这因为在 <a href="#field-norm">字段长度归一值</a> 中，标题往往比相关内容要短，所以不要想当然的去盲目提升一些字段的权重。选择权重，检查结果，如此反复。</p>
+</div>
+<div class="sect3">
+<h4 id="_提升索引权重">提升索引权重</h4>
+<div class="paragraph">
+<p>当在多个索引中搜索时，可以使用参数 <code>indices_boost</code> 来提升整个索引的权重，在下面例子中，当要为最近索引的文档分配更高权重时，可以这么做：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /docs_2014_*/_search <b class="conum">(1)</b>
+{
+  "indices_boost": { <b class="conum">(2)</b>
+    "docs_2014_10": 3,
+    "docs_2014_09": 2
+  },
+  "query": {
+    "match": {
+      "text": "quick brown fox"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>这个多索引查询涵盖了所有以字符串 <code>docs_2014_</code> 开始的索引。</p> </li>
+<li> <p>其中，索引 <code>docs_2014_10</code> 中的所有文件的权重是 <code>3</code> ，索引 <code>docs_2014_09</code> 中是 <code>2</code> ，其他所有匹配的索引权重为默认值 <code>1</code> 。</p> </li>
+</ol>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_t_getboost">t.getBoost()</h4>
+<div class="paragraph">
+<p>这些提升值在 Lucene 的 <a href="#practical-scoring-function">实用评分函数</a> 中可以通过 <code>t.getBoost()</code> 获得。权重提升不会被应用于它在查询表达式中出现的层，而是会被合并下转至每个词中。 <code>t.getBoost()</code> 始终返回当前词的权重或当前分析链上查询的权重。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>实际上，要想解读 <a href="#explain"><code>explain</code></a> 的输出是相当复杂的，在 <code>explanation</code> 里面完全看不到 <code>boost</code> 值，也完全无法访问上面提到的 <code>t.getBoost()</code> 方法，权重值融合在 <a href="#query-norm"><code>queryNorm</code></a> 中并应用到每个词。尽管说， <code>queryNorm</code> 对于每个词都是相同的，还是会发现一个权重提升过的词的 <code>queryNorm</code> 值要高于一个没有提升过的。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="query-scoring">使用查询结构修改相关度</h3>
+<div class="paragraph">
+<p>Elasticsearch 的查询表达式相当灵活，可以通过调整查询结构中查询语句的所处层次，从而或多或少改变其重要性，比如，设想下面这个查询：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>quick OR brown OR red OR fox</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>可以将所有词都放在 <code>bool</code> 查询的同一层中：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "term": { "text": "quick" }},
+        { "term": { "text": "brown" }},
+        { "term": { "text": "red"   }},
+        { "term": { "text": "fox"   }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这个查询可能最终给包含 <code>quick</code> 、 <code>red</code> 和 <code>brown</code> 的文档评分与包含 <code>quick</code> 、 <code>red</code> 、 <code>fox</code> 文档的评分相同，这里 <em>Red</em> 和 <em>brown</em> 是同义词，可能只需要保留其中一个，而我们真正要表达的意思是想做以下查询：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>quick OR (brown OR red) OR fox</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>根据标准的布尔逻辑，这与原始的查询是完全一样的，但是我们已经在 <a href="#bool-query">组合查询（Combining Queries）</a> 中看到， <code>bool</code> 查询不关心文档匹配的 <em>程度</em> ，只关心是否能匹配。</p>
+</div>
+<div class="paragraph">
+<p>上述查询有个更好的方式：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "term": { "text": "quick" }},
+        { "term": { "text": "fox"   }},
+        {
+          "bool": {
+            "should": [
+              { "term": { "text": "brown" }},
+              { "term": { "text": "red"   }}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>现在， <code>red</code> 和 <code>brown</code> 处于相互竞争的层次， <code>quick</code> 、 <code>fox</code> 以及 <code>red OR brown</code> 则是处于顶层且相互竞争的词。</p>
+</div>
+<div class="paragraph">
+<p>我们已经讨论过如何使用 <a href="#match-query"><code>match</code></a> 、<a href="#multi-match-query"><code>multi_match</code></a> 、<a href="#term-vs-full-text"><code>term</code></a> 、<a href="#bool-query"><code>bool</code></a> 和 <a href="#dis-max-query"><code>dis_max</code></a> 查询修改相关度评分。本章后面的内容会介绍另外三个与相关度评分有关的查询： <code>boosting</code> 查询、 <code>constant_score</code> 查询和 <code>function_score</code> 查询。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="not-quite-not">Not Quite Not</h3>
+<div class="paragraph">
+<p>在互联网上搜索 “Apple”，返回的结果很可能是一个公司、水果和各种食谱。我们可以在 <code>bool</code> 查询中用 <code>must_not</code> 语句来排除像 <code>pie</code> 、 <code>tart</code> 、 <code>crumble</code> 和 <code>tree</code> 这样的词，从而将查询结果的范围缩小至只返回与 “Apple” （苹果）公司相关的结果：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "must": {
+        "match": {
+          "text": "apple"
+        }
+      },
+      "must_not": {
+        "match": {
+          "text": "pie tart fruit crumble tree"
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>但谁又敢保证在排除 <code>tree</code> 或 <code>crumble</code> 这种词后，不会错失一个与苹果公司特别相关的文档呢？有时， <code>must_not</code> 条件会过于严格。</p>
+</div>
+<div class="sect3">
+<h4 id="boosting-query">权重提升查询</h4>
+<div class="paragraph">
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-boosting-query.html"><code>boosting</code> 查询</a> 恰恰能解决这个问题。它仍然允许我们将关于水果或甜点的结果包括到结果中，但是使它们降级——即降低它们原来可能应有的排名：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "boosting": {
+      "positive": {
+        "match": {
+          "text": "apple"
+        }
+      },
+      "negative": {
+        "match": {
+          "text": "pie tart fruit crumble tree"
+        }
+      },
+      "negative_boost": 0.5
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>它接受 <code>positive</code> 和 <code>negative</code> 查询。只有那些匹配 <code>positive</code> 查询的文档罗列出来，对于那些同时还匹配 <code>negative</code> 查询的文档将通过文档的原始 <code>_score</code> 与 <code>negative_boost</code> 相乘的方式降级后的结果。</p>
+</div>
+<div class="paragraph">
+<p>为了达到效果， <code>negative_boost</code> 的值必须小于 <code>1.0</code> 。在这个示例中，所有包含负向词的文档评分 <code>_score</code> 都会减半。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="ignoring-tfidf">忽略 TF/IDF</h3>
+<div class="paragraph">
+<p>有时候我们根本不关心 TF/IDF ，只想知道一个词是否在某个字段中出现过。可能搜索一个度假屋并希望它能尽可能有以下设施：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>WiFi</p> </li>
+<li> <p>Garden（花园）</p> </li>
+<li> <p>Pool（游泳池）</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>这个度假屋的文档如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">{ "description": "A delightful four-bedroomed house with ... " }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>可以用简单的 <code>match</code> 查询进行匹配：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "match": {
+      "description": "wifi garden pool"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>但这并不是真正的 <em>全文搜索</em> ，此种情况下，TF/IDF 并无用处。我们既不关心 <code>wifi</code> 是否为一个普通词，也不关心它在文档中出现是否频繁，关心的只是它是否曾出现过。实际上，我们希望根据房屋不同设施的数量对其排名——设施越多越好。如果设施出现，则记 <code>1</code> 分，不出现记 <code>0</code> 分。</p>
+</div>
+<div class="sect3">
+<h4 id="constant-score-query">constant_score 查询</h4>
+<div class="paragraph">
+<p>在 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-constant-score-query.html"><code>constant_score</code></a> 查询中，它可以包含查询或过滤，为任意一个匹配的文档指定评分 <code>1</code> ，忽略 TF/IDF 信息：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "constant_score": {
+          "query": { "match": { "description": "wifi" }}
+        }},
+        { "constant_score": {
+          "query": { "match": { "description": "garden" }}
+        }},
+        { "constant_score": {
+          "query": { "match": { "description": "pool" }}
+        }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>或许不是所有的设施都同等重要——对某些用户来说有些设施更有价值。如果最重要的设施是游泳池，那我们可以为更重要的设施增加权重：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "constant_score": {
+          "query": { "match": { "description": "wifi" }}
+        }},
+        { "constant_score": {
+          "query": { "match": { "description": "garden" }}
+        }},
+        { "constant_score": {
+          "boost":   2 <b class="conum">(1)</b>
+          "query": { "match": { "description": "pool" }}
+        }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>pool</code> 语句的权重提升值为 <code>2</code> ，而其他的语句为 <code>1</code> 。</p> </li>
+</ol>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content"> 最终的评分并不是所有匹配语句的简单求和， <a href="#coord">协调因子（coordination factor）</a> 和 <a href="#query-norm">查询归一化因子（query normalization factor）</a> 仍然会被考虑在内。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>我们可以给 <code>features</code> 字段加上 <code>not_analyzed</code> 类型来提升度假屋文档的匹配能力：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">{ "features": [ "wifi", "pool", "garden" ] }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>默认情况下，一个 <code>not_analyzed</code> 字段会禁用 <a href="#field-norm">字段长度归一值（field-length norms）</a> 的功能，并将 <code>index_options</code> 设为 <code>docs</code> 选项，禁用 <a href="#tf">词频</a> ，但还是存在问题：每个词的 <a href="#idf">倒排文档频率</a> 仍然会被考虑。</p>
+</div>
+<div class="paragraph">
+<p>可以采用与之前相同的方法 <code>constant_score</code> 查询来解决这个问题：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "constant_score": {
+          "query": { "match": { "features": "wifi" }}
+        }},
+        { "constant_score": {
+          "query": { "match": { "features": "garden" }}
+        }},
+        { "constant_score": {
+          "boost":   2
+          "query": { "match": { "features": "pool" }}
+        }}
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>实际上，每个设施都应该看成一个过滤器，对于度假屋来说要么具有某个设施要么没有——过滤器因为其性质天然合适。而且，如果使用过滤器，我们还可以利用缓存。</p>
+</div>
+<div class="paragraph">
+<p>这里的问题是：过滤器无法计算评分。这样就需要寻求一种方式将过滤器和查询间的差异抹平。 <code>function_score</code> 查询不仅正好可以扮演这个角色，而且有更强大的功能。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="function-score-query">function_score 查询</h3>
+<div class="paragraph">
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-function-score-query.html"><code>function_score</code> 查询</a> 是用来控制评分过程的终极武器，它允许为每个与主查询匹配的文档应用一个函数，以达到改变甚至完全替换原始查询评分 <code>_score</code> 的目的。</p>
+</div>
+<div class="paragraph">
+<p>实际上，也能用过滤器对结果的 <em>子集</em> 应用不同的函数，这样一箭双雕：既能高效评分，又能利用过滤器缓存。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 预定义了一些函数：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>weight</code>
+</dt>
+<dd>
+<p>为每个文档应用一个简单而不被规范化的权重提升值：当 <code>weight</code> 为 <code>2</code> 时，最终结果为 <code>2 * _score</code> 。</p>
+</dd>
+<dt class="hdlist1">
+<code>field_value_factor</code>
+</dt>
+<dd>
+<p>使用这个值来修改 <code>_score</code> ，如将 <code>popularity</code> 或 <code>votes</code> （受欢迎或赞）作为考虑因素。</p>
+</dd>
+<dt class="hdlist1">
+<code>random_score</code>
+</dt>
+<dd>
+<p>为每个用户都使用一个不同的随机评分对结果排序，但对某一具体用户来说，看到的顺序始终是一致的。</p>
+</dd>
+<dt class="hdlist1">
+<em>衰减函数</em> ——
+<code>linear</code> 、
+<code>exp</code> 、
+<code>gauss</code>
+</dt>
+<dd>
+<p>将浮动值结合到评分 <code>_score</code> 中，例如结合 <code>publish_date</code> 获得最近发布的文档，结合 <code>geo_location</code> 获得更接近某个具体经纬度（lat/lon）地点的文档，结合 <code>price</code> 获得更接近某个特定价格的文档。</p>
+</dd>
+<dt class="hdlist1">
+<code>script_score</code>
+</dt>
+<dd>
+<p>如果需求超出以上范围时，用自定义脚本可以完全控制评分计算，实现所需逻辑。</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>如果没有 <code>function_score</code> 查询，就不能将全文查询与最新发生这种因子结合在一起评分，而不得不根据评分 <code>_score</code> 或时间 <code>date</code> 进行排序；这会相互影响抵消两种排序各自的效果。这个查询可以使两个效果融合：可以仍然根据全文相关度进行排序，但也会同时考虑最新发布文档、流行文档、或接近用户希望价格的产品。正如所设想的，查询要考虑所有这些因素会非常复杂，让我们先从简单的例子开始，然后顺着梯子慢慢向上爬，增加复杂度。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="boosting-by-popularity">按受欢迎度提升权重</h3>
+<div class="paragraph">
+<p>设想有个网站供用户发布博客并且可以让他们为自己喜欢的博客点赞，我们希望将更受欢迎的博客放在搜索结果列表中相对较上的位置，同时全文搜索的评分仍然作为相关度的主要排序依据，可以简单的通过存储每个博客的点赞数来实现它：</p>
+</div>
+<div class="listingblock pagebreak-before">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /blogposts/post/1
+{
+  "title":   "About popularity",
+  "content": "In this post we will talk about...",
+  "votes":   6
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>在搜索时，可以将 <code>function_score</code> 查询与 <code>field_value_factor</code> 结合使用，即将点赞数与全文相关度评分结合：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /blogposts/post/_search
+{
+  "query": {
+    "function_score": { <b class="conum">(1)</b>
+      "query": { <b class="conum">(2)</b>
+        "multi_match": {
+          "query":    "popularity",
+          "fields": [ "title", "content" ]
+        }
+      },
+      "field_value_factor": { <b class="conum">(3)</b>
+        "field": "votes" <b class="conum">(4)</b>
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>function_score</code> 查询将主查询和函数包括在内。</p> </li>
+<li> <p>主查询优先执行。</p> </li>
+<li> <p><code>field_value_factor</code> 函数会被应用到每个与主 <code>query</code> 匹配的文档。</p> </li>
+<li> <p>每个文档的 <code>votes</code> 字段都 <em>必须</em> 有值供 <code>function_score</code> 计算。如果 <em>没有</em> 文档的 <code>votes</code> 字段有值，那么就 <em>必须</em> 使用 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-function-score-query.html#function-field-value-factor"><code>missing</code> 属性</a> 提供的默认值来进行评分计算。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>在前面示例中，每个文档的最终评分 <code>_score</code> 都做了如下修改：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>new_score = old_score * number_of_votes</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>然而这并不会带来出人意料的好结果，全文评分 <code>_score</code> 通常处于 0 到 10 之间，如下图 <a href="#img-popularity-linear">受欢迎度的线性关系基于 <code>_score</code> 的原始值 <code>2.0</code></a> 中，有 10 个赞的博客会掩盖掉全文评分，而 0 个赞的博客的评分会被置为 0 。</p>
+</div>
+<div id="img-popularity-linear" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1701.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1701.png" alt="Linear popularity based on an original `_score` of `2.0`"></a>
+</div>
+<div class="title">
+Figure 29. 受欢迎度的线性关系基于
+<code>_score</code> 的原始值
+<code>2.0</code>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_modifier">modifier</h4>
+<div class="paragraph">
+<p>一种融入受欢迎度更好方式是用 <code>modifier</code> 平滑 <code>votes</code> 的值。换句话说，我们希望最开始的一些赞更重要，但是其重要性会随着数字的增加而降低。 0 个赞与 1 个赞的区别应该比 10 个赞与 11 个赞的区别大很多。</p>
+</div>
+<div class="paragraph">
+<p>对于上述情况，典型的 <code>modifier</code> 应用是使用 <code>log1p</code> 参数值，公式如下：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>new_score = old_score * log(1 + number_of_votes)</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>log</code> 对数函数使 <code>votes</code> 赞字段的评分曲线更平滑，如图 <a href="#img-popularity-log">受欢迎度的对数关系基于 <code>_score</code> 的原始值 <code>2.0</code></a> ：</p>
+</div>
+<div id="img-popularity-log" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1702.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1702.png" alt="Logarithmic popularity based on an original `_score` of `2.0`"></a>
+</div>
+<div class="title">
+Figure 30. 受欢迎度的对数关系基于
+<code>_score</code> 的原始值
+<code>2.0</code>
+</div>
+</div>
+<div class="paragraph">
+<p>带 <code>modifier</code> 参数的请求如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /blogposts/post/_search
+{
+  "query": {
+    "function_score": {
+      "query": {
+        "multi_match": {
+          "query":    "popularity",
+          "fields": [ "title", "content" ]
+        }
+      },
+      "field_value_factor": {
+        "field":    "votes",
+        "modifier": "log1p" <b class="conum">(1)</b>
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>modifier</code> 为 <code>log1p</code> 。</p> </li>
+</ol>
+</div>
+<div class="paragraph pagebreak-before">
+<p>修饰语 modifier 的值可以为： <code>none</code> （默认状态）、 <code>log</code> 、 <code>log1p</code> 、 <code>log2p</code> 、 <code>ln</code> 、 <code>ln1p</code> 、 <code>ln2p</code> 、 <code>square</code> 、 <code>sqrt</code> 以及 <code>reciprocal</code> 。想要了解更多信息请参照： <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-function-score-query.html#function-field-value-factor"><code>field_value_factor</code> 文档</a>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_factor">factor</h4>
+<div class="paragraph">
+<p>可以通过将 <code>votes</code> 字段与 <code>factor</code> 的积来调节受欢迎程度效果的高低：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /blogposts/post/_search
+{
+  "query": {
+    "function_score": {
+      "query": {
+        "multi_match": {
+          "query":    "popularity",
+          "fields": [ "title", "content" ]
+        }
+      },
+      "field_value_factor": {
+        "field":    "votes",
+        "modifier": "log1p",
+        "factor":   2 <b class="conum">(1)</b>
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>双倍效果。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>添加了 <code>factor</code> 会使公式变成这样：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>new_score = old_score * log(1 + factor * number_of_votes)</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>factor</code> 值大于 <code>1</code> 会提升效果， <code>factor</code> 值小于 <code>1</code> 会降低效果，如图 <a href="#img-popularity-factor">受欢迎度的对数关系基于多个不同因子</a> 。</p>
+</div>
+<div id="img-popularity-factor" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1703.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1703.png" alt="Logarithmic popularity with different factors"></a>
+</div>
+<div class="title">
+Figure 31. 受欢迎度的对数关系基于多个不同因子
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_boost_mode">boost_mode</h4>
+<div class="paragraph">
+<p>或许将全文评分与 <code>field_value_factor</code> 函数值乘积的效果仍然可能太大，我们可以通过参数 <code>boost_mode</code> 来控制函数与查询评分 <code>_score</code> 合并后的结果，参数接受的值为：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>multiply</code>
+</dt>
+<dd>
+<p>评分 <code>_score</code> 与函数值的积（默认）</p>
+</dd>
+<dt class="hdlist1">
+<code>sum</code>
+</dt>
+<dd>
+<p>评分 <code>_score</code> 与函数值的和</p>
+</dd>
+<dt class="hdlist1">
+<code>min</code>
+</dt>
+<dd>
+<p>评分 <code>_score</code> 与函数值间的较小值</p>
+</dd>
+<dt class="hdlist1">
+<code>max</code>
+</dt>
+<dd>
+<p>评分 <code>_score</code> 与函数值间的较大值</p>
+</dd>
+<dt class="hdlist1">
+<code>replace</code>
+</dt>
+<dd>
+<p>函数值替代评分 <code>_score</code></p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>与使用乘积的方式相比，使用评分 <code>_score</code> 与函数值求和的方式可以弱化最终效果，特别是使用一个较小 <code>factor</code> 因子时：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /blogposts/post/_search
+{
+  "query": {
+    "function_score": {
+      "query": {
+        "multi_match": {
+          "query":    "popularity",
+          "fields": [ "title", "content" ]
+        }
+      },
+      "field_value_factor": {
+        "field":    "votes",
+        "modifier": "log1p",
+        "factor":   0.1
+      },
+      "boost_mode": "sum" <b class="conum">(1)</b>
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>将函数计算结果值累加到评分 <code>_score</code> 。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>之前请求的公式现在变成下面这样（参见 <a href="#img-popularity-sum">使用 <code>sum</code> 结合受欢迎程度</a> ）：</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>new_score = old_score + log(1 + 0.1 * number_of_votes)</pre>
+</div>
+</div>
+<div id="img-popularity-sum" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1704.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1704.png" alt="Combining popularity with `sum`"></a>
+</div>
+<div class="title">
+Figure 32. 使用
+<code>sum</code> 结合受欢迎程度
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_max_boost">max_boost</h4>
+<div class="paragraph">
+<p>最后，可以使用 <code>max_boost</code> 参数限制一个函数的最大效果：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /blogposts/post/_search
+{
+  "query": {
+    "function_score": {
+      "query": {
+        "multi_match": {
+          "query":    "popularity",
+          "fields": [ "title", "content" ]
+        }
+      },
+      "field_value_factor": {
+        "field":    "votes",
+        "modifier": "log1p",
+        "factor":   0.1
+      },
+      "boost_mode": "sum",
+      "max_boost":  1.5 <b class="conum">(1)</b>
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>无论 <code>field_value_factor</code> 函数的结果如何，最终结果都不会大于 <code>1.5</code> 。</p> </li>
+</ol>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content"> <code>max_boost</code> 只对函数的结果进行限制，不会对最终评分 <code>_score</code> 产生直接影响。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="function-score-filters">过滤集提升权重</h3>
+<div class="paragraph">
+<p>回到 <a href="#ignoring-tfidf">忽略 TF/IDF</a> 里处理过的问题，我们希望根据每个度假屋的特性数量来评分，当时我们希望能用缓存的过滤器来影响评分，现在 <code>function_score</code> 查询正好可以完成这件事情。</p>
+</div>
+<div class="paragraph">
+<p>到目前为止，我们展现的都是为所有文档应用单个函数的使用方式，现在会用过滤器将结果划分为多个子集（每个特性一个过滤器），并为每个子集使用不同的函数。</p>
+</div>
+<div class="paragraph">
+<p>在下面例子中，我们会使用 <code>weight</code> 函数，它与 <code>boost</code> 参数类似可以用于任何查询。有一点区别是 <code>weight</code> 没有被 Luence 归一化成难以理解的浮点数，而是直接被应用。</p>
+</div>
+<div class="paragraph">
+<p>查询的结构需要做相应变更以整合多个函数：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "function_score": {
+      "filter": { <b class="conum">(1)</b>
+        "term": { "city": "Barcelona" }
+      },
+      "functions": [ <b class="conum">(2)</b>
+        {
+          "filter": { "term": { "features": "wifi" }}, <b class="conum">(3)</b>
+          "weight": 1
+        },
+        {
+          "filter": { "term": { "features": "garden" }}, <b class="conum">(3)</b>
+          "weight": 1
+        },
+        {
+          "filter": { "term": { "features": "pool" }}, <b class="conum">(3)</b>
+          "weight": 2 <b class="conum">(4)</b>
+        }
+      ],
+      "score_mode": "sum", <b class="conum">(5)</b>
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>function_score</code> 查询有个 <code>filter</code> 过滤器而不是 <code>query</code> 查询。</p> </li>
+<li> <p><code>functions</code> 关键字存储着一个将被应用的函数列表。</p> </li>
+<li> <p>函数会被应用于和 <code>filter</code> 过滤器（可选的）匹配的文档。</p> </li>
+<li> <p><code>pool</code> 比其他特性更重要，所以它有更高 <code>weight</code> 。</p> </li>
+<li> <p><code>score_mode</code> 指定各个函数的值进行组合运算的方式。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个新特性需要注意的地方会在以下小节介绍。</p>
+</div>
+<div class="sect3">
+<h4 id="_过滤_vs_查询">过滤 vs. 查询</h4>
+<div class="paragraph">
+<p>首先要注意的是 <code>filter</code> 过滤器代替了 <code>query</code> 查询，在本例中，我们无须使用全文搜索，只想找到 <code>city</code> 字段中包含 <code>Barcelona</code> 的所有文档，逻辑用过滤比用查询表达更清晰。过滤器返回的所有文档的评分 <code>_score</code> 的值为 <code>1</code> 。 <code>function_score</code> 查询接受 <code>query</code> 或 <code>filter</code> ，如果没有特别指定，则默认使用 <code>match_all</code> 查询。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_函数_functions">函数 functions</h4>
+<div class="paragraph">
+<p><code>functions</code> 关键字保持着一个将要被使用的函数列表。可以为列表里的每个函数都指定一个 <code>filter</code> 过滤器，在这种情况下，函数只会被应用到那些与过滤器匹配的文档，例子中，我们为与过滤器匹配的文档指定权重值 <code>weight</code> 为 <code>1</code> （为与 <code>pool</code> 匹配的文档指定权重值为 <code>2</code> ）。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_评分模式_score_mode">评分模式 score_mode</h4>
+<div class="paragraph">
+<p>每个函数返回一个结果，所以需要一种将多个结果缩减到单个值的方式，然后才能将其与原始评分 <code>_score</code> 合并。评分模式 <code>score_mode</code> 参数正好扮演这样的角色，它接受以下值：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>multiply</code>
+</dt>
+<dd>
+<p>函数结果求积（默认）。</p>
+</dd>
+<dt class="hdlist1">
+<code>sum</code>
+</dt>
+<dd>
+<p>函数结果求和。</p>
+</dd>
+<dt class="hdlist1">
+<code>avg</code>
+</dt>
+<dd>
+<p>函数结果的平均值。</p>
+</dd>
+<dt class="hdlist1">
+<code>max</code>
+</dt>
+<dd>
+<p>函数结果的最大值。</p>
+</dd>
+<dt class="hdlist1">
+<code>min</code>
+</dt>
+<dd>
+<p>函数结果的最小值。</p>
+</dd>
+<dt class="hdlist1">
+<code>first</code>
+</dt>
+<dd>
+<p>使用首个函数（可以有过滤器，也可能没有）的结果作为最终结果</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>在本例中，我们将每个过滤器匹配结果的权重 <code>weight</code> 求和，并将其作为最终评分结果，所以会使用 <code>sum</code> 评分模式。</p>
+</div>
+<div class="paragraph">
+<p>不与任何过滤器匹配的文档会保有其原始评分， <code>_score</code> 值的为 <code>1</code> 。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="random-scoring">随机评分</h3>
+<div class="paragraph">
+<p>你可能会想知道 <em>一致随机评分（consistently random scoring）</em> 是什么，又为什么会使用它。之前的例子是个很好的应用场景，前例中所有的结果都会返回 1 、 2 、 3 、 4 或 5 这样的最终评分 <code>_score</code> ，可能只有少数房子的评分是 5 分，而有大量房子的评分是 2 或 3 。</p>
+</div>
+<div class="paragraph">
+<p>作为网站的所有者，总会希望让广告有更高的展现率。在当前查询下，有相同评分 <code>_score</code> 的文档会每次都以相同次序出现，为了提高展现率，在此引入一些随机性可能会是个好主意，这能保证有相同评分的文档都能有均等相似的展现机率。</p>
+</div>
+<div class="paragraph">
+<p>我们想让每个用户看到不同的随机次序，但也同时希望如果是同一用户翻页浏览时，结果的相对次序能始终保持一致。这种行为被称为 <em>一致随机（consistently random）</em> 。</p>
+</div>
+<div class="paragraph">
+<p><code>random_score</code> 函数会输出一个 0 到 1 之间的数，当种子 <code>seed</code> 值相同时，生成的随机结果是一致的，例如，将用户的会话 ID 作为 seed ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "function_score": {
+      "filter": {
+        "term": { "city": "Barcelona" }
+      },
+      "functions": [
+        {
+          "filter": { "term": { "features": "wifi" }},
+          "weight": 1
+        },
+        {
+          "filter": { "term": { "features": "garden" }},
+          "weight": 1
+        },
+        {
+          "filter": { "term": { "features": "pool" }},
+          "weight": 2
+        },
+        {
+          "random_score": { <b class="conum">(1)</b>
+            "seed":  "the users session id" <b class="conum">(2)</b>
+          }
+        }
+      ],
+      "score_mode": "sum"
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>random_score</code> 语句没有任何过滤器 <code>filter</code> ，所以会被应用到所有文档。</p> </li>
+<li> <p>将用户的会话 ID 作为种子 <code>seed</code> ，让该用户的随机始终保持一致，相同的种子 <code>seed</code> 会产生相同的随机结果。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>当然，如果增加了与查询匹配的新文档，无论是否使用一致随机，其结果顺序都会发生变化。</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="decay-functions">越近越好</h3>
+<div class="paragraph">
+<p>很多变量都可以影响用户对于度假屋的选择，也许用户希望离市中心近点，但如果价格足够便宜，也有可能选择一个更远的住处，也有可能反过来是正确的：愿意为最好的位置付更多的价钱。</p>
+</div>
+<div class="paragraph">
+<p>如果我们添加过滤器排除所有市中心方圆 1 千米以外的度假屋，或排除所有每晚价格超过 £100 英镑的，我们可能会将用户愿意考虑妥协的那些选择排除在外。</p>
+</div>
+<div class="paragraph">
+<p><code>function_score</code> 查询会提供一组 <em>衰减函数（decay functions）</em> ，让我们有能力在两个滑动标准，如地点和价格，之间权衡。</p>
+</div>
+<div class="paragraph">
+<p>有三种衰减函数—— <code>linear</code> 、 <code>exp</code> 和 <code>gauss</code> （线性、指数和高斯函数），它们可以操作数值、时间以及经纬度地理坐标点这样的字段。所有三个函数都能接受以下参数：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>origin</code>
+</dt>
+<dd>
+<p><em>中心点</em> 或字段可能的最佳值，落在原点 <code>origin</code> 上的文档评分 <code>_score</code> 为满分 <code>1.0</code> 。</p>
+</dd>
+<dt class="hdlist1">
+<code>scale</code>
+</dt>
+<dd>
+<p>衰减率，即一个文档从原点 <code>origin</code> 下落时，评分 <code>_score</code> 改变的速度。（例如，每 £10 欧元或每 100 米）。</p>
+</dd>
+<dt class="hdlist1">
+<code>decay</code>
+</dt>
+<dd>
+<p>从原点 <code>origin</code> 衰减到 <code>scale</code> 所得的评分 <code>_score</code> ，默认值为 <code>0.5</code> 。</p>
+</dd>
+<dt class="hdlist1">
+<code>offset</code>
+</dt>
+<dd>
+<p>以原点 <code>origin</code> 为中心点，为其设置一个非零的偏移量 <code>offset</code> 覆盖一个范围，而不只是单个原点。在范围 <code>-offset ⇐ origin ⇐ +offset</code> 内的所有评分 <code>_score</code> 都是 <code>1.0</code> 。</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>这三个函数的唯一区别就是它们衰减曲线的形状，用图来说明会更为直观（参见 <a href="#img-decay-functions">衰减函数曲线</a> ）。</p>
+</div>
+<div id="img-decay-functions" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1705.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1705.png" alt="衰减函数曲线"></a>
+</div>
+<div class="title">
+Figure 33. 衰减函数曲线
+</div>
+</div>
+<div class="paragraph">
+<p>图 <a href="#img-decay-functions">衰减函数曲线</a> 中所有曲线的原点 <code>origin</code> （即中心点）的值都是 <code>40</code> ， <code>offset</code> 是 <code>5</code> ，也就是在范围 <code>40 - 5 ⇐ value ⇐ 40 + 5</code> 内的所有值都会被当作原点 <code>origin</code> 处理——所有这些点的评分都是满分 <code>1.0</code> 。</p>
+</div>
+<div class="paragraph">
+<p>在此范围之外，评分开始衰减，衰减率由 <code>scale</code> 值（此例中的值为 <code>5</code> ）和 衰减值 <code>decay</code> （此例中为默认值 <code>0.5</code> ）共同决定。结果是所有三个曲线在 <code>origin +/- (offset + scale)</code> 处的评分都是 <code>0.5</code> ，即点 <code>30</code> 和 <code>50</code> 处。</p>
+</div>
+<div class="paragraph">
+<p><code>linear</code> 、 <code>exp</code> 和 <code>gauss</code> （线性、指数和高斯）函数三者之间的区别在于范围（ <code>origin +/- (offset + scale)</code> ）之外的曲线形状：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>linear</code> 线性函数是条直线，一旦直线与横轴 0 相交，所有其他值的评分都是 <code>0.0</code> 。</p> </li>
+<li> <p><code>exp</code> 指数函数是先剧烈衰减然后变缓。</p> </li>
+<li> <p><code>gauss</code> 高斯函数是钟形的——它的衰减速率是先缓慢，然后变快，最后又放缓。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>选择曲线的依据完全由期望评分 <code>_score</code> 的衰减速率来决定，即距原点 <code>origin</code> 的值。</p>
+</div>
+<div class="paragraph">
+<p>回到我们的例子：用户希望租一个离伦敦市中心近（ <code>{ "lat": 51.50, "lon": 0.12}</code> ）且每晚不超过 £100 英镑的度假屋，而且与距离相比，我们的用户对价格更为敏感，这样查询可以写成：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "query": {
+    "function_score": {
+      "functions": [
+        {
+          "gauss": {
+            "location": { <b class="conum">(1)</b>
+              "origin": { "lat": 51.5, "lon": 0.12 },
+              "offset": "2km",
+              "scale":  "3km"
+            }
+          }
+        },
+        {
+          "gauss": {
+            "price": { <b class="conum">(2)</b>
+              "origin": "50", <b class="conum">(3)</b>
+              "offset": "50",
+              "scale":  "20"
+            }
+          },
+          "weight": 2 <b class="conum">(4)</b>
+        }
+      ]
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>location</code> 字段以地理坐标点 <code>geo_point</code> 映射。</p> </li>
+<li> <p><code>price</code> 字段是数值。</p> </li>
+<li> <p>参见 <a href="#Understanding-the-price-Clause">理解价格语句</a> ，理解 <code>origin</code> 为什么是 <code>50</code> 而不是 <code>100</code> 。</p> </li>
+<li> <p><code>price</code> 语句是 <code>location</code> 语句权重的两倍。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p><code>location</code> 语句可以简单理解为：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>以伦敦市中作为原点 <code>origin</code> 。</p> </li>
+<li> <p>所有距原点 <code>origin</code> <code>2km</code> 范围内的位置的评分是 <code>1.0</code> 。</p> </li>
+<li> <p>距中心 <code>5km</code> （ <code>offset + scale</code> ）的位置的评分是 <code>0.5</code> 。</p> </li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="Understanding-the-price-Clause">理解 price 价格语句</h3>
+<div class="paragraph">
+<p><code>price</code> 语句使用了一个小技巧：用户希望选择 £100 英镑以下的度假屋，但是例子中的原点被设置成 £50 英镑，价格不能为负，但肯定是越低越好，所以 £0 到 £100 英镑内的所有价格都认为是比较好的。</p>
+</div>
+<div class="paragraph">
+<p>如果我们将原点 <code>origin</code> 被设置成 £100 英镑，那么低于 £100 英镑的度假屋的评分会变低，与其这样不如将原点 <code>origin</code> 和偏移量 <code>offset</code> 同时设置成 £50 英镑，这样就能使只有在价格高于 £100 英镑（ <code>origin + offset</code> ）时评分才会变低。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p><code>weight</code> 参数可以被用来调整每个语句的贡献度，权重 <code>weight</code> 的默认值是 <code>1.0</code> 。这个值会先与每个句子的评分相乘，然后再通过 <code>score_mode</code> 的设置方式合并。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="script-score">脚本评分</h3>
+<div class="paragraph">
+<p>最后，如果所有 <code>function_score</code> 内置的函数都无法满足应用场景，可以使用 <code>script_score</code> 函数自行实现逻辑。</p>
+</div>
+<div class="paragraph">
+<p>举个例子，想将利润空间作为因子加入到相关度评分计算，在业务中，利润空间和以下三点相关：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p><code>price</code> 度假屋每晚的价格。</p> </li>
+<li> <p>会员用户的级别——某些等级的用户可以在每晚房价高于某个 <code>threshold</code> 阀值价格的时候享受折扣 <code>discount</code> 。</p> </li>
+<li> <p>用户享受折扣后，经过议价的每晚房价的利润 <code>margin</code> 。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>计算每个度假屋利润的算法如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-groovy" data-lang="groovy">if (price &lt; threshold) {
+  profit = price * margin
+} else {
+  profit = price * (1 - discount) * margin;
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>我们很可能不想用绝对利润作为评分，这会弱化其他如地点、受欢迎度和特性等因子的作用，而是将利润用目标利润 <code>target</code> 的百分比来表示，高于 目标的利润空间会有一个正向评分（大于 <code>1.0</code> ），低于目标的利润空间会有一个负向分数（小于 <code>1.0</code> ）：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-groovy" data-lang="groovy">if (price &lt; threshold) {
+  profit = price * margin
+} else {
+  profit = price * (1 - discount) * margin
+}
+return profit / target</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 里使用 <a href="http://groovy.codehaus.org/">Groovy</a> 作为默认的脚本语言，它与JavaScript很像，上面这个算法用 Groovy 脚本表示如下：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-groovy" data-lang="groovy">price  = doc['price'].value <b class="conum">(1)</b>
+margin = doc['margin'].value <b class="conum">(1)</b>
+
+if (price &lt; threshold) { <b class="conum">(2)</b>
+  return price * margin / target
+}
+return price * (1 - discount) * margin / target <b class="conum">(2)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>price</code> 和 <code>margin</code> 变量可以分别从文档的 <code>price</code> 和 <code>margin</code> 字段提取。</p> </li>
+<li> <p><code>threshold</code> 、 <code>discount</code> 和 <code>target</code> 是作为参数 <code>params</code> 传入的。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>最终我们将 <code>script_score</code> 函数与其他函数一起使用：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">GET /_search
+{
+  "function_score": {
+    "functions": [
+      { ...location clause... }, <b class="conum">(1)</b>
+      { ...price clause... }, <b class="conum">(1)</b>
+      {
+        "script_score": {
+          "params": { <b class="conum">(2)</b>
+            "threshold": 80,
+            "discount": 0.1,
+            "target": 10
+          },
+          "script": "price  = doc['price'].value; margin = doc['margin'].value;
+          if (price &lt; threshold) { return price * margin / target };
+          return price * (1 - discount) * margin / target;" <b class="conum">(3)</b>
+        }
+      }
+    ]
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>location</code> 和 <code>price</code> 语句在 <a href="#decay-functions">衰减函数</a> 中解释过。</p> </li>
+<li> <p>将这些变量作为参数 <code>params</code> 传递，我们可以查询时动态改变脚本无须重新编译。</p> </li>
+<li> <p>JSON 不能接受内嵌的换行符，脚本中的换行符可以用 <code>\n</code> 或 <code>;</code> 符号替代。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个查询根据用户对地点和价格的需求，返回用户最满意的文档，同时也考虑到我们对于盈利的要求。</p>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p><code>script_score</code> 函数提供了巨大的灵活性，可以通过脚本访问文档里的所有字段、当前评分 <code>_score</code> 甚至词频、逆向文档频率和字段长度规范值这样的信息（参见 see <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/modules-advanced-scripting.html">脚本对文本评分</a>）。</p>
+</div>
+<div class="paragraph">
+<p>有人说使用脚本对性能会有影响，如果确实发现脚本执行较慢，可以有以下三种选择：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>尽可能多的提前计算各种信息并将结果存入每个文档中。</p> </li>
+<li> <p>Groovy 很快，但没 Java 快。可以将脚本用原生的 Java 脚本重新实现。（参见 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/modules-scripting-native.html">原生 Java 脚本</a>）。</p> </li>
+<li> <p>仅对那些最佳评分的文档应用脚本，使用 <a href="#rescore-api">重新评分</a> 中提到的 <code>rescore</code> 功能。</p> </li>
+</ul>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="pluggable-similarites">可插拔的相似度算法</h3>
+<div class="paragraph">
+<p>在进一步讨论相关度和评分之前，我们会以一个更高级的话题结束本章节的内容：可插拔的相似度算法（Pluggable Similarity Algorithms）。 Elasticsearch 将 <a href="#practical-scoring-function">实用评分算法</a> 作为默认相似度算法，它也能够支持其他的一些算法，这些算法可以参考 <a href="https://www.elastic.co/guide/en/elasticsearch/reference/5.6/index-modules-similarity.html#configuration">相似度模块</a> 文档。</p>
+</div>
+<div class="sect3">
+<h4 id="bm25">Okapi BM25</h4>
+<div class="paragraph">
+<p>能与 TF/IDF 和向量空间模型媲美的就是 <a href="http://en.wikipedia.org/wiki/Okapi_BM25"><em>Okapi BM25</em></a> ，它被认为是 <em>当今最先进的</em> 排序函数。 BM25 源自 <a href="http://en.wikipedia.org/wiki/Probabilistic_relevance_model">概率相关模型（probabilistic relevance model）</a> ，而不是向量空间模型，但这个算法也和 Lucene 的实用评分函数有很多共通之处。</p>
+</div>
+<div class="paragraph">
+<p>BM25 同样使用词频、逆向文档频率以及字段长归一化，但是每个因子的定义都有细微区别。与其详细解释 BM25 公式，倒不如将关注点放在 BM25 所能带来的实际好处上。</p>
+</div>
+<div class="sect4">
+<h5 id="bm25-saturation">词频饱和度</h5>
+<div class="paragraph">
+<p>TF/IDF 和 BM25 同样使用 <a href="#idf">逆向文档频率</a> 来区分普通词（不重要）和非普通词（重要），同样认为（参见 <a href="#tf">词频</a> ）文档里的某个词出现次数越频繁，文档与这个词就越相关。</p>
+</div>
+<div class="paragraph">
+<p>不幸的是，普通词随处可见，实际上一个普通词在同一个文档中大量出现的作用会由于该词在 <em>所有</em> 文档中的大量出现而被抵消掉。</p>
+</div>
+<div class="paragraph">
+<p>曾经有个时期，将 <em>最</em> 普通的词（或 <em>停用词</em> ，参见 <a href="#stopwords">停用词</a>）从索引中移除被认为是一种标准实践，TF/IDF 正是在这种背景下诞生的。TF/IDF 没有考虑词频上限的问题，因为高频停用词已经被移除了。</p>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 的 <code>standard</code> 标准分析器（ <code>string</code> 字段默认使用）不会移除停用词，因为尽管这些词的重要性很低，但也不是毫无用处。这导致：在一个相当长的文档中，像 <code>the</code> 和 <code>and</code> 这样词出现的数量会高得离谱，以致它们的权重被人为放大。</p>
+</div>
+<div class="paragraph">
+<p>另一方面，BM25 有一个上限，文档里出现 5 到 10 次的词会比那些只出现一两次的对相关度有着显著影响。但是如图 <a href="#img-bm25-saturation">TF/IDF 与 BM25 的词频饱和度</a> 所见，文档中出现 20 次的词几乎与那些出现上千次的词有着相同的影响。</p>
+</div>
+<div class="paragraph">
+<p>这就是 <em>非线性词频饱和度（nonlinear term-frequency saturation）</em> 。</p>
+</div>
+<div id="img-bm25-saturation" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1706.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_1706.png" alt="TF/IDF 与 BM25 的词频饱和度"></a>
+</div>
+<div class="title">
+Figure 34. TF/IDF 与 BM25 的词频饱和度
+</div>
+</div>
+</div>
+<div class="sect4">
+<h5 id="bm25-normalization">字段长度归一化（Field-length normalization）</h5>
+<div class="paragraph">
+<p>在 <a href="#field-norm">字段长归一化</a> 中，我们提到过 Lucene 会认为较短字段比较长字段更重要：字段某个词的频度所带来的重要性会被这个字段长度抵消，但是实际的评分函数会将所有字段以同等方式对待。它认为所有较短的 <code>title</code> 字段比所有较长的 <code>body</code> 字段更重要。</p>
+</div>
+<div class="paragraph">
+<p>BM25 当然也认为较短字段应该有更多的权重，但是它会分别考虑每个字段内容的平均长度，这样就能区分短 <code>title</code> 字段和 <code>长</code> title 字段。</p>
+</div>
+<div class="admonitionblock caution">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Caution
+</div> </td>
+<td class="content"> 在 <a href="#query-time-boosting">查询时权重提升</a> 中，已经说过 <code>title</code> 字段因为其长度比 <code>body</code> 字段 <em>自然</em> 有更高的权重提升值。由于字段长度的差异只能应用于单字段，这种自然的权重提升会在使用 BM25 时消失。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect4">
+<h5 id="bm25-tunability">BM25 调优</h5>
+<div class="paragraph">
+<p>不像 TF/IDF ，BM25 有一个比较好的特性就是它提供了两个可调参数：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+<code>k1</code>
+</dt>
+<dd>
+<p>这个参数控制着词频结果在词频饱和度中的上升速度。默认值为 <code>1.2</code> 。值越小饱和度变化越快，值越大饱和度变化越慢。</p>
+</dd>
+<dt class="hdlist1">
+<code>b</code>
+</dt>
+<dd>
+<p>这个参数控制着字段长归一值所起的作用， <code>0.0</code> 会禁用归一化， <code>1.0</code> 会启用完全归一化。默认值为 <code>0.75</code> 。</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>在实践中，调试 BM25 是另外一回事， <code>k1</code> 和 <code>b</code> 的默认值适用于绝大多数文档集合，但最优值还是会因为文档集不同而有所区别，为了找到文档集合的最优值，就必须对参数进行反复修改验证。</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="changing-similarities">更改相似度</h3>
+<div class="paragraph">
+<p>相似度算法可以按字段指定，只需在映射中为不同字段选定即可：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "mappings": {
+    "doc": {
+      "properties": {
+        "title": {
+          "type":       "string",
+          "similarity": "BM25" <b class="conum">(1)</b>
+        },
+        "body": {
+          "type":       "string",
+          "similarity": "default" <b class="conum">(2)</b>
+        }
+      }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>title</code> 字段使用 BM25 相似度算法。</p> </li>
+<li> <p><code>body</code> 字段用默认相似度算法（参见 <a href="#practical-scoring-function">实用评分函数</a>）。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>目前，Elasticsearch 不支持更改已有字段的相似度算法 <code>similarity</code> 映射，只能通过为数据重新建立索引来达到目的。</p>
+</div>
+<div class="sect3">
+<h4 id="_配置_bm25">配置 BM25</h4>
+<div class="paragraph">
+<p>配置相似度算法和配置分析器很相似，自定义相似度算法可以在创建索引时指定，例如：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-json" data-lang="json">PUT /my_index
+{
+  "settings": {
+    "similarity": {
+      "my_bm25": { <b class="conum">(1)</b>
+        "type": "BM25",
+        "b":    0 <b class="conum">(2)</b>
+      }
+    }
+  },
+  "mappings": {
+    "doc": {
+      "properties": {
+        "title": {
+          "type":       "string",
+          "similarity": "my_bm25" <b class="conum">(3)</b>
+        },
+        "body": {
+          "type":       "string",
+          "similarity": "BM25" <b class="conum">(4)</b>
+        }
+      }
+    }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>创建一个基于内置 <code>BM25</code> ，名为 <code>my_bm25</code> 的自定义相似度算法。</p> </li>
+<li> <p>禁用字段长度规范化（field-length normalization）。参见 <a href="#bm25-tunability">调试 BM25</a> 。</p> </li>
+<li> <p><code>title</code> 字段使用自定义相似度算法 <code>my_bm25</code> 。</p> </li>
+<li> <p>字段 <code>body</code> 使用内置相似度算法 <code>BM25</code> 。</p> </li>
+</ol>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Tip
+</div> </td>
+<td class="content"> 自定义的相似度算法可以通过关闭索引，更新索引设置，开启索引这个过程进行更新。这样可以无须重建索引又能试验不同的相似度算法配置。 </td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="relevance-conclusion">调试相关度是最后 10% 要做的事情</h3>
+<div class="paragraph">
+<p>本章介绍了 Lucene 是如何基于 TF/IDF 生成评分的。理解评分过程是非常重要的，这样就可以根据具体的业务对评分结果进行调试、调节、减弱和定制。</p>
+</div>
+<div class="paragraph">
+<p>实践中，简单的查询组合就能提供很好的搜索结果，但是为了获得 <em>具有成效</em> 的搜索结果，就必须反复推敲修改前面介绍的这些调试方法。</p>
+</div>
+<div class="paragraph">
+<p>通常，经过对策略字段应用权重提升，或通过对查询语句结构的调整来强调某个句子的重要性这些方法，就足以获得良好的结果。有时，如果 Lucene 基于词的 TF/IDF 模型不再满足评分需求（例如希望基于时间或距离来评分），则需要更具侵略性的调整。</p>
+</div>
+<div class="paragraph">
+<p>除此之外，相关度的调试就有如兔子洞，一旦跳进去就很难再出来。 <em>最相关</em> 这个概念是一个难以触及的模糊目标，通常不同人对文档排序又有着不同的想法，这很容易使人陷入持续反复调整而没有明显进展的怪圈。</p>
+</div>
+<div class="paragraph">
+<p>我们强烈建议不要陷入这种怪圈，而要监控测量搜索结果。监控用户点击最顶端结果的频次，这可以是前 10 个文档，也可以是第一页的；用户不查看首次搜索的结果而直接执行第二次查询的频次；用户来回点击并查看搜索结果的频次，等等诸如此类的信息。</p>
+</div>
+<div class="paragraph">
+<p>这些都是用来评价搜索结果与用户之间相关程度的指标。如果查询能返回高相关的文档，用户会选择前五中的一个，得到想要的结果，然后离开。不相关的结果会让用户来回点击并尝试新的搜索条件。</p>
+</div>
+<div class="paragraph">
+<p>一旦有了这些监控手段，想要调试查询就并不复杂，稍作调整，监控用户的行为改变并做适当反复尝试。本章介绍的一些工具就只是工具而已，要想物尽其用并将搜索结果提高到 <em>极高的</em> 水平，唯一途径就是需要具备能评价度量用户行为的强大能力。</p>
+</div>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/156/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/79/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/79/index.html">SpringBoot学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/50.html">clsaa</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/13/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/13/index.html">Go实战开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2789个">2789</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/168/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/203/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/203/index.html">Java Web 入门开发教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/115.html">skyline75489</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 647个">647</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/26/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/26/index.html">安卓应用安全指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">77页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 11个">11</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/40/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/foreword_id.html" title="序言" data-book-page-rel-url="foreword_id.html" data-book-page-id="9242">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="9243">前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/_who_should_read_this_book.html" title="谁应该读这本书" data-book-page-rel-url="_who_should_read_this_book.html" data-book-page-id="9244">谁应该读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_why_we_wrote_this_book.html" title="为什么我们要写这本书" data-book-page-rel-url="_why_we_wrote_this_book.html" data-book-page-id="9245">为什么我们要写这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_elasticsearch_version.html" title="Elasticsearch 版本" data-book-page-rel-url="_elasticsearch_version.html" data-book-page-id="9246">Elasticsearch 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_how_to_read_this_book.html" title="如何读这本书" data-book-page-rel-url="_how_to_read_this_book.html" data-book-page-id="9247">如何读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_navigating_this_book.html" title="本书导航" data-book-page-rel-url="_navigating_this_book.html" data-book-page-id="9248">本书导航</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_online_resources.html" title="在线资源" data-book-page-rel-url="_online_resources.html" data-book-page-id="9249">在线资源</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_conventions_used_in_this_book.html" title="本书协议约定" data-book-page-rel-url="_conventions_used_in_this_book.html" data-book-page-id="9250">本书协议约定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_using_code_examples.html" title="使用代码示例" data-book-page-rel-url="_using_code_examples.html" data-book-page-id="9251">使用代码示例</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_acknowledgments.html" title="鸣谢" data-book-page-rel-url="_acknowledgments.html" data-book-page-id="9252">鸣谢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/getting-started.html" title="基础入门" data-book-page-rel-url="getting-started.html" data-book-page-id="9253">基础入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/intro.html" title="你知道的, 为了搜索&#8230;&#8203;" data-book-page-rel-url="intro.html" data-book-page-id="9254">你知道的, 为了搜索&#8230;&#8203;</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-cluster.html" title="集群内的原理" data-book-page-rel-url="distributed-cluster.html" data-book-page-id="9255">集群内的原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/data-in-data-out.html" title="数据输入和输出" data-book-page-rel-url="data-in-data-out.html" data-book-page-id="9256">数据输入和输出</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-docs.html" title="分布式文档存储" data-book-page-rel-url="distributed-docs.html" data-book-page-id="9257">分布式文档存储</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search.html" title="搜索——最基本的工具" data-book-page-rel-url="search.html" data-book-page-id="9258">搜索——最基本的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/mapping-analysis.html" title="映射和分析" data-book-page-rel-url="mapping-analysis.html" data-book-page-id="9259">映射和分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-body-search.html" title="请求体查询" data-book-page-rel-url="full-body-search.html" data-book-page-id="9260">请求体查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/sorting.html" title="排序与相关性" data-book-page-rel-url="sorting.html" data-book-page-id="9261">排序与相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-search.html" title="执行分布式检索" data-book-page-rel-url="distributed-search.html" data-book-page-id="9262">执行分布式检索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/index-management.html" title="索引管理" data-book-page-rel-url="index-management.html" data-book-page-id="9263">索引管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/inside-a-shard.html" title="分片内部原理" data-book-page-rel-url="inside-a-shard.html" data-book-page-id="9264">分片内部原理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search-in-depth.html" title="深入搜索" data-book-page-rel-url="search-in-depth.html" data-book-page-id="9265">深入搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/structured-search.html" title="结构化搜索" data-book-page-rel-url="structured-search.html" data-book-page-id="9266">结构化搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-text-search.html" title="全文搜索" data-book-page-rel-url="full-text-search.html" data-book-page-id="9267">全文搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/multi-field-search.html" title="多字段搜索" data-book-page-rel-url="multi-field-search.html" data-book-page-id="9268">多字段搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/proximity-matching.html" title="近似匹配" data-book-page-rel-url="proximity-matching.html" data-book-page-id="9269">近似匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/partial-matching.html" title="部分匹配" data-book-page-rel-url="partial-matching.html" data-book-page-id="9270">部分匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/controlling-relevance.html" title="控制相关度" data-book-page-rel-url="controlling-relevance.html" data-book-page-id="9271">控制相关度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/languages.html" title="处理人类语言" data-book-page-rel-url="languages.html" data-book-page-id="9272">处理人类语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/language-intro.html" title="开始处理各种语言" data-book-page-rel-url="language-intro.html" data-book-page-id="9273">开始处理各种语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/identifying-words.html" title="词汇识别" data-book-page-rel-url="identifying-words.html" data-book-page-id="9274">词汇识别</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/token-normalization.html" title="归一化词元" data-book-page-rel-url="token-normalization.html" data-book-page-id="9275">归一化词元</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stemming.html" title="将单词还原为词根" data-book-page-rel-url="stemming.html" data-book-page-id="9276">将单词还原为词根</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stopwords.html" title="停用词: 性能与精度" data-book-page-rel-url="stopwords.html" data-book-page-id="9277">停用词: 性能与精度</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/synonyms.html" title="同义词" data-book-page-rel-url="synonyms.html" data-book-page-id="9278">同义词</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/fuzzy-matching.html" title="拼写错误" data-book-page-rel-url="fuzzy-matching.html" data-book-page-id="9279">拼写错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/aggregations.html" title="聚合" data-book-page-rel-url="aggregations.html" data-book-page-id="9280">聚合</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/aggs-high-level.html" title="高阶概念" data-book-page-rel-url="aggs-high-level.html" data-book-page-id="9281">高阶概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_aggregation_test_drive.html" title="尝试聚合" data-book-page-rel-url="_aggregation_test_drive.html" data-book-page-id="9282">尝试聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_building_bar_charts.html" title="条形图" data-book-page-rel-url="_building_bar_charts.html" data-book-page-id="9283">条形图</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_looking_at_time.html" title="按时间统计" data-book-page-rel-url="_looking_at_time.html" data-book-page-id="9284">按时间统计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_scoping_aggregations.html" title="范围限定的聚合" data-book-page-rel-url="_scoping_aggregations.html" data-book-page-id="9285">范围限定的聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_filtering_queries_and_aggregations.html" title="过滤和聚合" data-book-page-rel-url="_filtering_queries_and_aggregations.html" data-book-page-id="9286">过滤和聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_sorting_multivalue_buckets.html" title="多桶排序" data-book-page-rel-url="_sorting_multivalue_buckets.html" data-book-page-id="9287">多桶排序</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_approximate_aggregations.html" title="近似聚合" data-book-page-rel-url="_approximate_aggregations.html" data-book-page-id="9288">近似聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/significant-terms.html" title="通过聚合发现异常指标" data-book-page-rel-url="significant-terms.html" data-book-page-id="9289">通过聚合发现异常指标</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/docvalues-and-fielddata.html" title="Doc Values and Fielddata" data-book-page-rel-url="docvalues-and-fielddata.html" data-book-page-id="9290">Doc Values and Fielddata</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_closing_thoughts.html" title="总结" data-book-page-rel-url="_closing_thoughts.html" data-book-page-id="9291">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geoloc.html" title="地理位置" data-book-page-rel-url="geoloc.html" data-book-page-id="9292">地理位置</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/geopoints.html" title="地理坐标点" data-book-page-rel-url="geopoints.html" data-book-page-id="9293">地理坐标点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geohashes.html" title="Geohashes" data-book-page-rel-url="geohashes.html" data-book-page-id="9294">Geohashes</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-aggs.html" title="地理位置聚合" data-book-page-rel-url="geo-aggs.html" data-book-page-id="9295">地理位置聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-shapes.html" title="地理形状" data-book-page-rel-url="geo-shapes.html" data-book-page-id="9296">地理形状</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/modeling-your-data.html" title="数据建模" data-book-page-rel-url="modeling-your-data.html" data-book-page-id="9297">数据建模</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/relations.html" title="关联关系处理" data-book-page-rel-url="relations.html" data-book-page-id="9298">关联关系处理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/nested-objects.html" title="嵌套对象" data-book-page-rel-url="nested-objects.html" data-book-page-id="9299">嵌套对象</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/parent-child.html" title="父-子关系文档" data-book-page-rel-url="parent-child.html" data-book-page-id="9300">父-子关系文档</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/scale.html" title="扩容设计" data-book-page-rel-url="scale.html" data-book-page-id="9301">扩容设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/administration.html" title="管理、监控和部署" data-book-page-rel-url="administration.html" data-book-page-id="9302">管理、监控和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/cluster-admin.html" title="监控" data-book-page-rel-url="cluster-admin.html" data-book-page-id="9303">监控</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/deploy.html" title="部署" data-book-page-rel-url="deploy.html" data-book-page-id="9304">部署</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/post_deploy.html" title="部署后" data-book-page-rel-url="post_deploy.html" data-book-page-id="9305">部署后</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =40;var bookPageId =9271;var bookPageRelUrl ='controlling-relevance.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

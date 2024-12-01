@@ -1,0 +1,853 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>从引导加载程序内核-Linux 内核揭密</title>
+<meta content='从引导加载程序内核,Linux 内核揭密' name='keywords'>
+<meta content='从引导加载程序内核,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Booting/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">引导</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Booting/linux-bootstrap-2.html">
+<span class="">在内核安装代码的第一步</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="内核引导过程-第一部分">内核引导过程. 第一部分.</h1>
+<h2 id="从引导加载程序内核">从引导加载程序内核</h2>
+<p>如果看过我在这之前的<a href="http://0xax.blogspot.com/search/label/asm">文章</a>，你就会知道我已经开始涉足底层的代码编写。我写了一些关于 Linux x86_64 汇编的文章。同时，我开始深入研究 Linux 源代码。底层是如何工作的，程序是如何在电脑上运行的，它们是如何在内存中定位的，内核是如何管理进程和内存，网络堆栈是如何在底层工作的等等，这些我都非常感兴趣。因此，我决定去写另外的一系列文章关于 <strong>x86_64</strong> 框架的 Linux 内核。</p>
+<p><em>注意这不是官方文档，只是学习和分享知识</em></p>
+<p><strong>需要的基础知识</strong></p>
+<ul>
+<li>理解 C 代码</li>
+<li>理解 汇编语言 代码 （AT&amp;T 语法）</li>
+</ul>
+<p>不管怎样，如果你才开始学一些，我会在这些文章中尝试去解释一些部分。好了，小的介绍结束，我们开始深入内核和底层。</p>
+<p>我们的文章是基于 Linux 内核 3.18 版本进行的，如果后续的内核版本有任何改变，我将作出相应的更新。</p>
+<h2 id="神奇的电源按钮接下来会发生什么">神奇的电源按钮，接下来会发生什么？</h2>
+<p>尽管这是一系列关于 Linux 内核的文章，我们在第一章并不会从内核代码开始。电脑在你按下电源开关的时候，就开始工作。主板发送信号给<a href="https://en.wikipedia.org/wiki/Power_supply">电源</a>，而电源收到信号后会给电脑供应合适的电量。一旦主板收到了<a href="https://en.wikipedia.org/wiki/Power_good_signal">电源备妥信号</a>，它会尝试启动 CPU 。CPU 则复位寄存器的所有数据，并设置每个寄存器的预定值。</p>
+<p><a href="https://en.wikipedia.org/wiki/Intel_80386">80386</a> 以及后来的 CPUs 在电脑复位后，在 CPU 寄存器中定义了如下预定义数据：</p>
+<pre><code>IP          0xfff0
+CS selector 0xf000
+CS base     0xffff0000
+</code></pre>
+<p>处理器开始在<a href="https://en.wikipedia.org/wiki/Real_mode">实模式</a>工作。我们需要退回一点去理解在这种模式下的内存分段机制。从 <a href="https://en.wikipedia.org/wiki/Intel_8086">8086</a>到现在的 Intel 64 位 CPU，所有 x86兼容处理器都支持实模式。8086 处理器有一个20位寻址总线，这意味着它可以对0到 220 位地址空间（ 1MB ）进行操作。不过它只有16位的寄存器，所以最大寻址空间是 216 即 0xffff （64 KB）。实模式使用<a href="http://en.wikipedia.org/wiki/Memory_segmentation">段式内存管理</a> 来管理整个内存空间。所有内存被分成固定的65536字节（64 KB） 大小的小块。由于我们不能用16位寄存器寻址大于 64KB 的内存，一种替代的方法被设计出来了。一个地址包括两个部分：数据段起始地址和从该数据段起的偏移量。为了得到内存中的物理地址，我们要让数据段乘16并加上偏移量：</p>
+<pre><code>PhysicalAddress = Segment * 16 + Offset
+</code></pre>
+<p>举个例子，如果 <code>CS:IP</code> 是 <code>0x2000:0x0010</code>, 则对应的物理地址将会是：</p>
+<pre><code class="language-python">&gt;&gt;&gt; hex((0x2000 &lt;&lt; 4) + 0x0010)
+'0x20010'
+</code></pre>
+<p>不过如果我们使用16位2进制能表示的最大值进行寻址：<code>0xffff:0xffff</code>，根据上面的公式，结果将会是：</p>
+<pre><code class="language-python">&gt;&gt;&gt; hex((0xffff &lt;&lt; 4) + 0xffff)
+'0x10ffef'
+</code></pre>
+<p>这超出 1MB 65519 字节。既然实模式下， CPU 只能访问 1MB 地址空间，<code>0x10ffef</code> 变成有 <a href="https://en.wikipedia.org/wiki/A20_line">A20</a> 缺陷的 <code>0x00ffef</code>。</p>
+<p>我们了解了实模式和在实模式下的内存寻址方式，让我们来回头继续来看复位后的寄存器值。</p>
+<p><code>CS</code> 寄存器包含两个部分：可视段选择器和隐含基址。 结合之前定义的 <code>CS</code> 基址和 <code>IP</code> 值，逻辑地址应该是：</p>
+<pre><code>0xffff0000:0xfff0
+</code></pre>
+<p>这种形式的起始地址为EIP寄存器里的值加上基址地址：</p>
+<pre><code class="language-python">&gt;&gt;&gt; 0xffff0000 + 0xfff0
+'0xfffffff0'
+</code></pre>
+<p>得到的 <code>0xfffffff0</code> 是 4GB - 16 字节。 这个地方是 <a href="http://en.wikipedia.org/wiki/Reset_vector">复位向量(Reset vector)</a> 。 这是CPU在重置后期望执行的第一条指令的内存地址。它包含一个 <a href="http://en.wikipedia.org/wiki/JMP_%28x86_instruction%29">jump</a> 指令，这个指令通常指向BIOS入口点。举个例子，如果访问 <a href="http://www.coreboot.org/">coreboot</a> 源代码，将看到：</p>
+<pre><code class="language-assembly">	.section ".reset"
+	.code16
+.globl	reset_vector
+reset_vector:
+	.byte  0xe9
+	.int   _start - ( . + 2 )
+	...
+</code></pre>
+<p>上面的跳转指令（ <a href="http://ref.x86asm.net/coder32.html#xE9">opcode</a> - 0xe9）跳转到地址 <code>_start - ( . + 2)</code> 去执行代码。 <code>reset</code> 段是16字节代码段， 起始于地址 <code>0xfffffff0</code>，因此 CPU 复位之后，就会跳到这个地址来执行相应的代码 ：</p>
+<pre><code>SECTIONS {
+	_ROMTOP = 0xfffffff0;
+	. = _ROMTOP;
+	.reset . : {
+		*(.reset)
+		. = 15 ;
+		BYTE(0x00);
+	}
+}
+</code></pre>
+<p>现在BIOS已经开始工作了。在初始化和检查硬件之后，需要寻找到一个可引导设备。可引导设备列表存储在在 BIOS 配置中, BIOS 将根据其中配置的顺序，尝试从不同的设备上寻找引导程序。对于硬盘，BIOS 将尝试寻找引导扇区。如果在硬盘上存在一个MBR分区，那么引导扇区储存在第一个扇区(512字节)的头446字节，引导扇区的最后必须是 <code>0x55</code> 和 <code>0xaa</code> ，这2个字节称为魔术字节（Magic Bytes)，如果 BIOS 看到这2个字节，就知道这个设备是一个可引导设备。举个例子：</p>
+<pre><code class="language-assembly">;
+; Note: this example is written in Intel Assembly syntax
+;
+[BITS 16]
+[ORG  0x7c00]
+
+boot:
+    mov al, '!'
+    mov ah, 0x0e
+    mov bh, 0x00
+    mov bl, 0x07
+
+    int 0x10
+    jmp $
+
+times 510-($-$$) db 0
+
+db 0x55
+db 0xaa
+</code></pre>
+<p>构建并运行：</p>
+<pre><code>nasm -f bin boot.nasm &amp;&amp; qemu-system-x86_64 boot
+</code></pre>
+<p>这让 <a href="http://qemu.org">QEMU</a> 使用刚才新建的 <code>boot</code> 二进制文件作为磁盘镜像。由于这个二进制文件是由上述汇编语言产生，它满足引导扇区(起始设为 <code>0x7c00</code>, 用Magic Bytes结束)的需求。QEMU将这个二进制文件作为磁盘镜像的主引导记录(MBR)。</p>
+<p>将看到:</p>
+<p><a href="http://oi60.tinypic.com/2qbwup0.jpg" data-uk-lightbox><img src="http://oi60.tinypic.com/2qbwup0.jpg" alt="Simple bootloader which prints only !"></a></p>
+<p>在这个例子中，这段代码被执行在16位的实模式，起始于内存0x7c00。之后调用 <a href="http://www.ctyme.com/intr/rb-0106.htm">0x10</a> 中断打印 <code>!</code> 符号。用0填充剩余的510字节并用两个Magic Bytes <code>0xaa</code> 和 <code>0x55</code> 结束。</p>
+<p>可以使用 <code>objdump</code> 工具来查看转储信息：</p>
+<pre><code>nasm -f bin boot.nasm
+objdump -D -b binary -mi386 -Maddr16,data16,intel boot
+</code></pre>
+<p>一个真实的启动扇区包含了分区表，已经用来启动系统的指令，而不是像我们上面的程序，只是输出了一个感叹号就结束了。从启动扇区的代码被执行开始，BIOS 就将系统的控制权转移给了引导程序，让我们继续往下看看引导程序都做了些什么。</p>
+<p><strong>NOTE</strong>: 强调一点，上面的引导程序是运行在实模式下的，因此 CPU 是使用下面的公式进行物理地址的计算的：</p>
+<pre><code>PhysicalAddress = Segment * 16 + Offset
+</code></pre>
+<p>而且正如我前面所说的，在实模式下，CPU 只能使用16位的通用寄存器。16位寄存器能够表达的最大数值是：<code>0xffff</code> ，所以按照上面的公式计算出的最大物理地址是：</p>
+<pre><code class="language-python">&gt;&gt;&gt; hex((0xffff * 16) + 0xffff)
+'0x10ffef'
+</code></pre>
+<p>这个地址在 <a href="https://en.wikipedia.org/wiki/Intel_8086">8086</a> 处理器下，将被转换成地址 <code>0x0ffef</code>, 原因是因为，8086 cpu 只有20位地址线，只能表示 <code>2^20 = 1MB</code> 的地址，而上面这个地址已经超出了 1MB 地址的范围，所以 CPU 就舍弃了最高位。</p>
+<p>实模式下的 1MB 地址空间分配表：</p>
+<pre><code>0x00000000 - 0x000003FF - Real Mode Interrupt Vector Table
+0x00000400 - 0x000004FF - BIOS Data Area
+0x00000500 - 0x00007BFF - Unused
+0x00007C00 - 0x00007DFF - Our Bootloader
+0x00007E00 - 0x0009FFFF - Unused
+0x000A0000 - 0x000BFFFF - Video RAM (VRAM) Memory
+0x000B0000 - 0x000B7777 - Monochrome Video Memory
+0x000B8000 - 0x000BFFFF - Color Video Memory
+0x000C0000 - 0x000C7FFF - Video ROM BIOS
+0x000C8000 - 0x000EFFFF - BIOS Shadow Area
+0x000F0000 - 0x000FFFFF - System BIOS
+</code></pre>
+<p>如果你的记性不错，在看到这张表的时候，一定会跳出来一个问题。在上面的章节中，我说了 CPU 执行的第一条指令是在地址 <code>0xFFFFFFF0</code> 处，这个地址远远大于 <code>0xFFFFF</code> ( 1MB )。那么实模式下的 CPU 是如何访问到这个地址的呢？文档 <a href="http://www.coreboot.org/Developer_Manual/Memory_map">coreboot</a> 给出了答案:</p>
+<pre><code>0xFFFE_0000 - 0xFFFF_FFFF: 128 kilobyte ROM mapped into address space
+</code></pre>
+<p><code>0xFFFFFFF0</code> 这个地址被映射到了 ROM，因此 CPU 执行的第一条指令来自于 ROM，而不是 RAM。</p>
+<h2 id="引导程序">引导程序</h2>
+<p>在现实世界中，要启动 Linux 系统，有多种引导程序可以选择。比如 <a href="https://www.gnu.org/software/grub/">GRUB 2</a> 和 <a href="http://www.syslinux.org/wiki/index.php/The_Syslinux_Project">syslinux</a>。Linux内核通过 <a href="http://lxr.free-electrons.com/source/Documentation/x86/boot.txt?v=3.18">Boot protocol</a> 来定义应该如何实现引导程序。在这里我们将只介绍 GRUB 2。</p>
+<p>现在 BIOS 已经选择了一个启动设备，并且将控制权转移给了启动扇区中的代码，在我们的例子中，启动扇区代码是 <a href="http://git.savannah.gnu.org/gitweb/?p=grub.git;a=blob;f=grub-core/boot/i386/pc/boot.S;hb=HEAD">boot.img</a>。因为这段代码只能占用一个扇区，因此非常简单，只做一些必要的初始化，然后就跳转到 GRUB 2's core image 去执行。 Core image 的代码请参考 <a href="http://git.savannah.gnu.org/gitweb/?p=grub.git;a=blob;f=grub-core/boot/i386/pc/diskboot.S;hb=HEAD">diskboot.img</a>，一般来说 core image 在磁盘上存储在启动扇区之后到第一个可用分区之前。core image 的初始化代码会把整个 core image （包括 GRUB 2的内核代码和文件系统驱动） 引导到内存中。 引导完成之后，<a href="http://git.savannah.gnu.org/gitweb/?p=grub.git;a=blob;f=grub-core/kern/main.c">grub_main</a>将被调用。</p>
+<p><code>grub_main</code> 初始化控制台，计算模块基地址，设置 root 设备，读取 grub 配置文件，加载模块。最后，将 GRUB 置于 normal 模式，在这个模式中，<code>grub_normal_execute</code> (from <code>grub-core/normal/main.c</code>) 将被调用以完成最后的准备工作，然后显示一个菜单列出所用可用的操作系统。当某个操作系统被选择之后，<code>grub_menu_execute_entry</code> 开始执行，它将调用 GRUB 的 <code>boot</code> 命令，来引导被选中的操作系统。</p>
+<p>就像 kernel boot protocol 所描述的，引导程序必须填充 kernel setup header （位于 kernel setup code 偏移 <code>0x01f1</code> 处） 的必要字段。kernel setup header的定义开始于 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18">arch/x86/boot/header.S</a>：</p>
+<pre><code class="language-assembly">	.globl hdr
+hdr:
+	setup_sects: .byte 0
+	root_flags:  .word ROOT_RDONLY
+	syssize:     .long 0
+	ram_size:    .word 0
+	vid_mode:    .word SVGA_MODE
+	root_dev:    .word 0
+	boot_flag:   .word 0xAA55
+</code></pre>
+<p>bootloader必须填充在 Linux boot protocol 中标记为 <code>write</code> 的头信息，比如 <a href="http://lxr.free-electrons.com/source/Documentation/x86/boot.txt?v=3.18#L354">type_of_loader</a>，这些头信息可能来自命令行，或者通过计算得到。在这里我们不会详细介绍所有的 kernel setup header，我们将在需要的时候逐个介绍。不过，你可以自己通过 <a href="http://lxr.free-electrons.com/source/Documentation/x86/boot.txt?v=3.18#L156">boot protocol</a> 来了解这些设置。</p>
+<p>通过阅读 kernel boot protocol，在内核被引导入内存后，内存使用情况将入下表所示：</p>
+<pre><code class="language-shell">         | Protected-mode kernel  |
+100000   +------------------------+
+         | I/O memory hole        |
+0A0000   +------------------------+
+         | Reserved for BIOS      | Leave as much as possible unused
+         ~                        ~
+         | Command line           | (Can also be below the X+10000 mark)
+X+10000  +------------------------+
+         | Stack/heap             | For use by the kernel real-mode code.
+X+08000  +------------------------+
+         | Kernel setup           | The kernel real-mode code.
+         | Kernel boot sector     | The kernel legacy boot sector.
+       X +------------------------+
+         | Boot loader            | &lt;- Boot sector entry point 0x7C00
+001000   +------------------------+
+         | Reserved for MBR/BIOS  |
+000800   +------------------------+
+         | Typically used by MBR  |
+000600   +------------------------+
+         | BIOS use only          |
+000000   +------------------------+
+
+</code></pre>
+<p>所以当 bootloader 完成任务，将执行权移交给 kernel，kernel 的代码从以下地址开始执行：</p>
+<pre><code>0x1000 + X + sizeof(KernelBootSector) + 1
+个人以为应该是 X + sizeof(KernelBootSector) + 1 因为 X 已经是一个具体的物理地址了，不是一个偏移
+</code></pre>
+<p>上面的公式中， <code>X</code> 是 kernel bootsector 被引导入内存的位置。在我的机器上， <code>X</code> 的值是 <code>0x10000</code>，我们可以通过 memory dump 来检查这个地址：</p>
+<p><a href="http://oi57.tinypic.com/16bkco2.jpg" data-uk-lightbox><img src="http://oi57.tinypic.com/16bkco2.jpg" alt="kernel first address"></a></p>
+<p>到这里，引导程序完成它的使命，并将控制权移交给了 Linux kernel。下面我们就来看看 kernel setup code 都做了些什么。</p>
+<h2 id="内核设置">内核设置</h2>
+<p>经过上面的一系列操作，我们终于进入到内核了。不过从技术上说，内核还没有被运行起来，因为首先我们需要正确设置内核，启动内存管理，进程管理等等。内核设置代码的运行起点是 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18">arch/x86/boot/header.S</a> 中定义的 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L293">_start</a> 函数。 在 <code>_start</code> 函数开始之前，还有很多的代码，那这些代码是做什么的呢？</p>
+<p>实际上 <code>_start</code> 开始之前的代码是 kenerl 自带的 bootloader。在很久以前，是可以使用这个 bootloader 来启动 Linux 的。不过在新的 Linux 中，这个 bootloader 代码已经不再启动 Linux 内核，而只是输出一个错误信息。 如果你运行下面的命令，直接使用 Linux 内核来启动，你会看到下图所示的错误：</p>
+<pre><code>qemu-system-x86_64 vmlinuz-3.18-generic
+</code></pre>
+<p><a href="http://oi60.tinypic.com/r02xkz.jpg" data-uk-lightbox><img src="http://oi60.tinypic.com/r02xkz.jpg" alt="Try vmlinuz in qemu"></a></p>
+<p>为了能够作为 bootloader 来使用, <code>header.S</code> 开始处定义了 [MZ] <a href="https://en.wikipedia.org/wiki/DOS_MZ_executable">MZ</a> 魔术数字, 并且定义了 <a href="https://en.wikipedia.org/wiki/Portable_Executable">PE</a> 头，在 PE 头中定义了输出的字符串：</p>
+<pre><code class="language-assembly">#ifdef CONFIG_EFI_STUB
+# "MZ", MS-DOS header
+.byte 0x4d
+.byte 0x5a
+#endif
+...
+...
+...
+pe_header:
+	.ascii "PE"
+	.word 0
+</code></pre>
+<p>之所以代码需要这样写，这个是因为遵从 <a href="https://en.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">UEFI</a> 的硬件需要这样的结构才能正常引导操作系统。</p>
+<p>去除这些作为 bootloader 使用的代码，真正的内核代码就从 <code>_start</code> 开始了：</p>
+<pre><code>// header.S line 292
+.globl _start
+_start:
+</code></pre>
+<p>其他的 bootloader (grub2 and others) 知道 _start 所在的位置（ 从 <code>MZ</code> 头开始偏移 <code>0x200</code> 字节 ），所以这些 bootloader 就会忽略所有在这个位置前的代码（这些之前的代码位于 <code>.bstext</code> 段中）， 直接跳转到这个位置启动内核。</p>
+<pre><code>//
+// arch/x86/boot/setup.ld
+//
+. = 0;                    // current position
+.bstext : { *(.bstext) }  // put .bstext section to position 0
+.bsdata : { *(.bsdata) }
+</code></pre>
+<pre><code class="language-assembly">	.globl _start
+_start:
+	.byte 0xeb
+	.byte start_of_setup-1f
+1:
+	//
+	// rest of the header
+	//
+</code></pre>
+<p><code>_start</code> 开始就是一个 <code>jmp</code> 语句（<code>jmp</code> 语句的 opcode 是 <code>0xeb</code> ），这个跳转语句是一个短跳转，跟在后面的是一个相对地址 （ <code>start_of_setup - 1f</code> ）。在汇编代码中 <code>Nf</code> 代表了当前代码之后第一个标号为 <code>N</code> 的代码段的地址。回到我们的代码，在 <code>_start</code> 标号之后的第一个标号为 <code>1</code> 的代码段中包含了剩下的 setup header 结构。在标号为 <code>1</code> 的代码段结束之后，紧接着就是标号为 <code>start_of_setup</code> 的代码段 （这个代码段位于 <code>.entrytext</code> 代码区，这个代码段中的第一条指令实际上是内核开始执行之后的第一条指令） 。</p>
+<p>下面让我们来看一下 GRUB2 的代码是如何跳转到 <code>_start</code> 标号处的。从 Linux 内核代码中，我们知道 <code>_start</code> 标号的代码位于偏移 <code>0x200</code> 处。在 GRUB2 的源代码中我们可以看到下面的代码：</p>
+<pre><code class="language-C">  state.gs = state.fs = state.es = state.ds = state.ss = segment;
+  state.cs = segment + 0x20;
+</code></pre>
+<p>在我的机器上，因为我的内核代码被加载到了内存地址 <code>0x10000</code> 处，所以在上面的代码执行完成之后 <code>cs = 0x1020</code> （ 因此第一条指令的内存地址将是 <code>cs &lt;&lt; 4 + 0 = 0x10200</code>，刚好是 <code>0x10000</code> 开始后的 <code>0x200</code> 处的指令）：</p>
+<pre><code>fs = es = ds = ss = 0x1000
+cs = 0x1020
+</code></pre>
+<p>从 <code>start_of_setup</code> 标号开是的代码需要完成下面这些事情：</p>
+<ul>
+<li>将所有段寄存器的值设置成一样的内容</li>
+<li>设置堆栈</li>
+<li>设置 <a href="https://en.wikipedia.org/wiki/.bss">bss</a> （静态变量区）</li>
+<li>跳转到 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18">main.c</a> 开始执行代码</li>
+</ul>
+<h2 id="段寄存器设置">段寄存器设置</h2>
+<p>在代码的一开始，就将 <code>ds</code> 和 <code>es</code> 段寄存器的内容设置成一样，并且使用指令 <code>sti</code> 来允许中断发生：</p>
+<pre><code class="language-assembly">	movw	%ds, %ax
+	movw	%ax, %es
+	sti
+</code></pre>
+<p>就像我在上面一节中所写的， 为了能够跳转到 <code>_start</code> 标号出执行代码，grub2 将 <code>cs</code> 段寄存器的值设置成了 <code>0x1020</code>，这个值和其他段寄存器都是不一样的，因此下面的代码就是将 <code>cs</code> 段寄存器的值和其他段寄存器一致：</p>
+<pre><code class="language-assembly">	pushw	%ds
+	pushw	$6f
+	lretw
+</code></pre>
+<p>上面的代码使用了一个小小的技巧来重置 <code>cs</code> 寄存器的内容，下面我们就来仔细分析。 这段代码首先将 <code>ds</code>寄存器的值入栈，然后将标号为 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L494">6</a> 的代码段地址入栈 ，接着执行 <code>lretw</code> 指令，这条指令，将把标号为 <code>6</code> 的内存地址放入 <code>ip</code> 寄存器 （<a href="https://en.wikipedia.org/wiki/Program_counter">instruction pointer</a>），将 <code>ds</code> 寄存器的值放入 <code>cs</code> 寄存器。 这样一来 <code>ds</code> 和 <code>cs</code> 段寄存器就拥有了相同的值。</p>
+<h2 id="设置堆栈">设置堆栈</h2>
+<p>绝大部分的 setup 代码都是为 C 语言运行环境做准备。在设置了 <code>ds</code> 和 <code>es</code> 寄存器之后，接下来 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L467">step</a> 的代码将检查 <code>ss</code> 寄存器的内容，如果寄存器的内容不对，那么将进行更正：</p>
+<pre><code class="language-assembly">	movw	%ss, %dx
+	cmpw	%ax, %dx
+	movw	%sp, %dx
+	je	2f
+</code></pre>
+<p>当进入这段代码的时候， <code>ss</code> 寄存器的值可能是一下三种情况之一：</p>
+<ul>
+<li><code>ss</code> 寄存器的值是 0x10000 ( 和其他除了 <code>cs</code> 寄存器之外的所有寄存器的一样）</li>
+<li><code>ss</code> 寄存器的值不是 0x10000，但是 <code>CAN_USE_HEAP</code> 标志被设置了</li>
+<li><code>ss</code> 寄存器的值不是 0x10000，同时 <code>CAN_USE_HEAP</code> 标志没有被设置</li>
+</ul>
+<p>下面我们就来分析在这三中情况下，代码都是如何工作的：</p>
+<ul>
+<li><code>ss</code> 寄存器的值是 0x10000，在这种情况下，代码将直接跳转到标号为 <code>2</code> 的代码处执行:</li>
+</ul>
+<pre><code>2: 	andw	$~3, %dx
+	jnz	3f
+	movw	$0xfffc, %dx
+3:  movw	%ax, %ss
+	movzwl %dx, %esp
+	sti
+</code></pre>
+<p>这段代码首先将 <code>dx</code> 寄存器的值（就是当前<code>sp</code> 寄存器的值）4字节对齐，然后检查是否为0（如果是0，堆栈就不对了，因为堆栈是从大地址向小地址发展的），如果是0，那么就将 <code>dx</code> 寄存器的值设置成 <code>0xfffc</code> （64KB地址段的最后一个4字节地址）。如果不是0，那么就保持当前值不变。接下来，就将 <code>ax</code> 寄存器的值（ 0x10000 ）设置到 <code>ss</code> 寄存器，并根据 <code>dx</code> 寄存器的值设置正确的 <code>sp</code>。这样我们就得到了正确的堆栈设置，具体请参考下图：</p>
+<p><a href="http://oi58.tinypic.com/16iwcis.jpg" data-uk-lightbox><img src="http://oi58.tinypic.com/16iwcis.jpg" alt="stack"></a></p>
+<ul>
+<li>下面让我们来看 <code>ss</code> != <code>ds</code>的情况，首先将 setup code 的结束地址 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/setup.ld?v=3.18#L52">_end</a> 写入 <code>dx</code> 寄存器。然后检查 <code>loadflags</code> 中是否设置了 <code>CAN_USE_HEAP</code> 标志。 根据 kernel boot protocol 的定义，<a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L321">loadflags</a> 是一个标志字段。这个字段的 <code>Bit 7</code> 就是 <code>CAN_USE_HEAP</code> 标志：</li>
+</ul>
+<pre><code>Field name:	loadflags
+
+  This field is a bitmask.
+
+  Bit 7 (write): CAN_USE_HEAP
+	Set this bit to 1 to indicate that the value entered in the
+	heap_end_ptr is valid.  If this field is clear, some setup code
+	functionality will be disabled.
+</code></pre>
+<p><code>loadflags</code> 字段其他可以设置的标志包括：</p>
+<pre><code class="language-C">#define LOADED_HIGH	    (1&lt;&lt;0)
+#define QUIET_FLAG	    (1&lt;&lt;5)
+#define KEEP_SEGMENTS	(1&lt;&lt;6)
+#define CAN_USE_HEAP	(1&lt;&lt;7)
+</code></pre>
+<p>如果 <code>CAN_USE_HEAP</code> 被置位，那么将 <code>heap_end_ptr</code> 放入 <code>dx</code> 寄存器，然后加上 <code>STACK_SIZE</code> （最小堆栈大小是 512 bytes）。在加法完成之后，如果结果没有溢出（CF flag 没有置位，如果置位那么程序就出错了），那么就跳转到标号为 <code>2</code> 的代码处继续执行（这段代码的逻辑在1中已经详细介绍了），接着我们就得到了如下图所示的堆栈：</p>
+<p><a href="http://oi62.tinypic.com/dr7b5w.jpg" data-uk-lightbox><img src="http://oi62.tinypic.com/dr7b5w.jpg" alt="stack"></a></p>
+<ul>
+<li>最后一种情况就是 <code>CAN_USE_HEAP</code> 没有置位， 那么我们就将 <code>dx</code> 寄存器的值加上 <code>STACK_SIZE</code>，然后跳转到标号为 <code>2</code> 的代码处继续执行，接着我们就得到了如下图所示的堆栈：</li>
+</ul>
+<p><a href="http://oi60.tinypic.com/28w051y.jpg" data-uk-lightbox><img src="http://oi60.tinypic.com/28w051y.jpg" alt="minimal stack"></a></p>
+<h2 id="bss段设置">BSS段设置</h2>
+<p>在我们正式执行 C 代码之前，我们还有2件事情需要完成。1）设置正确的 <a href="https://en.wikipedia.org/wiki/.bss">BSS</a>段 ；2）检查 <code>magic</code> 签名。接下来的代码，首先检查 <code>magic</code> 签名 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/setup.ld?v=3.18#L39">setup_sig</a>，如果签名不对，直接跳转到 <code>setup_bad</code> 部分执行代码：</p>
+<pre><code class="language-assembly">cmpl	$0x5a5aaa55, setup_sig
+jne	setup_bad
+</code></pre>
+<p>如果 <code>magic</code> 签名是对的， 那么我们只要设置好 <code>BSS</code> 段，就可以开始执行 C 代码了。</p>
+<p>BSS 段用来存储那些没有被初始化的静态变量。对于这个段使用的内存， Linux 首先使用下面的代码将其全部清零：</p>
+<pre><code class="language-assembly">	movw	$__bss_start, %di
+	movw	$_end+3, %cx
+	xorl	%eax, %eax
+	subw	%di, %cx
+	shrw	$2, %cx
+	rep; stosl
+</code></pre>
+<p>在这段代码中，首先将 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/setup.ld?v=3.18#L47">__bss_start</a> 地址放入 <code>di</code> 寄存器，然后将 <code>_end + 3</code> （4字节对齐） 地址放入 <code>cx</code>，接着使用 <code>xor</code> 指令将 <code>ax</code> 寄存器清零，接着计算 BSS 段的大小 （ <code>cx</code> - <code>di</code> ），让后将大小放入 <code>cx</code> 寄存器。接下来将 <code>cx</code> 寄存器除4，最后使用 <code>rep; stosl</code> 指令将 <code>ax</code> 寄存器的值（0）写入 寄存器整个 BSS 段。 代码执行完成之后，我们将得到如下图所示的 BSS 段:</p>
+<p><a href="http://oi59.tinypic.com/29m2eyr.jpg" data-uk-lightbox><img src="http://oi59.tinypic.com/29m2eyr.jpg" alt="bss"></a></p>
+<h2 id="跳转到-main-函数">跳转到 main 函数</h2>
+<p>到目前为止，我们完成了堆栈和 BSS 的设置，现在我们可以正式跳入 <code>main()</code> 函数来执行 C 代码了：</p>
+<pre><code class="language-assembly">	calll main
+</code></pre>
+<p><code>main()</code> 函数定义在 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18">arch/x86/boot/main.c</a>，我们将在下一章详细介绍这个函数做了什么事情。</p>
+<h2 id="结束语">结束语</h2>
+<p>本章到此结束了，在下一章中我们将详细介绍在 Linux 内核设置过程中调用的第一个 C 代码（ <code>main()</code> ），也将介绍诸如 <code>memset</code>, <code>memcpy</code>, <code>earlyprintk</code> 这些底层函数的实现，敬请期待。</p>
+<p>如果你有任何的问题或者建议，你可以留言，也可以直接发消息给我<a href="https://twitter.com/0xAX">twitter</a>。</p>
+<p><strong>如果你发现文中描述有任何问题，请提交一个 PR 到 <a href="https://github.com/MintCN/linux-insides-zh">linux-insides-zh</a> 。</strong></p>
+<h2 id="相关链接">相关链接</h2>
+<ul>
+<li><a href="http://css.csail.mit.edu/6.858/2014/readings/i386.pdf">Intel 80386 programmer's reference manual 1986</a></li>
+<li><a href="https://www.cs.cmu.edu/~410/doc/minimal_boot.pdf">Minimal Boot Loader for Intel® Architecture</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Intel_8086">8086</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Intel_80386">80386</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Reset_vector">Reset vector</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Real_mode">Real mode</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/x86/boot.txt">Linux kernel boot protocol</a></li>
+<li><a href="http://www.coreboot.org/Developer_Manual">CoreBoot developer manual</a></li>
+<li><a href="http://www.ctyme.com/intr/int.htm">Ralf Brown's Interrupt List</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Power_supply">Power supply</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Power_good_signal">Power good signal</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/181/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/33/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/33/index.html">Scapy 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 17个">17</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/136/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/136/index.html">Serverless 架构应用开发指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 396个">396</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/65/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/65/index.html">更先进的Java - Java 8指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/41.html">winterbe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9341个">9341</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7460;var bookPageRelUrl ='Booting/linux-bootstrap-1.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

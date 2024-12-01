@@ -1,0 +1,987 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>在内核安装代码的第一步-Linux 内核揭密</title>
+<meta content='在内核安装代码的第一步,Linux 内核揭密' name='keywords'>
+<meta content='在内核安装代码的第一步,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Booting/linux-bootstrap-1.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">从引导加载程序内核</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Booting/linux-bootstrap-3.html">
+<span class="">视频模式初始化和转换到..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="在内核安装代码的第一步">在内核安装代码的第一步</h1>
+<h2 id="内核启动的第一步">内核启动的第一步</h2>
+<p>在<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Booting/linux-bootstrap-1.html">上一节中</a>我们开始接触到内核启动代码，并且分析了初始化部分，最后我们停在了对<code>main</code>函数（<code>main</code>函数是第一个用C写的函数）的调用（<code>main</code>函数位于<a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18">arch/x86/boot/main.c</a>）。</p>
+<p>在这一节中我们将继续对内核启动过程的研究，我们将</p>
+<ul>
+<li>认识<code>保护模式</code></li>
+<li>如何从实模式进入保护模式</li>
+<li>堆和控制台初始化</li>
+<li>内存检测，cpu验证，键盘初始化</li>
+<li>还有更多</li>
+</ul>
+<p>现在让我们开始我们的旅程</p>
+<h2 id="保护模式">保护模式</h2>
+<p>在操作系统可以使用Intel 64位CPU的<a href="http://en.wikipedia.org/wiki/Long_mode">长模式</a>之前，内核必须首先将CPU切换到保护模式运行。</p>
+<p>什么是<a href="https://en.wikipedia.org/wiki/Protected_mode">保护模式</a>？保护模式于1982年被引入到Intel CPU家族，并且从那之后，直到Intel 64出现，保护模式都是Intel CPU的主要运行模式。</p>
+<p>淘汰<a href="http://wiki.osdev.org/Real_Mode">实模式</a>的主要原因是因为在实模式下，系统能够访问的内存非常有限。如果你还记得我们在上一节说的，在实模式下，系统最多只能访问1M内存，而且在很多时候，实际能够访问的内存只有640K。</p>
+<p>保护模式带来了很多的改变，不过主要的改变都集中在内存管理方法。在保护模式中，实模式的20位地址线被替换成32位地址线，因此系统可以访问多达4GB的地址空间。另外，在保护模式中引入了<a href="http://en.wikipedia.org/wiki/Paging">内存分页</a>功能，在后面的章节中我们将介绍这个功能。</p>
+<p>保护模式提供了2种完全不同的内存管理机制：</p>
+<ul>
+<li>段式内存管理</li>
+<li>内存分页</li>
+</ul>
+<p>在这一节中，我们只介绍段式内存管理，内存分页我们将在后面的章节进行介绍。</p>
+<p>在上一节中我们说过，在实模式下，一个物理地址是由2个部分组成的：</p>
+<ul>
+<li>内存段的基地址</li>
+<li>从基地址开始的偏移</li>
+</ul>
+<p>使用这2个信息，我们可以通过下面的公式计算出对应的物理地址</p>
+<pre><code>PhysicalAddress = Segment * 16 + Offset
+</code></pre>
+<p>在保护模式中，内存段的定义和实模式完全不同。在保护模式中，每个内存段不再是64K大小，段的大小和起始位置是通过一个叫做<code>段描述符</code>的数据结构进行描述。所有内存段的段描述符存储在一个叫做<code>全局描述符表</code>(GDT)的内存结构中。</p>
+<p><code>全局描述符表</code>这个内存数据结构在内存中的位置并不是固定的，它的地址保存在一个特殊寄存器 <code>GDTR</code> 中。在后面的章节中，我们将在Linux内核代码中看到全局描述符表的地址是如何被保存到 <code>GDTR</code> 中的。具体的汇编代码看起来是这样的：</p>
+<pre><code class="language-assembly">lgdt gdt
+</code></pre>
+<p><code>lgdt</code> 汇编代码将把全局描述符表的基地址和大小保存到 <code>GDTR</code> 寄存器中。<code>GDTR</code> 是一个48位的寄存器，这个寄存器中的保存了2部分的内容:</p>
+<ul>
+<li>全局描述符表的大小 (16位）</li>
+<li>全局描述符表的基址 (32位)</li>
+</ul>
+<p>就像前面的段落说的，全局描述符表包含了所有内存段的<code>段描述符</code>。每个段描述符长度是64位，结构如下图描述：</p>
+<pre><code>31          24        19      16              7            0
+------------------------------------------------------------
+|             | |B| |A|       | |   | |0|E|W|A|            |
+| BASE 31:24  |G|/|L|V| LIMIT |P|DPL|S|  TYPE | BASE 23:16 | 4
+|             | |D| |L| 19:16 | |   | |1|C|R|A|            |
+------------------------------------------------------------
+|                             |                            |
+|        BASE 15:0            |       LIMIT 15:0           | 0
+|                             |                            |
+------------------------------------------------------------
+</code></pre>
+<p>粗粗一看，上面的结构非常吓人，不过实际上这个结构是非常容易理解的。比如在上图中的 LIMIT 15:0 表示这个数据结构的0到15位保存的是内存段的大小的0到15位。相似的 LIMITE 19:16 表示上述数据结构的16到19位保存的是内存段大小的16到19位。从这个分析中，我们可以看出每个内存段的大小是通过20位进行描述的。下面我们将对这个数据结构进行仔细分析：</p>
+<ol>
+<li>Limit[20位] 被保存在上述内存结构的0-15和16-19位。根据上述内存结构中<code>G</code>位的设置，这20位内存定义的内存长度是不一样的。下面是一些具体的例子：</li>
+</ol>
+<ul>
+<li>如果<code>G</code> = 0, 并且Limit = 0， 那么表示段长度是1 byte</li>
+<li>如果<code>G</code> = 1, 并且Limit = 0, 那么表示段长度是4K bytes</li>
+<li>如果<code>G</code> = 0，并且Limit = 0xfffff，那么表示段长度是1M bytes</li>
+<li>如果<code>G</code> = 1，并且Limit = 0xfffff，那么表示段长度是4G bytes</li>
+</ul>
+<p>从上面的例子我们可以看出：</p>
+<ul>
+<li>如果G = 0, 那么内存段的长度是按照1 byte进行增长的 ( Limit每增加1，段长度增加1 byte )，最大的内存段长度将是1M bytes；</li>
+<li>如果G = 1, 那么内存段的长度是按照4K bytes进行增长的 ( Limit每增加1，段长度增加4K bytes )，最大的内存段长度将是4G bytes;</li>
+<li>段长度的计算公式是 base_seg_length * ( LIMIT + 1)。</li>
+</ul>
+<ol start="2">
+<li> <p>Base[32-bits] 被保存在上述地址结构的0-15， 32-39以及56-63位。Base定义了段基址。</p> </li>
+<li> <p>Type/Attribute (40-47 bits) 定义了内存段的类型以及支持的操作。</p> </li>
+</ol>
+<ul>
+<li><code>S</code> 标记（ 第44位 ）定义了段的类型，<code>S</code> = 0说明这个内存段是一个系统段；<code>S</code> = 1说明这个内存段是一个代码段或者是数据段（ 堆栈段是一种特殊类型的数据段，堆栈段必须是可以进行读写的段 ）。</li>
+</ul>
+<p>在<code>S</code> = 1的情况下，上述内存结构的第43位决定了内存段是数据段还是代码段。如果43位 = 0，说明是一个数据段，否则就是一个代码段。</p>
+<p>对于数据段和代码段，下面的表格给出了段类型定义</p>
+<pre><code>|           Type Field        | Descriptor Type | Description
+|-----------------------------|-----------------|------------------
+| Decimal                     |                 |
+|             0    E    W   A |                 |
+| 0           0    0    0   0 | Data            | Read-Only
+| 1           0    0    0   1 | Data            | Read-Only, accessed
+| 2           0    0    1   0 | Data            | Read/Write
+| 3           0    0    1   1 | Data            | Read/Write, accessed
+| 4           0    1    0   0 | Data            | Read-Only, expand-down
+| 5           0    1    0   1 | Data            | Read-Only, expand-down, accessed
+| 6           0    1    1   0 | Data            | Read/Write, expand-down
+| 7           0    1    1   1 | Data            | Read/Write, expand-down, accessed
+|                  C    R   A |                 |
+| 8           1    0    0   0 | Code            | Execute-Only
+| 9           1    0    0   1 | Code            | Execute-Only, accessed
+| 10          1    0    1   0 | Code            | Execute/Read
+| 11          1    0    1   1 | Code            | Execute/Read, accessed
+| 12          1    1    0   0 | Code            | Execute-Only, conforming
+| 14          1    1    0   1 | Code            | Execute-Only, conforming, accessed
+| 13          1    1    1   0 | Code            | Execute/Read, conforming
+| 15          1    1    1   1 | Code            | Execute/Read, conforming, accessed
+</code></pre>
+<p>从上面的表格我们可以看出，当第43位是<code>0</code>的时候，这个段描述符对应的是一个数据段，如果该位是<code>1</code>，那么表示这个段描述符对应的是一个代码段。对于数据段，第42，41，40位表示的是(<em>E</em>扩展，<em>W</em>可写，<em>A</em>可访问）；对于代码段，第42，41，40位表示的是(<em>C</em>一致，<em>R</em>可读，<em>A</em>可访问）。</p>
+<ul>
+<li>如果<code>E</code> = 0，数据段是向上扩展数据段，反之为向下扩展数据段。关于向上扩展和向下扩展数据段，可以参考下面的<a href="http://www.sudleyplace.com/dpmione/expanddown.html">链接</a>。在一般情况下，应该是不会使用向下扩展数据段的。</li>
+<li>如果<code>W</code> = 1，说明这个数据段是可写的，否则不可写。所有数据段都是可读的。</li>
+<li>A位表示该内存段是否已经被CPU访问。</li>
+<li>如果<code>C</code> = 1，说明这个代码段可以被低优先级的代码访问，比如可以被用户态代码访问。反之如果<code>C</code> = 0，说明只能同优先级的代码段可以访问。</li>
+<li>如果<code>R</code> = 1，说明该代码段可读。代码段是永远没有写权限的。</li>
+</ul>
+<ol start="4">
+<li> <p>DPL（2-bits, bit 45 和 46）定义了该段的优先级。具体数值是0-3。</p> </li>
+<li> <p>P 标志(bit 47) - 说明该内存段是否已经存在于内存中。如果<code>P</code> = 0，那么在访问这个内存段的时候将报错。</p> </li>
+<li> <p>AVL 标志(bit 52) - 这个位在Linux内核中没有被使用。</p> </li>
+<li> <p>L 标志(bit 53) - 只对代码段有意义，如果<code>L</code> = 1，说明该代码段需要运行在64位模式下。</p> </li>
+<li> <p>D/B flag(bit 54) - 根据段描述符描述的是一个可执行代码段、下扩数据段还是一个堆栈段，这个标志具有不同的功能。（对于32位代码和数据段，这个标志应该总是设置为1；对于16位代码和数据段，这个标志被设置为0。）。</p> </li>
+</ol>
+<ul>
+<li>可执行代码段。此时这个标志称为D标志并用于指出该段中的指令引用有效地址和操作数的默认长度。如果该标志置位，则默认值是32位地址和32位或8位的操作数；如果该标志为0，则默认值是16位地址和16位或8位的操作数。指令前缀0x66可以用来选择非默认值的操作数大小；前缀0x67可用来选择非默认值的地址大小。</li>
+<li>栈段（由SS寄存器指向的数据段）。此时该标志称为B（Big）标志，用于指明隐含堆栈操作（如PUSH、POP或CALL）时的栈指针大小。如果该标志置位，则使用32位栈指针并存放在ESP寄存器中；如果该标志为0，则使用16位栈指针并存放在SP寄存器中。如果堆栈段被设置成一个下扩数据段，这个B标志也同时指定了堆栈段的上界限。</li>
+<li>下扩数据段。此时该标志称为B标志，用于指明堆栈段的上界限。如果设置了该标志，则堆栈段的上界限是0xFFFFFFFF（4GB）；如果没有设置该标志，则堆栈段的上界限是0xFFFF（64KB）。</li>
+</ul>
+<p>在保护模式下，段寄存器保存的不再是一个内存段的基地址，而是一个称为<code>段选择子</code>的结构。每个段描述符都对应一个<code>段选择子</code>。<code>段选择子</code>是一个16位的数据结构，下图显示了这个数据结构的内容：</p>
+<pre><code>-----------------------------
+|       Index    | TI | RPL |
+-----------------------------
+</code></pre>
+<p>其中，</p>
+<ul>
+<li><strong>Index</strong> 表示在GDT中，对应段描述符的索引号。</li>
+<li><strong>TI</strong> 表示要在GDT还是LDT中查找对应的段描述符</li>
+<li><strong>RPL</strong> 表示请求者优先级。这个优先级将和段描述符中的优先级协同工作，共同确定访问是否合法。</li>
+</ul>
+<p>在保护模式下，每个段寄存器实际上包含下面2部分内容：</p>
+<ul>
+<li>可见部分 - 段选择子</li>
+<li>隐藏部分 - 段描述符</li>
+</ul>
+<p>在保护模式中，cpu是通过下面的步骤来找到一个具体的物理地址的：</p>
+<ul>
+<li>代码必须将相应的<code>段选择子</code>装入某个段寄存器</li>
+<li>CPU根据<code>段选择子</code>从GDT中找到一个匹配的段描述符，然后将段描述符放入段寄存器的隐藏部分</li>
+<li>在没有使用向下扩展段的时候，那么内存段的基地址就是<code>段描述符中的基地址</code>，段描述符的<code>limit + 1</code>就是内存段的长度。如果你知道一个内存地址的<code>偏移</code>，那么在没有开启分页机制的情况下，这个内存的物理地址就是<code>基地址+偏移</code></li>
+</ul>
+<p><a href="http://oi62.tinypic.com/2yo369v.jpg" data-uk-lightbox><img src="http://oi62.tinypic.com/2yo369v.jpg" alt="linear address"></a></p>
+<p>当代码要从实模式进入保护模式的时候，需要执行下面的操作：</p>
+<ul>
+<li>禁止中断发生</li>
+<li>使用命令 <code>lgdt</code> 将GDT表装入 <code>GDTR</code> 寄存器</li>
+<li>设置CR0寄存器的PE位为1，使CPU进入保护模式</li>
+<li>跳转开始执行保护模式代码</li>
+</ul>
+<p>在后面的章节中，我们将看到Linux 内核中完整的转换代码。不过在系统进入保护模式之前，内核有很多的准备工作需要进行。</p>
+<p>让我们打开C文件 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18">arch/x86/boot/main.c</a>。这个文件包含了很多的函数，这些函数分别会执行键盘初始化，内存堆初始化等等操作...，下面让我们来具体看一些重要的函数。</p>
+<h2 id="将启动参数拷贝到zeropage">将启动参数拷贝到"zeropage"</h2>
+<p>让我们从<code>main</code>函数开始看起，这个函数中，首先调用了<a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18#L30"><code>copy_boot_params(void)</code></a>。</p>
+<p>这个函数将内核设置信息拷贝到<code>boot_params</code>结构的相应字段。大家可以在<a href="http://lxr.free-electrons.com/source/arch/x86/include/uapi/asm/bootparam.h?v=3.18#L113">arch/x86/include/uapi/asm/bootparam.h</a>找到<code>boot_params</code>结构的定义。</p>
+<p><code>boot_params</code>结构中包含<code>struct setup_header hdr</code>字段。这个结构包含了<a href="https://www.kernel.org/doc/Documentation/x86/boot.txt">linux boot protocol</a>中定义的相同字段，并且由boot loader填写。在内核编译的时候<code>copy_boot_params</code>完成两个工作：</p>
+<ol>
+<li> <p>将<a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L281">header.S</a>中定义的 <code>hdr</code> 结构中的内容拷贝到 <code>boot_params</code> 结构的字段 <code>struct setup_header hdr</code> 中。</p> </li>
+<li> <p>如果内核是通过老的命令行协议运行起来的，那么就更新内核的命令行指针。</p> </li>
+</ol>
+<p>这里需要注意的是拷贝 <code>hdr</code> 数据结构的 <code>memcpy</code> 函数不是C语言中的函数，而是定义在 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/copy.S?v=3.18">copy.S</a>。让我们来具体分析一下这段代码：</p>
+<pre><code class="language-assembly">GLOBAL(memcpy)
+	pushw	%si          ;push si to stack
+	pushw	%di          ;push di to stack
+	movw	%ax, %di     ;move &amp;boot_param.hdr to di
+	movw	%dx, %si     ;move &amp;hdr to si
+	pushw	%cx          ;push cx to stack ( sizeof(hdr) )
+	shrw	$2, %cx    
+	rep; movsl           ;copy based on 4 bytes
+	popw	%cx          ;pop cx
+	andw	$3, %cx      ;cx = cx % 4
+	rep; movsb           ;copy based on one byte
+	popw	%di
+	popw	%si
+	retl
+ENDPROC(memcpy)
+</code></pre>
+<p>在<code>copy.S</code>文件中，你可以看到所有的方法都开始于 <code>GLOBAL</code> 宏定义，而结束于 <code>ENDPROC</code> 宏定义。</p>
+<p>你可以在 <a href="http://lxr.free-electrons.com/source/arch/x86/include/asm/linkage.h?v=3.18">arch/x86/include/asm/linkage.h</a>中找到 <code>GLOBAL</code> 宏定义。这个宏给代码段分配了一个名字标签，并且让这个名字全局可用。</p>
+<pre><code class="language-assembly">#define GLOBAL(name)	\
+	.globl name;	\
+	name:
+</code></pre>
+<p>你可以在<a href="http://lxr.free-electrons.com/source/include/linux/linkage.h?v=3.18">include/linux/linkage.h</a>中找到 <code>ENDPROC</code> 宏的定义。 这个宏通过 <code>END(name)</code> 代码标识了汇编函数的结束，同时将函数名输出，从而静态分析工具可以找到这个函数。</p>
+<pre><code class="language-assembly">#define ENDPROC(name) \
+	.type name, @function ASM_NL \
+	END(name)
+</code></pre>
+<p><code>memcpy</code> 的实现代码是很容易理解的。首先，代码将 <code>si</code> 和 <code>di</code> 寄存器的值压入堆栈进行保存，这么做的原因是因为后续的代码将修改 <code>si</code> 和 <code>di</code> 寄存器的值。<code>memcpy</code> 函数（也包括其他定义在copy.s中的其他函数）使用了 <code>fastcall</code> 调用规则，意味着所有的函数调用参数是通过 <code>ax</code>, <code>dx</code>, <code>cx</code>寄存器传入的，而不是传统的通过堆栈传入。因此在使用下面的代码调用 <code>memcpy</code> 函数的时候</p>
+<pre><code class="language-c">memcpy(&amp;boot_params.hdr, &amp;hdr, sizeof hdr);
+</code></pre>
+<p>函数的参数是这样传递的</p>
+<ul>
+<li><code>ax</code> 寄存器指向 <code>boot_param.hdr</code> 的内存地址</li>
+<li><code>dx</code> 寄存器指向 <code>hdr</code> 的内存地址</li>
+<li><code>cx</code> 寄存器包含 <code>hdr</code> 结构的大小</li>
+</ul>
+<p><code>memcpy</code> 函数在将 <code>si</code> 和 <code>di</code> 寄存器压栈之后，将 <code>boot_param.hdr</code> 的地址放入 <code>di</code> 寄存器，将 <code>hdr</code> 的地址放入 <code>si</code> 寄存器，并且将 <code>hdr</code> 数据结构的大小压栈。 接下来代码首先以4个字节为单位，将 <code>si</code> 寄存器指向的内存内容拷贝到 <code>di</code> 寄存器指向的内存。当剩下的字节数不足4字节的时候，代码将原始的 <code>hdr</code> 数据结构大小出栈放入 <code>cx</code> ，然后对 <code>cx</code> 的值对4求模，接下来就是根据 <code>cx</code> 的值，以字节为单位将 <code>si</code> 寄存器指向的内存内容拷贝到 <code>di</code> 寄存器指向的内存。当拷贝操作完成之后，将保留的 <code>si</code> 以及 <code>di</code> 寄存器值出栈，函数返回。</p>
+<h2 id="控制台初始化">控制台初始化</h2>
+<p>在 <code>hdr</code> 结构体被拷贝到 <code>boot_params.hdr</code> 成员之后，系统接下来将进行控制台的初始化。控制台初始化时通过调用<a href="http://lxr.free-electrons.com/source/arch/x86/boot/early_serial_console.c?v=3.18">arch/x86/boot/early_serial_console.c</a>中定义的 <code>console_init</code> 函数实现的。</p>
+<p>这个函数首先查看命令行参数是否包含 <code>earlyprintk</code> 选项。如果命令行参数包含该选项，那么函数将分析这个选项的内容。得到控制台将使用的串口信息，然后进行串口的初始化。以下是 <code>earlyprintk</code> 选项可能的取值：</p>
+<ul>
+<li>serial,0x3f8,115200</li>
+<li>serial,ttyS0,115200</li>
+<li>ttyS0,115200</li>
+</ul>
+<p>当串口初始化成功之后，如果命令行参数包含 <code>debug</code> 选项，我们将看到如下的输出。</p>
+<pre><code class="language-C">if (cmdline_find_option_bool("debug"))
+    puts("early console in setup code\n");
+</code></pre>
+<p><code>puts</code> 函数定义在<a href="http://lxr.free-electrons.com/source/arch/x86/boot/tty.c?v=3.18">tty.c</a>。这个函数只是简单的调用 <code>putchar</code> 函数将输入字符串中的内容按字节输出。下面让我们来看看 <code>putchar</code>函数的实现：</p>
+<pre><code class="language-C">void __attribute__((section(".inittext"))) putchar(int ch)
+{
+    if (ch == '\n')
+        putchar('\r');
+
+    bios_putchar(ch);
+
+    if (early_serial_base != 0)
+        serial_putchar(ch);
+}
+</code></pre>
+<p><code>__attribute__((section(".inittext")))</code> 说明这段代码将被放入 <code>.inittext</code> 代码段。关于 <code>.inittext</code> 代码段的定义你可以在 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/setup.ld?v=3.18#L19">setup.ld</a>中找到。</p>
+<p>如果需要输出的字符是 <code>\n</code> ，那么 <code>putchar</code> 函数将调用自己首先输出一个字符 <code>\r</code>。接下来，就调用 <code>bios_putchar</code> 函数将字符输出到显示器（使用bios int10中断）：</p>
+<pre><code class="language-C">static void __attribute__((section(".inittext"))) bios_putchar(int ch)
+{
+    struct biosregs ireg;
+
+    initregs(&amp;ireg);
+    ireg.bx = 0x0007;
+    ireg.cx = 0x0001;
+    ireg.ah = 0x0e;
+    ireg.al = ch;
+    intcall(0x10, &amp;ireg, NULL);
+}
+</code></pre>
+<p>在上面的代码中 <code>initreg</code> 函数接受一个 <code>biosregs</code> 结构的地址作为输入参数，该函数首先调用 <code>memset</code> 函数将 <code>biosregs</code> 结构体所有成员清0。</p>
+<pre><code class="language-C">    memset(reg, 0, sizeof *reg);
+    reg-&gt;eflags |= X86_EFLAGS_CF;
+    reg-&gt;ds = ds();
+    reg-&gt;es = ds();
+    reg-&gt;fs = fs();
+    reg-&gt;gs = gs();
+</code></pre>
+<p>下面让我们来看看<a href="http://lxr.free-electrons.com/source/arch/x86/boot/copy.S?v=3.18#L36">memset</a>函数的实现 :</p>
+<pre><code class="language-assembly">GLOBAL(memset)
+    pushw   %di
+    movw    %ax, %di
+    movzbl  %dl, %eax
+    imull   $0x01010101,%eax
+    pushw   %cx
+    shrw    $2, %cx
+    rep; stosl
+    popw    %cx
+    andw    $3, %cx
+    rep; stosb
+    popw    %di
+    retl
+ENDPROC(memset)
+</code></pre>
+<p>首先你会发现，<code>memset</code> 函数和 <code>memcpy</code> 函数一样使用了 <code>fastcall</code> 调用规则，因此函数的参数是通过 <code>ax</code>，<code>dx</code> 以及 <code>cx</code> 寄存器传入函数内部的。</p>
+<p>就像memcpy函数一样，<code>memset</code> 函数一开始将 <code>di</code> 寄存器入栈，然后将 <code>biosregs</code> 结构的地址从 <code>ax</code> 寄存器拷贝到<code>di</code>寄存器。接下来，使用 <code>movzbl</code> 指令将 <code>dl</code> 寄存器的内容拷贝到 <code>ax</code> 寄存器的低字节，到这里 <code>ax</code> 寄存器就包含了需要拷贝到 <code>di</code> 寄存器所指向的内存的值。</p>
+<p>接下来的 <code>imull</code> 指令将 <code>eax</code> 寄存器的值乘上 <code>0x01010101</code>。这么做的原因是代码每次将尝试拷贝4个字节内存的内容。下面让我们来看一个具体的例子，假设我们需要将 <code>0x7</code> 这个数值放到内存中，在执行 <code>imull</code> 指令之前，<code>eax</code> 寄存器的值是 <code>0x7</code>，在 <code>imull</code> 指令被执行之后，<code>eax</code> 寄存器的内容变成了 <code>0x07070707</code>（4个字节的 <code>0x7</code>）。在 <code>imull</code> 指令之后，代码使用 <code>rep; stosl</code> 指令将 <code>eax</code> 寄存器的内容拷贝到 <code>es:di</code> 指向的内存。</p>
+<p>在 <code>bisoregs</code> 结构体被 <code>initregs</code> 函数正确填充之后，<code>bios_putchar</code> 调用中断 <a href="http://www.ctyme.com/intr/rb-0106.htm">0x10</a> 在显示器上输出一个字符。接下来 <code>putchar</code> 函数检查是否初始化了串口，如果串口被初始化了，那么将调用<a href="http://lxr.free-electrons.com/source/arch/x86/boot/tty.c?v=3.18#L30">serial_putchar</a>将字符输出到串口。</p>
+<h2 id="堆初始化">堆初始化</h2>
+<p>当堆栈和bss段在<a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18">header.S</a>中被初始化之后 (细节请参考上一篇<a href="linux-bootstrap-1.html">part</a>)， 内核需要初始化全局堆，全局堆的初始化是通过 <a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18#L116"><code>init_heap</code></a> 函数实现的。</p>
+<p>代码首先检查内核设置头中的<a href="http://lxr.free-electrons.com/source/arch/x86/boot/header.S?v=3.18#L321"><code>loadflags</code></a>是否设置了 <a href="http://lxr.free-electrons.com/source/arch/x86/include/uapi/asm/bootparam.h?v=3.18#L21"><code>CAN_USE_HEAP</code></a>标志。 如果该标记被设置了，那么代码将计算堆栈的结束地址：:</p>
+<pre><code class="language-C">    char *stack_end;
+    
+    //%P1 is (-STACK_SIZE)
+    if (boot_params.hdr.loadflags &amp; CAN_USE_HEAP) {
+        asm("leal %P1(%%esp),%0"
+            : "=r" (stack_end) : "i" (-STACK_SIZE));
+</code></pre>
+<p>换言之<code>stack_end = esp - STACK_SIZE</code>.</p>
+<p>在计算了堆栈结束地址之后，代码计算了堆的结束地址：</p>
+<pre><code class="language-c">
+    //heap_end = heap_end_ptr + 512
+    heap_end = (char *)((size_t)boot_params.hdr.heap_end_ptr + 0x200);
+</code></pre>
+<p>接下来代码判断 <code>heap_end</code> 是否大于 <code>stack_end</code>，如果条件成立，将 <code>stack_end</code> 设置成 <code>heap_end</code>（这么做是因为在大部分系统中全局堆和堆栈是相邻的，但是增长方向是相反的）。</p>
+<p>到这里为止，全局堆就被正确初始化了。在全局堆被初始化之后，我们就可以使用 <code>GET_HEAP</code> 方法。至于这个函数的实现和使用，我们将在后续的章节中看到。</p>
+<h2 id="检查cpu类型">检查CPU类型</h2>
+<p>在堆栈初始化之后，内核代码通过调用<a href="http://lxr.free-electrons.com/source/arch/x86/boot/cpu.c?v=3.18">arch/x86/boot/cpu.c</a>提供的 <code>validate_cpu</code> 方法检查CPU级别以确定系统是否能够在当前的CPU上运行。</p>
+<p><code>validate_cpu</code> 调用了<a href="http://lxr.free-electrons.com/source/arch/x86/boot/cpucheck.c?v=3.18#L102"><code>check_cpu</code></a>方法得到当前系统的CPU级别，并且和系统预设的最低CPU级别进行比较。如果不满足条件，则不允许系统运行。</p>
+<pre><code class="language-c">/*from cpu.c*/
+check_cpu(&amp;cpu_level, &amp;req_level, &amp;err_flags);
+/*after check_cpu call, req_level = req_level defined in cpucheck.c*/
+if (cpu_level &lt; req_level) {
+    printf("This kernel requires an %s CPU, ", cpu_name(req_level)); 
+    printf("but only detected an %s CPU.\n", cpu_name(cpu_level));
+    return -1;
+}
+</code></pre>
+<p>除此之外，<code>check_cpu</code> 方法还做了大量的其他检测和设置工作，下面就简单介绍一些：1）检查cpu标志，如果cpu是64位cpu，那么就设置<a href="http://en.wikipedia.org/wiki/Long_mode">long mode</a>, 2) 检查CPU的制造商，根据制造商的不同，设置不同的CPU选项。比如对于AMD出厂的cpu，如果不支持 <code>SSE+SSE2</code>，那么就禁止这些选项。</p>
+<h2 id="内存分布侦测">内存分布侦测</h2>
+<p>接下来，内核调用 <code>detect_memory</code> 方法进行内存侦测，以得到系统当前内存的使用分布。该方法使用多种编程接口，包括 <code>0xe820</code>（获取全部内存分配），<code>0xe801</code> 和 <code>0x88</code>（获取临近内存大小），进行内存分布侦测。在这里我们只介绍<a href="http://lxr.free-electrons.com/source/arch/x86/boot/memory.c?v=3.18">arch/x86/boot/memory.c</a>中提供的 <code>detect_memory_e820</code> 方法。</p>
+<p>该方法首先调用 <code>initregs</code> 方法初始化 <code>biosregs</code> 数据结构，然后向该数据结构填入 <code>0xe820</code> 编程接口所要求的参数：</p>
+<pre><code class="language-assembly">    initregs(&amp;ireg);
+    ireg.ax  = 0xe820;
+    ireg.cx  = sizeof buf;
+    ireg.edx = SMAP;
+    ireg.di  = (size_t)&amp;buf;
+</code></pre>
+<ul>
+<li><code>ax</code> 固定为 <code>0xe820</code></li>
+<li><code>cx</code> 包含数据缓冲区的大小，该缓冲区将包含系统内存的信息数据</li>
+<li><code>edx</code> 必须是 <code>SMAP</code> 这个魔术数字，就是 <code>0x534d4150</code></li>
+<li><code>es:di</code> 包含数据缓冲区的地址</li>
+<li><code>ebx</code> 必须为0.</li>
+</ul>
+<p>接下来就是通过一个循环来收集内存信息了。每个循环都开始于一个 <code>0x15</code> 中断调用，这个中断调用返回地址分配表中的一项，接着程序将返回的 <code>ebx</code> 设置到 <code>biosregs</code> 数据结构中，然后进行下一次的 <code>0x15</code> 中断调用。那么循环什么时候结束呢？直到 <code>0x15</code> 调用返回的eflags包含标志 <code>X86_EFLAGS_CF</code>:</p>
+<pre><code class="language-C">    intcall(0x15, &amp;ireg, &amp;oreg);
+    ireg.ebx = oreg.ebx;
+</code></pre>
+<p>在循环结束之后，整个内存分配信息将被写入到 <code>e820entry</code> 数组中，这个数组的每个元素包含下面3个信息:</p>
+<ul>
+<li>内存段的起始地址</li>
+<li>内存段的大小</li>
+<li>内存段的类型（类型可以是reserved, usable等等)。</li>
+</ul>
+<p>你可以在 <code>dmesg</code> 输出中看到这个数组的内容：</p>
+<pre><code>[    0.000000] e820: BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000003ffdffff] usable
+[    0.000000] BIOS-e820: [mem 0x000000003ffe0000-0x000000003fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+</code></pre>
+<h2 id="键盘初始化">键盘初始化</h2>
+<p>接下来内核调用<a href="http://lxr.free-electrons.com/source/arch/x86/boot/main.c?v=3.18#L65"><code>keyboard_init()</code></a> 方法进行键盘初始化操作。 首先，方法调用<code>initregs</code>初始化寄存器结构，然后调用<a href="http://www.ctyme.com/intr/rb-1756.htm">0x16</a>中断来获取键盘状态。</p>
+<pre><code class="language-c">    initregs(&amp;ireg);
+    ireg.ah = 0x02;     /* Get keyboard status */
+    intcall(0x16, &amp;ireg, &amp;oreg);
+    boot_params.kbd_status = oreg.al;
+</code></pre>
+<p>在获取了键盘状态之后，代码再次调用<a href="http://www.ctyme.com/intr/rb-1757.htm">0x16</a>中断来设置键盘的按键检测频率。</p>
+<pre><code class="language-c">    ireg.ax = 0x0305;   /* Set keyboard repeat rate */
+    intcall(0x16, &amp;ireg, NULL);
+</code></pre>
+<h2 id="系统参数查询">系统参数查询</h2>
+<p>接下来内核将进行一系列的参数查询。我们在这里将不深入介绍所有这些查询，我们将在后续章节中再进行详细介绍。在这里我们将简单介绍一些系统参数查询:</p>
+<p><a href="http://lxr.free-electrons.com/source/arch/x86/boot/mca.c?v=3.18#L18">query_mca</a> 方法调用<a href="http://www.ctyme.com/intr/rb-1594.htm">0x15</a>中断来获取机器的型号信息，BIOS版本以及其他一些硬件相关的属性：</p>
+<pre><code class="language-c">int query_mca(void)
+{
+    struct biosregs ireg, oreg;
+    u16 len;
+
+    initregs(&amp;ireg);
+    ireg.ah = 0xc0;
+    intcall(0x15, &amp;ireg, &amp;oreg);
+
+    if (oreg.eflags &amp; X86_EFLAGS_CF)
+        return -1;  /* No MCA present */
+
+    set_fs(oreg.es);
+    len = rdfs16(oreg.bx);
+
+    if (len &gt; sizeof(boot_params.sys_desc_table))
+        len = sizeof(boot_params.sys_desc_table);
+
+    copy_from_fs(&amp;boot_params.sys_desc_table, oreg.bx, len);
+    return 0;
+}
+</code></pre>
+<p>这个方法设置 <code>ah</code> 寄存器的值为 <code>0xc0</code>，然后调用 <code>0x15</code> BIOS中断。中断返回之后代码检查 <a href="http://en.wikipedia.org/wiki/Carry_flag">carry flag</a>。如果它被置位，说明BIOS不支持<a href="https://en.wikipedia.org/wiki/Micro_Channel_architecture"><strong>MCA</strong></a>。如果CF被设置成0，那么 <code>ES:BX</code> 指向系统信息表。这个表的内容如下所示：</p>
+<pre><code>Offset  Size    Description
+ 00h    WORD    number of bytes following
+ 02h    BYTE    model (see #00515)
+ 03h    BYTE    submodel (see #00515)
+ 04h    BYTE    BIOS revision: 0 for first release, 1 for 2nd, etc.
+ 05h    BYTE    feature byte 1 (see #00510)
+ 06h    BYTE    feature byte 2 (see #00511)
+ 07h    BYTE    feature byte 3 (see #00512)
+ 08h    BYTE    feature byte 4 (see #00513)
+ 09h    BYTE    feature byte 5 (see #00514)
+---AWARD BIOS---
+ 0Ah  N BYTEs   AWARD copyright notice
+---Phoenix BIOS---
+ 0Ah    BYTE    ??? (00h)
+ 0Bh    BYTE    major version
+ 0Ch    BYTE    minor version (BCD)
+ 0Dh  4 BYTEs   ASCIZ string "PTL" (Phoenix Technologies Ltd)
+---Quadram Quad386---
+ 0Ah 17 BYTEs   ASCII signature string "Quadram Quad386XT"
+---Toshiba (Satellite Pro 435CDS at least)---
+ 0Ah  7 BYTEs   signature "TOSHIBA"
+ 11h    BYTE    ??? (8h)
+ 12h    BYTE    ??? (E7h) product ID??? (guess)
+ 13h  3 BYTEs   "JPN"
+</code></pre>
+<p>接下来代码调用 <code>set_fs</code> 方法，将 <code>es</code> 寄存器的值写入 <code>fs</code> 寄存器:</p>
+<pre><code class="language-c">static inline void set_fs(u16 seg)
+{
+    asm volatile("movw %0,%%fs" : : "rm" (seg));
+}
+</code></pre>
+<p>在<a href="http://lxr.free-electrons.com/source/arch/x86/boot/boot.h?v=3.18">boot.h</a> 存在很多类似于 <code>set_fs</code> 的方法, 比如 <code>set_gs</code>。</p>
+<p>在 <code>query_mca</code> 的最后，代码将 <code>es:bx</code> 指向的内存地址的内容拷贝到 <code>boot_params.sys_desc_table</code>。</p>
+<p>接下来，内核调用 <code>query_ist</code> 方法获取<a href="http://en.wikipedia.org/wiki/SpeedStep">Intel SpeedStep</a>信息。这个方法首先检查CPU类型，然后调用 <code>0x15</code> 中断获得这个信息并放入 <code>boot_params</code> 中。</p>
+<p>接下来，内核会调用<a href="http://lxr.free-electrons.com/source/arch/x86/boot/apm.c?v=3.18#L21">query_apm_bios</a> 方法从BIOS获得 <a href="http://en.wikipedia.org/wiki/Advanced_Power_Management">高级电源管理</a> 信息。<code>query_apm_bios</code> 也是调用 <code>0x15</code> 中断，只不过将 <code>ax</code> 设置成 <code>0x5300</code> 以得到APM设置信息。中断调用返回之后，代码将检查 <code>bx</code> 和 <code>cx</code> 的值，如果 <code>bx</code> 不是 <code>0x504d</code> ( PM 标记 )，或者 <code>cx</code> 不是 <code>0x02</code> (0x02，表示支持32位模式)，那么代码直接返回错误。否则，将进行下面的步骤。</p>
+<p>接下来，代码使用 <code>ax = 0x5304</code> 来调用 <code>0x15</code> 中断，以断开 <code>APM</code> 接口；然后使用 <code>ax = 0x5303</code> 调用 <code>0x15</code> 中断，使用32位接口重新连接 <code>APM</code>；最后使用 <code>ax = 0x5300</code> 调用 <code>0x15</code> 中断再次获取APM设置，然后将信息写入 <code>boot_params.apm_bios_info</code>。</p>
+<p>需要注意的是，只有在 <code>CONFIG_APM</code> 或者 <code>CONFIG_APM_MODULE</code> 被设置的情况下，<code>query_apm_bios</code> 方法才会被调用：</p>
+<pre><code class="language-C">#if defined(CONFIG_APM) || defined(CONFIG_APM_MODULE)
+    query_apm_bios();
+#endif
+</code></pre>
+<p>最后是<a href="http://lxr.free-electrons.com/source/arch/x86/boot/edd.c?v=3.18#L122"><code>query_edd</code></a> 方法调用, 这个方法从BIOS中查询 <code>Enhanced Disk Drive</code> 信息。下面让我们看看 <code>query_edd</code> 方法的实现。</p>
+<p>首先，代码检查内核命令行参数是否设置了<a href="http://lxr.free-electrons.com/source/Documentation/kernel-parameters.txt?v=3.18#L1023">edd</a> 选项，如果edd选项设置成 <code>off</code>，<code>query_edd</code> 不做任何操作，直接返回。</p>
+<p>如果EDD被激活了，<code>query_edd</code> 遍历所有BIOS支持的硬盘，并获取相应硬盘的EDD信息：</p>
+<pre><code class="language-C">for (devno = 0x80; devno &lt; 0x80+EDD_MBR_SIG_MAX; devno++) {
+    if (!get_edd_info(devno, &amp;ei) &amp;&amp; boot_params.eddbuf_entries &lt; EDDMAXNR) {
+        memcpy(edp, &amp;ei, sizeof ei);
+        edp++;
+        boot_params.eddbuf_entries++;
+    }
+    ...
+    ...
+    ...
+</code></pre>
+<p>在代码中 <code>0x80</code> 是第一块硬盘，<code>EDD_MBR_SIG_MAX</code> 是一个宏，值为16。代码把获得的信息放入数组<a href="http://lxr.free-electrons.com/source/include/uapi/linux/edd.h?v=3.18#L172">edd_info</a>中。<code>get_edd_info</code> 方法通过调用 <code>0x13</code> 中断调用（设置 <code>ah = 0x41</code> ) 来检查EDD是否被硬盘支持。如果EDD被支持，代码将再次调用 <code>0x13</code> 中断，在这次调用中 <code>ah = 0x48</code>，并且 <code>si</code> 指向一个数据缓冲区地址。中断调用之后，EDD信息将被保存到 <code>si</code> 指向的缓冲区地址。</p>
+<h2 id="结束语">结束语</h2>
+<p>本章到此就结束了，在下一章我们将讲解显示模式设置，以及在进入保护模式之前的其他准备工作，在下一章的最后我们将成功进入保护模式。</p>
+<p>如果你有任何的问题或者建议，你可以留言，也可以直接发消息给我<a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>如果你发现文中描述有任何问题，请提交一个 PR 到 <a href="https://github.com/MintCN/linux-insides-zh">linux-insides-zh</a> 。</strong></p>
+<h2 id="相关链接">相关链接</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/Protected_mode">Protected mode</a></li>
+<li><a href="http://wiki.osdev.org/Protected_Mode">Protected mode</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Long_mode">Long mode</a></li>
+<li><a href="http://www.codeproject.com/Articles/45788/The-Real-Protected-Long-mode-assembly-tutorial-for">Nice explanation of CPU Modes with code</a></li>
+<li><a href="http://www.sudleyplace.com/dpmione/expanddown.html">How to Use Expand Down Segments on Intel 386 and Later CPUs</a></li>
+<li><a href="http://lxr.free-electrons.com/source/Documentation/x86/earlyprintk.txt?v=3.18">earlyprintk documentation</a></li>
+<li><a href="http://lxr.free-electrons.com/source/Documentation/kernel-parameters.txt?v=3.18">Kernel Parameters</a></li>
+<li><a href="http://lxr.free-electrons.com/source/Documentation/serial-console.txt?v=3.18">Serial console</a></li>
+<li><a href="http://en.wikipedia.org/wiki/SpeedStep">Intel SpeedStep</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Power_Management">APM</a></li>
+<li><a href="http://www.t13.org/documents/UploadedDocuments/docs2004/d1572r3-EDD3.pdf">EDD specification</a></li>
+<li><a href="http://www.tldp.org/HOWTO/Linux-i386-Boot-Code-HOWTO/setup.html">TLDP documentation for Linux Boot Process</a> (old)</li>
+<li><a href="linux-bootstrap-1.html">Previous Part</a></li>
+<li><a href="http://wiki.osdev.org/BIOS">BIOS Interrupt</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/34/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/markdown_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/34/index.html">Markdown - 简单的世界</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="markdown">markdown</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">16页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 159个">159</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/126/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/126/index.html">前端晚自修</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/101/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/chrome_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/101/index.html">Chromium中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="chrome">chrome</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">165页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8068;var bookPageRelUrl ='Booting/linux-bootstrap-2.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

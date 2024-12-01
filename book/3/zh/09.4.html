@@ -1,0 +1,478 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>C调用Go-深入解析Go(go internals)</title>
+<meta content='C调用Go,深入解析Go,go internals' name='keywords'>
+<meta content='C调用Go,深入解析Go,go internals' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/3/zh/09.3.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Go调用C</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/3/zh/10.1.html">
+<span class="">内存模型</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/3/index.html">深入解析Go (go internals)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tiancaiamao/go-internals" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="94-c调用go">9.4 C调用Go</h1>
+<p>cgo不仅仅支持从Go调用C，它还同样支持从C中调用Go的函数，虽然这种情况相对前者较少使用。</p>
+<pre><code class="language-go">//export GoF
+func GoF(arg1, arg2 int, arg3 string) int64 {
+}
+</code></pre>
+<p>使用export标记可以将Go函数导出提供给C调用：</p>
+<pre><code class="language-c">extern int64 GoF(int arg1, int arg2, GoString arg3);
+</code></pre>
+<p>下面让我们看看它是如何实现的。假定上面的函数GoF是在Go语言的一个包p内的，为了能够让gcc编译的C代码调用Go的函数p.GoF，cgo生成下面一个函数：</p>
+<pre><code class="language-c">GoInt64 GoF(GoInt p0, GoInt p1, GoString p2)
+{
+	struct {
+		GoInt p0;
+		GoInt p1;
+		GoString p2;
+		GoInt64 r0;
+	} __attribute__((packed)) a;
+	a.p0 = p0;
+	a.p1 = p1;
+	a.p2 = p2;
+	crosscall2(_cgoexp_95935062f5b1_GoF, &amp;a, 40);
+	return a.r0;
+}
+</code></pre>
+<p>这个函数由cgo生成，提供给gcc编译。函数名不是p.GoF，因为gcc没有包的概念。由gcc编译的C函数可以调用这个GoF函数。</p>
+<p>GoF调用crosscall2(_cgoexp_GoF, frame, framesize)。crosscall2是用汇编代码实现的，它是一个两参数的适配器，作用是从gcc函数调用6c函数（6c和gcc使用的调用协议还是有些区别的）。crosscall2实现了从一个ABI的gcc函数调用，到6c的函数调用ABI。所以上面代码中实际上相当于调用_cgoexp_GoF(frame,framesize)。注意此时是仍然运行在mg的g0栈并且不受GOMAXPROCS限制的。因此，这个代码不能直接调用任意的Go代码并且不能分配内存或者用尽m-&gt;g0的栈。</p>
+<p>_cgoexp_GoF调用runtime.cgocallback(p.GoF, frame, framesize)：</p>
+<pre><code class="language-go">#pragma textflag 7
+void
+_cgoexp_95935062f5b1_GoF(void *a, int32 n)
+{
+	runtime·cgocallback(·GoF, a, n);
+}
+</code></pre>
+<p>这个函数是由6c编译的，而不是gcc，因此可以引用到比如runtime.cgocallback和p.GoF这种名字。</p>
+<p>runtime·cgocallback也是一个用汇编实现的函数。它从m-&gt;g0的栈切换回原来的goroutine的栈，并在这个栈中调用runtime.cgocallbackg(p.GoF, frame, framesize)。</p>
+<p>这中间会涉及到一些保存栈寄存器之类的细节操作比较复杂。因为这个过程相当于我们接管了m-&gt;curg的执行，但是却并没有完全恢复到之前的运行环境（只是借m-&gt;curg这个goroutine运行Go代码），所以我们需要保存当前环境到以便之后再次返回到m-&gt;g0栈。</p>
+<p>好了，runtime.cgocallbackg现在是运行在一个真实的goroutine栈中（不是m-&gt;g0栈）。不过现在我们只是切换到了goroutine栈，此刻还是处于syscall状态的。因此这个函数会先调用runtime.exitsyscall，接着才是执行Go代码。当它调用runtime.exitsyscall，这会阻塞这条goroutine直到满足$GOMAXPROCS限制条件。一旦从exitsyscall返回，则可以安全地执行像调用内存分配或者是调用Go的回调函数p.GoF。</p>
+<pre><code class="language-go">void
+runtime·cgocallbackg(FuncVal *fn, void *arg, uintptr argsize)
+{
+	runtime·exitsyscall();	// coming out of cgo call
+	// Invoke callback.
+	reflect·call(fn, arg, argsize);
+	runtime·entersyscall();	// going back to cgo call
+}
+</code></pre>
+<p>后面的过程就不用分析了，跟前面的过程是一个正好相反的过程。在runtime.cgocallback重获控制权之后，它切换回m-&gt;g0栈，从栈中恢复之前的m-&gt;g0.sched.sp值，然后返回到_cgoexp_GoF。_cgoexp_GoF立即返回到crosscall2，它会恢复被调者为gcc保存的寄存器并返回到GoF，最后返回到C的调用函数中。</p>
+<h2 id="小结">小结</h2>
+<p>无论是Go调用C，还是C调用Go，其需要解决的核心问题其实都是提供一个C/Go的运行环境来执行相应的代码。Go的代码执行环境就是goroutine以及Go的runtime，而C的执行环境需要一个不使用分段的栈，并且执行C代码的goroutine需要暂时地脱离调度器的管理。要达到这些要求，运行时提供的支持就是切换栈，以及runtime.entersyscall。</p>
+<p>在Go中调用C函数时，runtime.cgocall中调用entersyscall脱离调度器管理。runtime.asmcgocall切换到m的g0栈，于是得到C的运行环境。</p>
+<p>在C中调用Go函数时，crosscall2解决gcc编译到6c编译之间的调用协议问题。cgocallback切换回goroutine栈。runtime.cgocallbackg中调用exitsyscall恢复Go的运行环境。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/89/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/89/index.html">Go 语言资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">74页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 207个">207</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/19/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/19/index.html">Go命令教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/14.html">hyper0x</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1478个">1478</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/79/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/springboot_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/79/index.html">SpringBoot学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/50.html">clsaa</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="springboot">springboot</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/161/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/161/index.html">关于python的面试题</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/92.html">jackfrued</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">271页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 33个">33</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/168/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/3/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.0.html" title="如何研究Go内部实现" data-book-page-rel-url="zh/01.0.html" data-book-page-id="9756">如何研究Go内部实现</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.1.html" title="从源代码安装Go" data-book-page-rel-url="zh/01.1.html" data-book-page-id="9757">从源代码安装Go</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.2.html" title="本书的组织结构" data-book-page-rel-url="zh/01.2.html" data-book-page-id="9758">本书的组织结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/01.3.html" title="基本技巧" data-book-page-rel-url="zh/01.3.html" data-book-page-id="9759">基本技巧</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.0.html" title="基本数据结构" data-book-page-rel-url="zh/02.0.html" data-book-page-id="9760">基本数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.1.html" title="基本类型" data-book-page-rel-url="zh/02.1.html" data-book-page-id="9761">基本类型</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.2.html" title="slice" data-book-page-rel-url="zh/02.2.html" data-book-page-id="9762">slice</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.3.html" title="map的实现" data-book-page-rel-url="zh/02.3.html" data-book-page-id="9763">map的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/02.4.html" title="nil" data-book-page-rel-url="zh/02.4.html" data-book-page-id="9764">nil</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.0.html" title="函数调用协议" data-book-page-rel-url="zh/03.0.html" data-book-page-id="9765">函数调用协议</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.1.html" title="Go调用汇编和C" data-book-page-rel-url="zh/03.1.html" data-book-page-id="9766">Go调用汇编和C</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.2.html" title="多值返回" data-book-page-rel-url="zh/03.2.html" data-book-page-id="9767">多值返回</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.3.html" title="go关键字" data-book-page-rel-url="zh/03.3.html" data-book-page-id="9768">go关键字</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.4.html" title="defer关键字" data-book-page-rel-url="zh/03.4.html" data-book-page-id="9769">defer关键字</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.5.html" title="连续栈" data-book-page-rel-url="zh/03.5.html" data-book-page-id="9770">连续栈</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/03.6.html" title="闭包的实现" data-book-page-rel-url="zh/03.6.html" data-book-page-id="9771">闭包的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.0.html" title="Go语言程序初始化过程" data-book-page-rel-url="zh/04.0.html" data-book-page-id="9772">Go语言程序初始化过程</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.1.html" title="系统初始化" data-book-page-rel-url="zh/04.1.html" data-book-page-id="9773">系统初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/04.2.html" title="main.main之前的准备" data-book-page-rel-url="zh/04.2.html" data-book-page-id="9774">main.main之前的准备</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.0.html" title="goroutine调度" data-book-page-rel-url="zh/05.0.html" data-book-page-id="9775">goroutine调度</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.1.html" title="调度器相关数据结构" data-book-page-rel-url="zh/05.1.html" data-book-page-id="9776">调度器相关数据结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.2.html" title="goroutine的生老病死" data-book-page-rel-url="zh/05.2.html" data-book-page-id="9777">goroutine的生老病死</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.3.html" title="设计与演化" data-book-page-rel-url="zh/05.3.html" data-book-page-id="9778">设计与演化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/05.5.html" title="抢占式调度" data-book-page-rel-url="zh/05.5.html" data-book-page-id="9779">抢占式调度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.0.html" title="内存管理" data-book-page-rel-url="zh/06.0.html" data-book-page-id="9780">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.1.html" title="内存池" data-book-page-rel-url="zh/06.1.html" data-book-page-id="9781">内存池</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.2.html" title="垃圾回收上篇" data-book-page-rel-url="zh/06.2.html" data-book-page-id="9782">垃圾回收上篇</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/06.3.html" title="垃圾回收下篇" data-book-page-rel-url="zh/06.3.html" data-book-page-id="9783">垃圾回收下篇</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.0.html" title="高级数据结构的实现" data-book-page-rel-url="zh/07.0.html" data-book-page-id="9784">高级数据结构的实现</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.1.html" title="channel" data-book-page-rel-url="zh/07.1.html" data-book-page-id="9785">channel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.2.html" title="interface" data-book-page-rel-url="zh/07.2.html" data-book-page-id="9786">interface</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/07.3.html" title="方法调用" data-book-page-rel-url="zh/07.3.html" data-book-page-id="9787">方法调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/08.0.html" title="网络" data-book-page-rel-url="zh/08.0.html" data-book-page-id="9788">网络</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/08.1.html" title="非阻塞io" data-book-page-rel-url="zh/08.1.html" data-book-page-id="9789">非阻塞io</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.0.html" title="cgo" data-book-page-rel-url="zh/09.0.html" data-book-page-id="9790">cgo</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.1.html" title="预备知识" data-book-page-rel-url="zh/09.1.html" data-book-page-id="9791">预备知识</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.2.html" title="cgo关键技术" data-book-page-rel-url="zh/09.2.html" data-book-page-id="9792">cgo关键技术</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.3.html" title="Go调用C" data-book-page-rel-url="zh/09.3.html" data-book-page-id="9793">Go调用C</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/3/zh/09.4.html" title="C调用Go" data-book-page-rel-url="zh/09.4.html" data-book-page-id="9794">C调用Go</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="杂项" disabled data-book-page-rel-url="" data-book-page-id="9795">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/3/zh/10.1.html" title="内存模型" data-book-page-rel-url="zh/10.1.html" data-book-page-id="9796">内存模型</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =3;var bookPageId =9794;var bookPageRelUrl ='zh/09.4.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,865 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>调度器初始化-Linux 内核揭密</title>
+<meta content='调度器初始化,Linux 内核揭密' name='keywords'>
+<meta content='调度器初始化,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/Initialization/linux-initialization-7.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">最后对指定体系架构初始化</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/Initialization/linux-initialization-9.html">
+<span class="">RCU 初始化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="kernel-initialization-part-8">Kernel initialization. Part 8.</h1>
+<h1 id="scheduler-initialization">Scheduler initialization</h1>
+<p>This is the eighth <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/index.html">part</a> of the Linux kernel initialization process and we stopped on the <code>setup_nr_cpu_ids</code> function in the <a href="https://github.com/MintCN/linux-insides-zh/blob/master/Initialization/linux-initialization-7.html">previous</a> part. The main point of the current part is <a href="http://en.wikipedia.org/wiki/Scheduling_%28computing%29">scheduler</a> initialization. But before we will start to learn initialization process of the scheduler, we need to do some stuff. The next step in the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> is the <code>setup_per_cpu_areas</code> function. This function setups areas for the <code>percpu</code> variables, more about it you can read in the special part about the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">Per-CPU variables</a>. After <code>percpu</code> areas is up and running, the next step is the <code>smp_prepare_boot_cpu</code> function. This function does some preparations for the <a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a>:</p>
+<pre><code class="language-C">static inline void smp_prepare_boot_cpu(void)
+{
+         smp_ops.smp_prepare_boot_cpu();
+}
+</code></pre>
+<p>where the <code>smp_prepare_boot_cpu</code> expands to the call of the <code>native_smp_prepare_boot_cpu</code> function (more about <code>smp_ops</code> will be in the special parts about <code>SMP</code>):</p>
+<pre><code class="language-C">void __init native_smp_prepare_boot_cpu(void)
+{
+        int me = smp_processor_id();
+        switch_to_new_gdt(me);
+        cpumask_set_cpu(me, cpu_callout_mask);
+        per_cpu(cpu_state, me) = CPU_ONLINE;
+}
+</code></pre>
+<p>The <code>native_smp_prepare_boot_cpu</code> function gets the id of the current CPU (which is Bootstrap processor and its <code>id</code> is zero) with the <code>smp_processor_id</code> function. I will not explain how the <code>smp_processor_id</code> works, because we already saw it in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-4.html">Kernel entry point</a> part. As we got processor <code>id</code> number we reload <a href="http://en.wikipedia.org/wiki/Global_Descriptor_Table">Global Descriptor Table</a> for the given CPU with the <code>switch_to_new_gdt</code> function:</p>
+<pre><code class="language-C">void switch_to_new_gdt(int cpu)
+{
+        struct desc_ptr gdt_descr;
+
+        gdt_descr.address = (long)get_cpu_gdt_table(cpu);
+        gdt_descr.size = GDT_SIZE - 1;
+        load_gdt(&amp;gdt_descr);
+        load_percpu_segment(cpu);
+}
+</code></pre>
+<p>The <code>gdt_descr</code> variable represents pointer to the <code>GDT</code> descriptor here (we already saw <code>desc_ptr</code> in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-2.html">Early interrupt and exception handling</a>). We get the address and the size of the <code>GDT</code> descriptor where <code>GDT_SIZE</code> is <code>256</code> or:</p>
+<pre><code class="language-C">#define GDT_SIZE (GDT_ENTRIES * 8)
+</code></pre>
+<p>and the address of the descriptor we will get with the <code>get_cpu_gdt_table</code>:</p>
+<pre><code class="language-C">static inline struct desc_struct *get_cpu_gdt_table(unsigned int cpu)
+{
+        return per_cpu(gdt_page, cpu).gdt;
+}
+</code></pre>
+<p>The <code>get_cpu_gdt_table</code> uses <code>per_cpu</code> macro for getting <code>gdt_page</code> percpu variable for the given CPU number (bootstrap processor with <code>id</code> - 0 in our case). You may ask the following question: so, if we can access <code>gdt_page</code> percpu variable, where it was defined? Actually we already saw it in this book. If you have read the first <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-1.html">part</a> of this chapter, you can remember that we saw definition of the <code>gdt_page</code> in the <a href="https://github.com/0xAX/linux/blob/master/arch/x86/kernel/head_64.S">arch/x86/kernel/head_64.S</a>:</p>
+<pre><code class="language-assembly">early_gdt_descr:
+	.word	GDT_ENTRIES*8-1
+early_gdt_descr_base:
+	.quad	INIT_PER_CPU_VAR(gdt_page)
+</code></pre>
+<p>and if we will look on the <a href="https://github.com/0xAX/linux/blob/master/arch/x86/kernel/vmlinux.lds.S">linker</a> file we can see that it locates after the <code>__per_cpu_load</code> symbol:</p>
+<pre><code class="language-C">#define INIT_PER_CPU(x) init_per_cpu__##x = x + __per_cpu_load
+INIT_PER_CPU(gdt_page);
+</code></pre>
+<p>and filled <code>gdt_page</code> in the <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/cpu/common.c#L94">arch/x86/kernel/cpu/common.c</a>:</p>
+<pre><code class="language-C">DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
+#ifdef CONFIG_X86_64
+	[GDT_ENTRY_KERNEL32_CS]		= GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+	[GDT_ENTRY_KERNEL_CS]		= GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+	[GDT_ENTRY_KERNEL_DS]		= GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER32_CS]	= GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_DS]	= GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_CS]	= GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+    ...
+    ...
+    ...
+</code></pre>
+<p>more about <code>percpu</code> variables you can read in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">Per-CPU variables</a> part. As we got address and size of the <code>GDT</code> descriptor we reload <code>GDT</code> with the <code>load_gdt</code> which just execute <code>lgdt</code> instruct and load <code>percpu_segment</code> with the following function:</p>
+<pre><code class="language-C">void load_percpu_segment(int cpu) {
+    loadsegment(gs, 0);
+    wrmsrl(MSR_GS_BASE, (unsigned long)per_cpu(irq_stack_union.gs_base, cpu));
+    load_stack_canary_segment();
+}
+</code></pre>
+<p>The base address of the <code>percpu</code> area must contain <code>gs</code> register (or <code>fs</code> register for <code>x86</code>), so we are using <code>loadsegment</code> macro and pass <code>gs</code>. In the next step we writes the base address if the <a href="http://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQ</a> stack and setup stack <a href="http://en.wikipedia.org/wiki/Buffer_overflow_protection">canary</a> (this is only for <code>x86_32</code>). After we load new <code>GDT</code>, we fill <code>cpu_callout_mask</code> bitmap with the current cpu and set cpu state as online with the setting <code>cpu_state</code> percpu variable for the current processor - <code>CPU_ONLINE</code>:</p>
+<pre><code class="language-C">cpumask_set_cpu(me, cpu_callout_mask);
+per_cpu(cpu_state, me) = CPU_ONLINE;
+</code></pre>
+<p>So, what is <code>cpu_callout_mask</code> bitmap... As we initialized bootstrap processor (processor which is booted the first on <code>x86</code>) the other processors in a multiprocessor system are known as <code>secondary processors</code>. Linux kernel uses following two bitmasks:</p>
+<ul>
+<li><code>cpu_callout_mask</code></li>
+<li><code>cpu_callin_mask</code></li>
+</ul>
+<p>After bootstrap processor initialized, it updates the <code>cpu_callout_mask</code> to indicate which secondary processor can be initialized next. All other or secondary processors can do some initialization stuff before and check the <code>cpu_callout_mask</code> on the boostrap processor bit. Only after the bootstrap processor filled the <code>cpu_callout_mask</code> with this secondary processor, it will continue the rest of its initialization. After that the certain processor finish its initialization process, the processor sets bit in the <code>cpu_callin_mask</code>. Once the bootstrap processor finds the bit in the <code>cpu_callin_mask</code> for the current secondary processor, this processor repeats the same procedure for initialization of one of the remaining secondary processors. In a short words it works as i described, but we will see more details in the chapter about <code>SMP</code>.</p>
+<p>That's all. We did all <code>SMP</code> boot preparation.</p>
+<h2 id="build-zonelists">Build zonelists</h2>
+<p>In the next step we can see the call of the <code>build_all_zonelists</code> function. This function sets up the order of zones that allocations are preferred from. What are zones and what's order we will understand soon. For the start let's see how linux kernel considers physical memory. Physical memory is split into banks which are called - <code>nodes</code>. If you has no hardware support for <code>NUMA</code>, you will see only one node:</p>
+<pre><code>$ cat /sys/devices/system/node/node0/numastat 
+numa_hit 72452442
+numa_miss 0
+numa_foreign 0
+interleave_hit 12925
+local_node 72452442
+other_node 0
+</code></pre>
+<p>Every <code>node</code> is presented by the <code>struct pglist_data</code> in the linux kernel. Each node is divided into a number of special blocks which are called - <code>zones</code>. Every zone is presented by the <code>zone struct</code> in the linux kernel and has one of the type:</p>
+<ul>
+<li><code>ZONE_DMA</code> - 0-16M;</li>
+<li><code>ZONE_DMA32</code> - used for 32 bit devices that can only do DMA areas below 4G;</li>
+<li><code>ZONE_NORMAL</code> - all RAM from the 4GB on the <code>x86_64</code>;</li>
+<li><code>ZONE_HIGHMEM</code> - absent on the <code>x86_64</code>;</li>
+<li><code>ZONE_MOVABLE</code> - zone which contains movable pages.</li>
+</ul>
+<p>which are presented by the <code>zone_type</code> enum. We can get information about zones with the:</p>
+<pre><code>$ cat /proc/zoneinfo
+Node 0, zone      DMA
+  pages free     3975
+        min      3
+        low      3
+        ...
+        ...
+Node 0, zone    DMA32
+  pages free     694163
+        min      875
+        low      1093
+        ...
+        ...
+Node 0, zone   Normal
+  pages free     2529995
+        min      3146
+        low      3932
+        ...
+        ...
+</code></pre>
+<p>As I wrote above all nodes are described with the <code>pglist_data</code> or <code>pg_data_t</code> structure in memory. This structure is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/mmzone.h">include/linux/mmzone.h</a>. The <code>build_all_zonelists</code> function from the <a href="https://github.com/torvalds/linux/blob/master/mm/page_alloc.c">mm/page_alloc.c</a> constructs an ordered <code>zonelist</code> (of different zones <code>DMA</code>, <code>DMA32</code>, <code>NORMAL</code>, <code>HIGH_MEMORY</code>, <code>MOVABLE</code>) which specifies the zones/nodes to visit when a selected <code>zone</code> or <code>node</code> cannot satisfy the allocation request. That's all. More about <code>NUMA</code> and multiprocessor systems will be in the special part.</p>
+<h2 id="the-rest-of-the-stuff-before-scheduler-initialization">The rest of the stuff before scheduler initialization</h2>
+<p>Before we will start to dive into linux kernel scheduler initialization process we must do a couple of things. The first thing is the <code>page_alloc_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/mm/page_alloc.c">mm/page_alloc.c</a>. This function looks pretty easy:</p>
+<pre><code class="language-C">void __init page_alloc_init(void)
+{
+        hotcpu_notifier(page_alloc_cpu_notify, 0);
+}
+</code></pre>
+<p>and initializes handler for the <code>CPU</code> <a href="https://www.kernel.org/doc/Documentation/cpu-hotplug.txt">hotplug</a>. Of course the <code>hotcpu_notifier</code> depends on the <code>CONFIG_HOTPLUG_CPU</code> configuration option and if this option is set, it just calls <code>cpu_notifier</code> macro which expands to the call of the <code>register_cpu_notifier</code> which adds hotplug cpu handler (<code>page_alloc_cpu_notify</code> in our case).</p>
+<p>After this we can see the kernel command line in the initialization output:</p>
+<p><a href="http://oi58.tinypic.com/2m7vz10.jpg" data-uk-lightbox><img src="http://oi58.tinypic.com/2m7vz10.jpg" alt="kernel command line"></a></p>
+<p>And a couple of functions such as <code>parse_early_param</code> and <code>parse_args</code> which handles linux kernel command line. You may remember that we already saw the call of the <code>parse_early_param</code> function in the sixth <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-6.html">part</a> of the kernel initialization chapter, so why we call it again? Answer is simple: we call this function in the architecture-specific code (<code>x86_64</code> in our case), but not all architecture calls this function. And we need to call the second function <code>parse_args</code> to parse and handle non-early command line arguments.</p>
+<p>In the next step we can see the call of the <code>jump_label_init</code> from the <a href="https://github.com/torvalds/linux/blob/master/kernel/jump_label.c">kernel/jump_label.c</a>. and initializes <a href="https://lwn.net/Articles/412072/">jump label</a>.</p>
+<p>After this we can see the call of the <code>setup_log_buf</code> function which setups the <a href="http://www.makelinux.net/books/lkd2/ch18lev1sec3">printk</a> log buffer. We already saw this function in the seventh <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-7.html">part</a> of the linux kernel initialization process chapter.</p>
+<h2 id="pid-hash-initialization">PID hash initialization</h2>
+<p>The next is <code>pidhash_init</code> function. As you know each process has assigned a unique number which called - <code>process identification number</code> or <code>PID</code>. Each process generated with fork or clone is automatically assigned a new unique <code>PID</code> value by the kernel. The management of <code>PIDs</code> centered around the two special data structures: <code>struct pid</code> and <code>struct upid</code>. First structure represents information about a <code>PID</code> in the kernel. The second structure represents the information that is visible in a specific namespace. All <code>PID</code> instances stored in the special hash table:</p>
+<pre><code class="language-C">static struct hlist_head *pid_hash;
+</code></pre>
+<p>This hash table is used to find the pid instance that belongs to a numeric <code>PID</code> value. So, <code>pidhash_init</code> initializes this hash table. In the start of the <code>pidhash_init</code> function we can see the call of the <code>alloc_large_system_hash</code>:</p>
+<pre><code class="language-C">pid_hash = alloc_large_system_hash("PID", sizeof(*pid_hash), 0, 18,
+                                   HASH_EARLY | HASH_SMALL,
+                                   &amp;pidhash_shift, NULL,
+                                   0, 4096);
+</code></pre>
+<p>The number of elements of the <code>pid_hash</code> depends on the <code>RAM</code> configuration, but it can be between <code>2^4</code> and <code>2^12</code>. The <code>pidhash_init</code> computes the size and allocates the required storage (which is <code>hlist</code> in our case - the same as <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/DataStructures/dlist.html">doubly linked list</a>, but contains one pointer instead on the <a href="https://github.com/torvalds/linux/blob/master/include/linux/types.h">struct hlist_head</a>]. The <code>alloc_large_system_hash</code> function allocates a large system hash table with <code>memblock_virt_alloc_nopanic</code> if we pass <code>HASH_EARLY</code> flag (as it in our case) or with <code>__vmalloc</code> if we did no pass this flag.</p>
+<p>The result we can see in the <code>dmesg</code> output:</p>
+<pre><code>$ dmesg | grep hash
+[    0.000000] PID hash table entries: 4096 (order: 3, 32768 bytes)
+...
+...
+...
+</code></pre>
+<p>That's all. The rest of the stuff before scheduler initialization is the following functions: <code>vfs_caches_init_early</code> does early initialization of the <a href="http://en.wikipedia.org/wiki/Virtual_file_system">virtual file system</a> (more about it will be in the chapter which will describe virtual file system), <code>sort_main_extable</code> sorts the kernel's built-in exception table entries which are between <code>__start___ex_table</code> and <code>__stop___ex_table</code>, and <code>trap_init</code> initializes trap handlers (more about last two function we will know in the separate chapter about interrupts).</p>
+<p>The last step before the scheduler initialization is initialization of the memory manager with the <code>mm_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a>. As we can see, the <code>mm_init</code> function initializes different parts of the linux kernel memory manager:</p>
+<pre><code class="language-C">page_ext_init_flatmem();
+mem_init();
+kmem_cache_init();
+percpu_init_late();
+pgtable_init();
+vmalloc_init();
+</code></pre>
+<p>The first is <code>page_ext_init_flatmem</code> which depends on the <code>CONFIG_SPARSEMEM</code> kernel configuration option and initializes extended data per page handling. The <code>mem_init</code> releases all <code>bootmem</code>, the <code>kmem_cache_init</code> initializes kernel cache, the <code>percpu_init_late</code> - replaces <code>percpu</code> chunks with those allocated by <a href="http://en.wikipedia.org/wiki/SLUB_%28software%29">slub</a>, the <code>pgtable_init</code> - initializes the <code>page-&gt;ptl</code> kernel cache, the <code>vmalloc_init</code> - initializes <code>vmalloc</code>. Please, <strong>NOTE</strong> that we will not dive into details about all of these functions and concepts, but we will see all of they it in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/mm/index.html">Linux kernel memory manager</a> chapter.</p>
+<p>That's all. Now we can look on the <code>scheduler</code>.</p>
+<h2 id="scheduler-initialization-1">Scheduler initialization</h2>
+<p>And now we come to the main purpose of this part - initialization of the task scheduler. I want to say again as I already did it many times, you will not see the full explanation of the scheduler here, there will be special chapter about this. Ok, next point is the <code>sched_init</code> function from the <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/core.c">kernel/sched/core.c</a> and as we can understand from the function's name, it initializes scheduler. Let's start to dive into this function and try to understand how the scheduler is initialized. At the start of the <code>sched_init</code> function we can see the following code:</p>
+<pre><code class="language-C">#ifdef CONFIG_FAIR_GROUP_SCHED
+         alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+#endif
+#ifdef CONFIG_RT_GROUP_SCHED
+         alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+#endif
+</code></pre>
+<p>First of all we can see two configuration options here:</p>
+<ul>
+<li><code>CONFIG_FAIR_GROUP_SCHED</code></li>
+<li><code>CONFIG_RT_GROUP_SCHED</code></li>
+</ul>
+<p>Both of this options provide two different planning models. As we can read from the <a href="https://www.kernel.org/doc/Documentation/scheduler/sched-design-CFS.txt">documentation</a>, the current scheduler - <code>CFS</code> or <code>Completely Fair Scheduler</code> use a simple concept. It models process scheduling as if the system has an ideal multitasking processor where each process would receive <code>1/n</code> processor time, where <code>n</code> is the number of the runnable processes. The scheduler uses the special set of rules. These rules determine when and how to select a new process to run and they are called <code>scheduling policy</code>. The Completely Fair Scheduler supports following <code>normal</code> or <code>non-real-time</code> scheduling policies: <code>SCHED_NORMAL</code>, <code>SCHED_BATCH</code> and <code>SCHED_IDLE</code>. The <code>SCHED_NORMAL</code> is used for the most normal applications, the amount of cpu each process consumes is mostly determined by the <a href="http://en.wikipedia.org/wiki/Nice_%28Unix%29">nice</a> value, the <code>SCHED_BATCH</code> used for the 100% non-interactive tasks and the <code>SCHED_IDLE</code> runs tasks only when the processor has no task to run besides this task. The <code>real-time</code> policies are also supported for the time-critical applications: <code>SCHED_FIFO</code> and <code>SCHED_RR</code>. If you've read something about the Linux kernel scheduler, you can know that it is modular. It means that it supports different algorithms to schedule different types of processes. Usually this modularity is called <code>scheduler classes</code>. These modules encapsulate scheduling policy details and are handled by the scheduler core without knowing too much about them.</p>
+<p>Now let's back to the our code and look on the two configuration options <code>CONFIG_FAIR_GROUP_SCHED</code> and <code>CONFIG_RT_GROUP_SCHED</code>. The scheduler operates on an individual task. These options allows to schedule group tasks (more about it you can read in the <a href="http://lwn.net/Articles/240474/">CFS group scheduling</a>). We can see that we assign the <code>alloc_size</code> variables which represent size based on amount of the processors to allocate for the <code>sched_entity</code> and <code>cfs_rq</code> to the <code>2 * nr_cpu_ids * sizeof(void **)</code> expression with <code>kzalloc</code>:</p>
+<pre><code class="language-C">ptr = (unsigned long)kzalloc(alloc_size, GFP_NOWAIT);
+ 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+        root_task_group.se = (struct sched_entity **)ptr;
+        ptr += nr_cpu_ids * sizeof(void **);
+
+        root_task_group.cfs_rq = (struct cfs_rq **)ptr;
+        ptr += nr_cpu_ids * sizeof(void **);
+#endif
+        
+</code></pre>
+<p>The <code>sched_entity</code> is a structure which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/sched.h">include/linux/sched.h</a> and used by the scheduler to keep track of process accounting. The <code>cfs_rq</code> presents <a href="http://en.wikipedia.org/wiki/Run_queue">run queue</a>. So, you can see that we allocated space with size <code>alloc_size</code> for the run queue and scheduler entity of the <code>root_task_group</code>. The <code>root_task_group</code> is an instance of the <code>task_group</code> structure from the <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/sched.h">kernel/sched/sched.h</a> which contains task group related information:</p>
+<pre><code class="language-C">struct task_group {
+    ...
+    ...
+    struct sched_entity **se;
+    struct cfs_rq **cfs_rq;
+    ...
+    ...
+}
+</code></pre>
+<p>The root task group is the task group which belongs to every task in system. As we allocated space for the root task group scheduler entity and runqueue, we go over all possible CPUs (<code>cpu_possible_mask</code> bitmap) and allocate zeroed memory from a particular memory node with the <code>kzalloc_node</code> function for the <code>load_balance_mask</code> <code>percpu</code> variable:</p>
+<pre><code class="language-C">DECLARE_PER_CPU(cpumask_var_t, load_balance_mask);
+</code></pre>
+<p>Here <code>cpumask_var_t</code> is the <code>cpumask_t</code> with one difference: <code>cpumask_var_t</code> is allocated only <code>nr_cpu_ids</code> bits when the <code>cpumask_t</code> always has <code>NR_CPUS</code> bits (more about <code>cpumask</code> you can read in the <a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">CPU masks</a> part). As you can see:</p>
+<pre><code class="language-C">#ifdef CONFIG_CPUMASK_OFFSTACK
+    for_each_possible_cpu(i) {
+        per_cpu(load_balance_mask, i) = (cpumask_var_t)kzalloc_node(
+                cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+    }
+#endif
+</code></pre>
+<p>this code depends on the <code>CONFIG_CPUMASK_OFFSTACK</code> configuration option. This configuration options says to use dynamic allocation for <code>cpumask</code>, instead of putting it on the stack. All groups have to be able to rely on the amount of CPU time. With the call of the two following functions:</p>
+<pre><code class="language-C">init_rt_bandwidth(&amp;def_rt_bandwidth,
+                  global_rt_period(), global_rt_runtime());
+init_dl_bandwidth(&amp;def_dl_bandwidth,
+                  global_rt_period(), global_rt_runtime());
+</code></pre>
+<p>we initialize bandwidth management for the <code>SCHED_DEADLINE</code> real-time tasks. These functions initializes <code>rt_bandwidth</code> and <code>dl_bandwidth</code> structures which store information about maximum <code>deadline</code> bandwidth of the system. For example, let's look on the implementation of the <code>init_rt_bandwidth</code> function:</p>
+<pre><code class="language-C">void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
+{
+        rt_b-&gt;rt_period = ns_to_ktime(period);
+        rt_b-&gt;rt_runtime = runtime;
+
+        raw_spin_lock_init(&amp;rt_b-&gt;rt_runtime_lock);
+
+        hrtimer_init(&amp;rt_b-&gt;rt_period_timer,
+                     CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+        rt_b-&gt;rt_period_timer.function = sched_rt_period_timer;
+}
+</code></pre>
+<p>It takes three parameters:</p>
+<ul>
+<li>address of the <code>rt_bandwidth</code> structure which contains information about the allocated and consumed quota within a period;</li>
+<li><code>period</code> - period over which real-time task bandwidth enforcement is measured in <code>us</code>;</li>
+<li><code>runtime</code> - part of the period that we allow tasks to run in <code>us</code>.</li>
+</ul>
+<p>As <code>period</code> and <code>runtime</code> we pass result of the <code>global_rt_period</code> and <code>global_rt_runtime</code> functions. Which are <code>1s</code> second and and <code>0.95s</code> by default. The <code>rt_bandwidth</code> structure is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/sched.h">kernel/sched/sched.h</a> and looks:</p>
+<pre><code class="language-C">struct rt_bandwidth {
+        raw_spinlock_t          rt_runtime_lock;
+        ktime_t                 rt_period;
+        u64                     rt_runtime;
+        struct hrtimer          rt_period_timer;
+};
+</code></pre>
+<p>As you can see, it contains <code>runtime</code> and <code>period</code> and also two following fields:</p>
+<ul>
+<li><code>rt_runtime_lock</code> - <a href="http://en.wikipedia.org/wiki/Spinlock">spinlock</a> for the <code>rt_time</code> protection;</li>
+<li><code>rt_period_timer</code> - <a href="https://www.kernel.org/doc/Documentation/timers/hrtimers.txt">high-resolution kernel timer</a> for unthrottled of real-time tasks.</li>
+</ul>
+<p>So, in the <code>init_rt_bandwidth</code> we initialize <code>rt_bandwidth</code> period and runtime with the given parameters, initialize the spinlock and high-resolution time. In the next step, depends on enable of <a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a>, we make initialization of the root domain:</p>
+<pre><code class="language-C">#ifdef CONFIG_SMP
+	init_defrootdomain();
+#endif
+</code></pre>
+<p>The real-time scheduler requires global resources to make scheduling decision. But unfortunately scalability bottlenecks appear as the number of CPUs increase. The concept of root domains was introduced for improving scalability. The linux kernel provides a special mechanism for assigning a set of CPUs and memory nodes to a set of tasks and it is called - <code>cpuset</code>. If a <code>cpuset</code> contains non-overlapping with other <code>cpuset</code> CPUs, it is <code>exclusive cpuset</code>. Each exclusive cpuset defines an isolated domain or <code>root domain</code> of CPUs partitioned from other cpusets or CPUs. A <code>root domain</code> is presented by the <code>struct root_domain</code> from the <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/sched.h">kernel/sched/sched.h</a> in the linux kernel and its main purpose is to narrow the scope of the global variables to per-domain variables and all real-time scheduling decisions are made only within the scope of a root domain. That's all about it, but we will see more details about it in the chapter about real-time scheduler.</p>
+<p>After <code>root domain</code> initialization, we make initialization of the bandwidth for the real-time tasks of the root task group as we did it above:</p>
+<pre><code class="language-C">#ifdef CONFIG_RT_GROUP_SCHED
+	init_rt_bandwidth(&amp;root_task_group.rt_bandwidth,
+			global_rt_period(), global_rt_runtime());
+#endif
+</code></pre>
+<p>In the next step, depends on the <code>CONFIG_CGROUP_SCHED</code> kernel configuration option we initialize the <code>siblings</code> and <code>children</code> lists of the root task group. As we can read from the documentation, the <code>CONFIG_CGROUP_SCHED</code> is:</p>
+<pre><code>This option allows you to create arbitrary task groups using the "cgroup" pseudo
+filesystem and control the cpu bandwidth allocated to each such task group.
+</code></pre>
+<p>As we finished with the lists initialization, we can see the call of the <code>autogroup_init</code> function:</p>
+<pre><code class="language-C">#ifdef CONFIG_CGROUP_SCHED
+         list_add(&amp;root_task_group.list, &amp;task_groups);
+         INIT_LIST_HEAD(&amp;root_task_group.children);
+         INIT_LIST_HEAD(&amp;root_task_group.siblings);
+         autogroup_init(&amp;init_task);
+#endif
+</code></pre>
+<p>which initializes automatic process group scheduling.</p>
+<p>After this we are going through the all <code>possible</code> cpu (you can remember that <code>possible</code> CPUs store in the <code>cpu_possible_mask</code> bitmap that can ever be available in the system) and initialize a <code>runqueue</code> for each possible cpu:</p>
+<pre><code class="language-C">for_each_possible_cpu(i) {
+    struct rq *rq;
+    ...
+    ...
+    ...
+</code></pre>
+<p>Each processor has its own locking and individual runqueue. All runnable tasks are stored in an active array and indexed according to its priority. When a process consumes its time slice, it is moved to an expired array. All of these arras are stored in the special structure which names is <code>runqueue</code>. As there are no global lock and runqueue, we are going through the all possible CPUs and initialize runqueue for the every cpu. The <code>runqueue</code> is presented by the <code>rq</code> structure in the linux kernel which is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/sched/sched.h">kernel/sched/sched.h</a>.</p>
+<pre><code class="language-C">rq = cpu_rq(i);
+raw_spin_lock_init(&amp;rq-&gt;lock);
+rq-&gt;nr_running = 0;
+rq-&gt;calc_load_active = 0;
+rq-&gt;calc_load_update = jiffies + LOAD_FREQ;
+init_cfs_rq(&amp;rq-&gt;cfs);
+init_rt_rq(&amp;rq-&gt;rt);
+init_dl_rq(&amp;rq-&gt;dl);
+rq-&gt;rt.rt_runtime = def_rt_bandwidth.rt_runtime;
+</code></pre>
+<p>Here we get the runqueue for the every CPU with the <code>cpu_rq</code> macro which returns <code>runqueues</code> percpu variable and start to initialize it with runqueue lock, number of running tasks, <code>calc_load</code> relative fields (<code>calc_load_active</code> and <code>calc_load_update</code>) which are used in the reckoning of a CPU load and initialization of the completely fair, real-time and deadline related fields in a runqueue. After this we initialize <code>cpu_load</code> array with zeros and set the last load update tick to the <code>jiffies</code> variable which determines the number of time ticks (cycles), since the system boot:</p>
+<pre><code class="language-C">for (j = 0; j &lt; CPU_LOAD_IDX_MAX; j++)
+    rq-&gt;cpu_load[j] = 0;
+
+rq-&gt;last_load_update_tick = jiffies;
+</code></pre>
+<p>where <code>cpu_load</code> keeps history of runqueue loads in the past, for now <code>CPU_LOAD_IDX_MAX</code> is 5. In the next step we fill <code>runqueue</code> fields which are related to the <a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a>, but we will not cover them in this part. And in the end of the loop we initialize high-resolution timer for the give <code>runqueue</code> and set the <code>iowait</code> (more about it in the separate part about scheduler) number:</p>
+<pre><code class="language-C">init_rq_hrtick(rq);
+atomic_set(&amp;rq-&gt;nr_iowait, 0);
+</code></pre>
+<p>Now we come out from the <code>for_each_possible_cpu</code> loop and the next we need to set load weight for the <code>init</code> task with the <code>set_load_weight</code> function. Weight of process is calculated through its dynamic priority which is static priority + scheduling class of the process. After this we increase memory usage counter of the memory descriptor of the <code>init</code> process and set scheduler class for the current process:</p>
+<pre><code class="language-C">atomic_inc(&amp;init_mm.mm_count);
+current-&gt;sched_class = &amp;fair_sched_class;
+</code></pre>
+<p>And make current process (it will be the first <code>init</code> process) <code>idle</code> and update the value of the <code>calc_load_update</code> with the 5 seconds interval:</p>
+<pre><code class="language-C">init_idle(current, smp_processor_id());
+calc_load_update = jiffies + LOAD_FREQ;
+</code></pre>
+<p>So, the <code>init</code> process will be run, when there will be no other candidates (as it is the first process in the system). In the end we just set <code>scheduler_running</code> variable:</p>
+<pre><code class="language-C">scheduler_running = 1;
+</code></pre>
+<p>That's all. Linux kernel scheduler is initialized. Of course, we have skipped many different details and explanations here, because we need to know and understand how different concepts (like process and process groups, runqueue, rcu, etc.) works in the linux kernel , but we took a short look on the scheduler initialization process. We will look all other details in the separate part which will be fully dedicated to the scheduler.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>It is the end of the eighth part about the linux kernel initialization process. In this part, we looked on the initialization process of the scheduler and we will continue in the next part to dive in the linux kernel initialization process and will see initialization of the <a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a> and many other initialization stuff in the next part.</p>
+<p>If you have any questions or suggestions write me a comment or ping me at <a href="https://twitter.com/0xAX">twitter</a>.</p>
+<p><strong>Please note that English is not my first language, And I am really sorry for any inconvenience. If you find any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">CPU masks</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/timers/hrtimers.txt">high-resolution kernel timer</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Spinlock">spinlock</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Run_queue">Run queue</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/mm/index.html">Linux kernem memory manager</a></li>
+<li><a href="http://en.wikipedia.org/wiki/SLUB_%28software%29">slub</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Virtual_file_system">virtual file system</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/cpu-hotplug.txt">Linux kernel hotplug documentation</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Interrupt_request_%28PC_architecture%29">IRQ</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Global_Descriptor_Table">Global Descriptor Table</a></li>
+<li><a href="http://0xax.gitbooks.io/linux-insides/content/Concepts/per-cpu.html">Per-CPU variables</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">SMP</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Read-copy-update">RCU</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/scheduler/sched-design-CFS.txt">CFS Scheduler documentation</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/scheduler/sched-rt-group.txt">Real-Time group scheduling</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-7.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/67/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/158/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/158/index.html">java语法整理</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/90.html">niliv</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">42页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/139/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/docker_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/139/index.html">Docker — 从入门到实践</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/48.html">yeasy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="docker">docker</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">159页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年9月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9408个">9408</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7473;var bookPageRelUrl ='Initialization/linux-initialization-8.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

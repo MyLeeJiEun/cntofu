@@ -1,0 +1,886 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>队列自旋锁-Linux 内核揭密</title>
+<meta content='队列自旋锁,Linux 内核揭密' name='keywords'>
+<meta content='队列自旋锁,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/SyncPrim/sync-1.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">自旋锁简介</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/SyncPrim/sync-3.html">
+<span class="">信号量</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="linux-内核的同步原语-第二部分">Linux 内核的同步原语. 第二部分.</h1>
+<h2 id="队列自旋锁">队列自旋锁</h2>
+<p>这是本<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/index.html">章节</a>的第二部分，这部分描述 Linux 内核的和我们在本章的第一<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">部分</a>所见到的－－<a href="https://en.wikipedia.org/wiki/Spinlock">自旋锁</a>的同步原语。在这个部分我们将继续学习自旋锁的同步原语。 如果阅读了上一部分的相关内容，你可能记得除了正常自旋锁，Linux 内核还提供<code>自旋锁</code>的一种特殊类型 - <code>队列自旋锁</code>。 在这个部分我们将尝试理解此概念锁代表的含义。</p>
+<p>我们在上一<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">部分</a>已知<code>自旋锁</code>的 <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>:</p>
+<ul>
+<li><code>spin_lock_init</code> - 为给定<code>自旋锁</code>进行初始化；</li>
+<li><code>spin_lock</code> - 获取给定<code>自旋锁</code>；</li>
+<li><code>spin_lock_bh</code> - 禁止软件<a href="https://en.wikipedia.org/wiki/Interrupt">中断</a>并且获取给定<code>自旋锁</code>；</li>
+<li><code>spin_lock_irqsave</code> 和 <code>spin_lock_irq</code> - 禁止本地处理器中断并且保存/不保存之前<code>标识位</code>的中断状态；</li>
+<li><code>spin_unlock</code> - 释放给定的<code>自旋锁</code>；</li>
+<li><code>spin_unlock_bh</code> - 释放给定的<code>自旋锁</code>并且启用软件中断；</li>
+<li><code>spin_is_locked</code> - 返回给定<code>自旋锁</code>的状态；</li>
+<li>等等。</li>
+</ul>
+<p>而且我们知道所有这些宏都在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/spinlock.h">include/linux/spinlock.h</a> 头文件中所定义，都被扩展成针对 <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> 架构，来自于 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/spinlock.h">arch/x86/include/asm/spinlock.h</a> 文件的 <code>arch_spin_.*</code> 前缀的函数调用。如果我们关注这个头文件，我们会发现这些函数(<code>arch_spin_is_locked</code>， <code>arch_spin_lock</code>， <code>arch_spin_unlock</code> 等等)只在 <code>CONFIG_QUEUED_SPINLOCKS</code> 内核配置选项禁用的时才定义：</p>
+<pre><code class="language-c">#ifdef CONFIG_QUEUED_SPINLOCKS
+#include &lt;asm/qspinlock.h&gt;
+#else
+static __always_inline void arch_spin_lock(arch_spinlock_t *lock)
+{
+    ...
+    ...
+    ...
+}
+...
+...
+...
+#endif
+</code></pre>
+<p>这意味着 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/qspinlock.h">arch/x86/include/asm/qspinlock.h</a> 这个头文件提供提供这些函数自己的实现。实际上这些函数是宏定义并且在分布在其他头文件中。这个头文件是 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock.h#L126">include/asm-generic/qspinlock.h</a>。如果我们查看这个头文件，我们会发现这些宏的定义：</p>
+<pre><code class="language-c">#define arch_spin_is_locked(l)          queued_spin_is_locked(l)
+#define arch_spin_is_contended(l)       queued_spin_is_contended(l)
+#define arch_spin_value_unlocked(l)     queued_spin_value_unlocked(l)
+#define arch_spin_lock(l)               queued_spin_lock(l)
+#define arch_spin_trylock(l)            queued_spin_trylock(l)
+#define arch_spin_unlock(l)             queued_spin_unlock(l)
+#define arch_spin_lock_flags(l, f)      queued_spin_lock(l)
+#define arch_spin_unlock_wait(l)        queued_spin_unlock_wait(l)
+</code></pre>
+<p>在我们考虑怎么排列自旋锁和实现他们的 <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>，我们首先看看理论部分。</p>
+<h2 id="介绍队列自旋锁">介绍队列自旋锁</h2>
+<p>队列自旋锁是 Linux 内核的<a href="https://en.wikipedia.org/wiki/Lock_%28computer_science%29">锁机制</a>，是标准<code>自旋锁</code>的代替物。至少对 <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> 架构是真的。如果我们查看了以下内核配置文件 - <a href="https://github.com/torvalds/linux/blob/master/kernel/Kconfig.locks">kernel/Kconfig.locks</a>，我们将会发现以下配置入口：</p>
+<pre><code>config ARCH_USE_QUEUED_SPINLOCKS
+	bool
+
+config QUEUED_SPINLOCKS
+	def_bool y if ARCH_USE_QUEUED_SPINLOCKS
+	depends on SMP
+</code></pre>
+<p>这意味着如果 <code>ARCH_USE_QUEUED_SPINLOCKS</code> 启用，那么 <code>CONFIG_QUEUED_SPINLOCKS</code> 内核配置选项将默认启用。 我们能够看到 <code>ARCH_USE_QUEUED_SPINLOCKS</code> 在 <code>x86_64</code> 特定内核配置文件 - <a href="https://github.com/torvalds/linux/blob/master/arch/x86/Kconfig">arch/x86/Kconfig</a> 默认开启：</p>
+<pre><code>config X86
+    ...
+    ...
+    ...
+    select ARCH_USE_QUEUED_SPINLOCKS
+    ...
+    ...
+    ...
+</code></pre>
+<p>在开始考虑什么是队列自旋锁概念之前，让我们看看其他<code>自旋锁</code>的类型。一开始我们考虑<code>正常</code>自旋锁是如何实现的。通常，<code>正常</code>自旋锁的实现是基于 <a href="https://en.wikipedia.org/wiki/Test-and-set">test and set</a> 指令。这个指令的工作原则真的很简单。该指令写入一个值到内存地址然后返回该地址原来的旧值。这些操作都是在院子的上下文中完成的。也就是说，这个指令是不可中断的。因此如果第一个线程开始执行这个指令，第二个线程将会等待，直到第一个线程完成。基本锁可以在这个机制之上建立。可能看起来如下所示：</p>
+<pre><code class="language-C">int lock(lock)
+{
+    while (test_and_set(lock) == 1)
+        ;
+    return 0;
+}
+
+int unlock(lock)
+{
+    lock=0;
+
+    return lock;
+}
+</code></pre>
+<p>第一个线程将执行 <code>test_and_set</code> 指令设置 <code>lock</code> 为 <code>1</code>。当第二个线程调用 <code>lock</code> 函数，它将在 <code>while</code> 循环中自旋，直到第一个线程调用 <code>unlock</code> 函数而且 <code>lock</code> 等于 <code>0</code>。这个实现对于执行不是很好，因为该实现至少有两个问题。第一个问题是该实现可能是非公平的而且一个处理器的线程可能有很长的等待时间，即使有其他线程也在等待释放锁，它还是调用了 <code>lock</code>。第二个问题是所有想要获取锁的线程，必须在共享内存的变量上执行很多类似<code>test_and_set</code> 这样的<code>原子</code>操作。这导致缓存失效，因为处理器缓存会存储 <code>lock=1</code>，但是在线程释放锁之后，内存中 <code>lock</code>可能只是<code>1</code>。</p>
+<p>在上一<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">部分</a> 我们了解了自旋锁的第二种实现 - <code>排队自旋锁(ticket spinlock)</code>。这一方法解决了第一个问题而且能够保证想要获取锁的线程的顺序，但是仍然存在第二个问题。</p>
+<p>这一部分的主旨是 <code>队列自旋锁</code>。这个方法能够帮助解决上述的两个问题。<code>队列自旋锁</code>允许每个处理器对自旋过程使用他自己的内存地址。通过学习名为 <a href="http://www.cs.rochester.edu/~scott/papers/1991_TOCS_synch.pdf">MCS</a> 锁的这种基于队列自旋锁的实现，能够最好理解基于队列自旋锁的基本原则。在了解<code>队列自旋锁</code>的实现之前，我们先尝试理解什么是 <code>MCS</code> 锁。</p>
+<p><code>MCS</code>锁的基本理念就在上一段已经写到了，一个线程在本地变量上自旋然后每个系统的处理器自己拥有这些变量的拷贝。换句话说这个概念建立在 Linux 内核中的 <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu</a> 变量概念之上。</p>
+<p>当第一个线程想要获取锁，线程在<code>队列</code>中注册了自身，或者换句话说，因为线程现在是闲置的，线程要加入特殊<code>队列</code>并且获取锁。当第二个线程想要在第一个线程释放锁之前获取相同锁，这个线程就会把他自身的所变量的拷贝加入到这个特殊<code>队列</code>中。这个例子中第一个线程会包含一个 <code>next</code> 字段指向第二个线程。从这一时刻，第二个线程会等待直到第一个线程释放它的锁并且关于这个事件通知给 <code>next</code> 线程。第一个线程从<code>队列</code>中删除而第二个线程持有该锁。</p>
+<p>我们可以这样代表示意一下：</p>
+<p>空队列：</p>
+<pre><code>+---------+
+|         |
+|  Queue  |
+|         |
++---------+
+</code></pre>
+<p>第一个线程尝试获取锁：</p>
+<pre><code>+---------+     +----------------------------+
+|         |     |                            |
+|  Queue  |----&gt;| First thread acquired lock |
+|         |     |                            |
++---------+     +----------------------------+
+</code></pre>
+<p>第二个队列尝试获取锁:</p>
+<pre><code>+---------+     +----------------------------------------+     +-------------------------+
+|         |     |                                        |     |                         |
+|  Queue  |----&gt;|  Second thread waits for first thread  |&lt;----| First thread holds lock |
+|         |     |                                        |     |                         |
++---------+     +----------------------------------------+     +-------------------------+
+</code></pre>
+<p>或者伪代码描述为：</p>
+<pre><code class="language-C">void lock(...)
+{
+    lock.next = NULL;
+    ancestor = put_lock_to_queue_and_return_ancestor(queue, lock);
+
+    // if we have ancestor, the lock already acquired and we
+    // need to wait until it will be released
+    if (ancestor)
+    {
+        lock.locked = 1;
+        ancestor.next = lock;
+
+        while (lock.is_locked == true)
+            ;
+    }
+
+    // in other way we are owner of the lock and may exit
+}
+
+void unlock(...)
+{
+    // do we need to notify somebody or we are alonw in the
+    // queue?
+    if (lock.next != NULL) {
+        // the while loop from the lock() function will be
+        // finished
+        lock.next.is_locked = false;
+        // delete ourself from the queue and exit
+        ...
+        ...
+        ...
+        return;
+    }
+
+    // So, we have no next threads in the queue to notify about
+    // lock releasing event. Let's just put `0` to the lock, will
+    // delete ourself from the queue and exit.
+}
+</code></pre>
+<p>想法很简单，但是<code>队列自旋锁</code>的实现一定是比伪代码复杂。就如同我上面写到的，<code>队列自旋锁</code>机制计划在 Linux 内核中成为<code>排队自旋锁</code>的替代品。但你们可能还记得，常用<code>自旋锁</code>适用于<code>32位(32-bit)</code>的 <a href="https://en.wikipedia.org/wiki/Word_%28computer_architecture%29">字(word)</a>。而基于<code>MCS</code>的锁不能使用这个大小，你们可能知道 <code>spinlock_t</code> 类型在 Linux 内核中的使用是<a href="http://lxr.free-electrons.com/ident?i=spinlock_t">宽字符(widely)</a>的。这种情况下可能不得不重写 Linux 内核中重要的组成部分，但这是不可接受的。除了这一点，一些包含自旋锁用于保护的内核结构不能增长大小。但无论怎样，基于这一概念的 Linux 内核中的<code>队列自旋锁</code>实现有一些修改，可以适应<code>32</code>位的字。</p>
+<p>这就是所有有关<code>队列自旋锁</code>的理论，现在让我们考虑以下在 Linux 内核中这个机制是如何实现的。<code>队列自旋锁</code>的实现看起来比<code>排队自旋锁</code>的实现更加复杂和混乱，但是细致的研究会引导成功。</p>
+<h2 id="队列自旋锁的api">队列自旋锁的API</h2>
+<p>现在我们从原理角度了解了一些<code>队列自旋锁</code>，是时候了解 Linux 内核中这一机制的实现了。就像我们之前了解的那样 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock.h#L126">include/asm-generic/qspinlock.h</a> 头文件提供一套宏，代表 API 中的自旋锁的获取、释放等等。</p>
+<pre><code class="language-C">#define arch_spin_is_locked(l)          queued_spin_is_locked(l)
+#define arch_spin_is_contended(l)       queued_spin_is_contended(l)
+#define arch_spin_value_unlocked(l)     queued_spin_value_unlocked(l)
+#define arch_spin_lock(l)               queued_spin_lock(l)
+#define arch_spin_trylock(l)            queued_spin_trylock(l)
+#define arch_spin_unlock(l)             queued_spin_unlock(l)
+#define arch_spin_lock_flags(l, f)      queued_spin_lock(l)
+#define arch_spin_unlock_wait(l)        queued_spin_unlock_wait(l)
+</code></pre>
+<p>所有这些宏扩展了同一头文件下的函数的调用。此外，我们发现 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock_types.h">include/asm-generic/qspinlock_types.h</a> 头文件的 <code>qspinlock</code> 结构代表了 Linux 内核队列自旋锁。</p>
+<pre><code class="language-C">typedef struct qspinlock {
+	atomic_t	val;
+} arch_spinlock_t;
+</code></pre>
+<p>如我们所了解的，<code>qspinlock</code> 结构只包含了一个字段 - <code>val</code>。这个字段代表给定<code>自旋锁</code>的状态。<code>4</code> 个字节字段包括如下 4 个部分：</p>
+<ul>
+<li><code>0-7</code> - 上锁字节(locked byte);</li>
+<li><code>8</code> - 未决位(pending bit);</li>
+<li><code>16-17</code> - 这两位代表了 <code>MCS</code> 锁的 <code>per_cpu</code> 数组(马上就会了解)；</li>
+<li><code>18-31</code> - 包括表明队列尾部的处理器数。</li>
+</ul>
+<p><code>9-15</code> 字节没有被使用。</p>
+<p>就像我们已经知道的，系统中每个处理器有自己的锁拷贝。这个锁由以下结构所表示：</p>
+<pre><code class="language-C">struct mcs_spinlock {
+       struct mcs_spinlock *next;
+       int locked;
+       int count;
+};
+</code></pre>
+<p>来自 <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/mcs_spinlock.h">kernel/locking/mcs_spinlock.h</a> 头文件。第一个字段代表了指向<code>队列</code>中下一个线程的指针。第二个字段代表了<code>队列</code>中当前线程的状态，其中 <code>1</code> 是 <code>锁</code>已经获取而 <code>0</code> 相反。然后最后一个 <code>mcs_spinlock</code> 字段 结构代表嵌套锁 (nested locks)，了解什么是嵌套锁，就像想象一下当线程已经获取锁的情况，而被硬件<a href="https://en.wikipedia.org/wiki/Interrupt">中断</a> 所中断，然后<a href="https://en.wikipedia.org/wiki/Interrupt_handler">中断处理程序</a>又尝试获取锁。这个例子里，每个处理器不只是 <code>mcs_spinlock</code> 结构的拷贝，也是这些结构的数组：</p>
+<pre><code class="language-C">static DEFINE_PER_CPU_ALIGNED(struct mcs_spinlock, mcs_nodes[4]);
+</code></pre>
+<p>此数组允许以下情况的四个事件的锁获取的四个尝试(原文：This array allows to make four attempts of a lock acquisition for the four events in following contexts: )：</p>
+<ul>
+<li>普通任务上下文；</li>
+<li>硬件中断上下文；</li>
+<li>软件中断上下文；</li>
+<li>屏蔽中断上下文。</li>
+</ul>
+<p>现在让我们返回 <code>qspinlock</code> 结构和<code>队列自旋锁</code>的 <code>API</code> 中来。在我们考虑<code>队列自旋锁</code>的 <code>API</code> 之前，请注意 <code>qspinlock</code> 结构的 <code>val</code> 字段有类型 - <code>atomic_t</code>，此类型代表原子变量或者变量的一次操作(原文：one operation at a time variable)。一次，所有这个字段的操作都是<a href="https://en.wikipedia.org/wiki/Linearizability">原子的</a>。比如说让我们看看 <code>val</code> API 的值：</p>
+<pre><code class="language-C">static __always_inline int queued_spin_is_locked(struct qspinlock *lock)
+{
+	return atomic_read(&amp;lock-&gt;val);
+}
+</code></pre>
+<p>Ok，现在我们知道 Linux 内核的代表队列自旋锁数据结构，那么是时候看看<code>队列自旋锁</code><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>中<code>主要（main）</code>函数的实现。</p>
+<pre><code class="language-C">#define arch_spin_lock(l)               queued_spin_lock(l)
+</code></pre>
+<p>没错，这个函数是 - <code>queued_spin_lock</code>。正如我们可能从函数名中所了解的一样，函数允许通过线程获取锁。这个函数在 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock_types.h">include/asm-generic/qspinlock_types.h</a> 头文件中定义，它的实现看起来是这样：</p>
+<pre><code class="language-C">static __always_inline void queued_spin_lock(struct qspinlock *lock)
+{
+        u32 val;
+
+        val = atomic_cmpxchg_acquire(&amp;lock-&gt;val, 0, _Q_LOCKED_VAL);
+        if (likely(val == 0))
+                 return;
+        queued_spin_lock_slowpath(lock, val);
+}
+</code></pre>
+<p>看起来很简单，除了 <code>queued_spin_lock_slowpath</code> 函数，我们可能发现它只有一个参数。在我们的例子中这个参数代表 <code>队列自旋锁</code> 被上锁。让我们考虑<code>队列</code>锁为空，现在第一个线程想要获取锁的情况。正如我们可能了解的 <code>queued_spin_lock</code> 函数从调用 <code>atomic_cmpxchg_acquire</code> 宏开始。就像你们可能从宏的名字猜到的那样，它执行原子的 <a href="http://x86.renejeschke.de/html/file_module_x86_id_41.html">CMPXCHG</a> 指令，使用第一个参数（当前给定自旋锁的状态）比较第二个参数（在我们的例子为零）的值，如果他们相等，那么第二个参数在存储位置保存 <code>_Q_LOCKED_VAL</code> 的值，该存储位置通过 <code>&amp;lock-&gt;val</code> 指向并且返回这个存储位置的初始值。</p>
+<p><code>atomic_cmpxchg_acquire</code> 宏定义在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/atomic.h">include/linux/atomic.h</a> 头文件中并且扩展了 <code>atomic_cmpxchg</code> 函数的调用：</p>
+<pre><code class="language-C">#define  atomic_cmpxchg_acquire         atomic_cmpxchg
+</code></pre>
+<p>这实现是架构所指定的。我们考虑 <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> 架构，因此在我们的例子中这个头文件在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/atomic.h">arch/x86/include/asm/atomic.h</a> 并且<code>atomic_cmpxchg</code> 函数的实现只是返回 <code>cmpxchg</code> 宏的结果：</p>
+<pre><code class="language-C">static __always_inline int atomic_cmpxchg(atomic_t *v, int old, int new)
+{
+        return cmpxchg(&amp;v-&gt;counter, old, new);
+}
+</code></pre>
+<p>这个宏在<a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/cmpxchg.h">arch/x86/include/asm/cmpxchg.h</a>头文件中定义，看上去是这样：</p>
+<pre><code class="language-C">#define cmpxchg(ptr, old, new) \
+    __cmpxchg(ptr, old, new, sizeof(*(ptr)))
+
+#define __cmpxchg(ptr, old, new, size) \
+    __raw_cmpxchg((ptr), (old), (new), (size), LOCK_PREFIX)
+</code></pre>
+<p>就像我们可能了解的那样，<code>cmpxchg</code> 宏使用几乎相同的参数集合扩展了 <code>__cpmxchg</code> 宏。新添加的参数是原子值的大小。<code>__cpmxchg</code> 宏添加了 <code>LOCK_PREFIX</code>，还扩展了 <code>__raw_cmpxchg</code> 宏中 <code>LOCK_PREFIX</code>的 <a href="http://x86.renejeschke.de/html/file_module_x86_id_159.html">LOCK</a>指令。毕竟 <code>__raw_cmpxchg</code> 对我们来说做了所有的的工作：</p>
+<pre><code class="language-C">#define __raw_cmpxchg(ptr, old, new, size, lock) \
+({
+    ...
+    ...
+    ...
+    volatile u32 *__ptr = (volatile u32 *)(ptr);            \
+    asm volatile(lock "cmpxchgl %2,%1"                      \
+                 : "=a" (__ret), "+m" (*__ptr)              \
+                 : "r" (__new), "" (__old)                  \
+                 : "memory");                               \
+    ...
+    ...
+    ...
+})
+</code></pre>
+<p>在 <code>atomic_cmpxchg_acquire</code> 宏被执行后，该宏返回内存地址之前的值。现在只有一个线程尝试获取锁，因此 <code>val</code> 将会置为零然后我们从 <code>queued_spin_lock</code> 函数返回：</p>
+<pre><code class="language-C">val = atomic_cmpxchg_acquire(&amp;lock-&gt;val, 0, _Q_LOCKED_VAL);
+if (likely(val == 0))
+    return;
+</code></pre>
+<p>此时此刻，我们的第一个线程持有锁。注意这个行为与在 <code>MCS</code> 算法的描述有所区别。线程获取锁，但是我们不添加此线程入<code>队列</code>。就像我之前已经写到的，<code>队列自旋锁</code> 概念的实现在 Linux 内核中基于 <code>MCS</code> 算法，但是于此同时它对优化目的有一些差异。</p>
+<p>所以第一个线程已经获取了锁然后现在让我们考虑第二个线程尝试获取相同的锁的情况。第二个线程将从同样的 <code>queued_spin_lock</code> 函数开始，但是 <code>lock-&gt;val</code> 会包含 <code>1</code> 或者 <code>_Q_LOCKED_VAL</code>，因为第一个线程已经持有了锁。因此，在本例中 <code>queued_spin_lock_slowpath</code> 函数将会被调用。<code>queued_spin_lock_slowpath</code>函数定义在 <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/qspinlock.c">kernel/locking/qspinlock.c</a> 源码文件中并且从以下的检查开始：</p>
+<pre><code class="language-C">void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
+{
+	if (pv_enabled())
+	    goto queue;
+
+    if (virt_spin_lock(lock))
+		return;
+
+    ...
+    ...
+    ...
+}
+</code></pre>
+<p>这些检查操作检查了 <code>pvqspinlock</code> 的状态。<code>pvqspinlock</code> 是在<a href="https://en.wikipedia.org/wiki/Paravirtualization">准虚拟化（paravirtualized）</a>环境中的<code>队列自旋锁</code>。就像这一章节只相关 Linux 内核同步原语一样，我们跳过这些和其他不直接相关本章节主题的部分。这些检查之后我们比较使用 <code>_Q_PENDING_VAL</code> 宏的值所代表的锁，然后什么都不做直到该比较为真（原文：After these checks we compare our value which represents lock with the value of the <code>_Q_PENDING_VAL</code> macro and do nothing while this is true）：</p>
+<pre><code class="language-C">if (val == _Q_PENDING_VAL) {
+	while ((val = atomic_read(&amp;lock-&gt;val)) == _Q_PENDING_VAL)
+		cpu_relax();
+}
+</code></pre>
+<p>这里 <code>cpu_relax</code> 只是 <a href="https://en.wikipedia.org/wiki/NOP">NOP</a> 指令。综上，我们了解了锁饱含着 - <code>pending</code> 位。这个位代表了想要获取锁的线程，但是这个锁已经被其他线程获取了，并且与此同时<code>队列</code>为空。在本例中，<code>pending</code> 位将被设置并且<code>队列</code>不会被创建(touched)。这是优化所完成的，因为不需要考虑在引发缓存无效的自身 <code>mcs_spinlock</code> 数组的创建产生的非必需隐患（原文：This is done for optimization, because there are no need in unnecessary latency which will be caused by the cache invalidation in a touching of own <code>mcs_spinlock</code> array.）。</p>
+<p>下一步我们进入下面的循环：</p>
+<pre><code class="language-C">for (;;) {
+	if (val &amp; ~_Q_LOCKED_MASK)
+		goto queue;
+
+	new = _Q_LOCKED_VAL;
+	if (val == new)
+		new |= _Q_PENDING_VAL;
+
+	old = atomic_cmpxchg_acquire(&amp;lock-&gt;val, val, new);
+	if (old == val)
+		break;
+
+	val = old;
+}
+</code></pre>
+<p>这里第一个 <code>if</code> 子句检查锁 (<code>val</code>) 的状态是上锁还是待定的(pending)。这意味着第一个线程已经获取了锁，第二个线程也试图获取锁，但现在第二个线程是待定状态。本例中我们需要开始建立队列。我们将稍后考虑这个情况。在我们的例子中，第一个线程持有锁而第二个线程也尝试获取锁。这个检查之后我们在上锁状态并且使用之前锁状态比较后创建新锁。就像你记得的那样，<code>val</code> 包含了 <code>&amp;lock-&gt;val</code> 状态，在第二个线程调用 <code>atomic_cmpxchg_acquire</code> 宏后状态将会等于 <code>1</code>。由于 <code>new</code> 和 <code>val</code> 的值相等，所以我们在第二个线程的锁上设置待定位。在此之后，我们需要再次检查 <code>&amp;lock-&gt;val</code> 的值，因为第一个线程可能在这个时候释放锁。如果第一个线程还又没释放锁，<code>旧</code>的值将等于 <code>val</code> （因为 <code>atomic_cmpxchg_acquire</code> 将会返回存储地址指向 <code>lock-&gt;val</code> 的值并且当前为 <code>1</code>）然后我们将退出循环。因为我们退出了循环，我们会等待第一个线程直到它释放锁，清除待定位，获取锁并且返回：</p>
+<pre><code class="language-C">smp_cond_acquire(!(atomic_read(&amp;lock-&gt;val) &amp; _Q_LOCKED_MASK));
+clear_pending_set_locked(lock);
+return;
+</code></pre>
+<p>注意我们还没创建<code>队列</code>。这里我们不需要，因为对于两个线程来说，队列只是导致对内存访问的非必需潜在因素。在其他的例子中，第一个线程可能在这个时候释放其锁。在本例中 <code>lock-&gt;val</code> 将包含 <code>_Q_LOCKED_VAL | _Q_PENDING_VAL</code> 并且我们会开始建立<code>队列</code>。通过获得处理器执行线程的本地 <code>mcs_nodes</code> 数组的拷贝我们开始建立<code>队列</code>：</p>
+<pre><code class="language-C">node = this_cpu_ptr(&amp;mcs_nodes[0]);
+idx = node-&gt;count++;
+tail = encode_tail(smp_processor_id(), idx);
+</code></pre>
+<p>除此之外我们计算 表示<code>队列</code>尾部和代表 <code>mcs_nodes</code> 数组实体的<code>索引</code>的<code>tail</code> 。在此之后我们设置 <code>node</code> 指向正确的 <code>mcs_nodes</code> 数组，设置 <code>locked</code> 为零应为这个线程还没有获取锁，还有 <code>next</code> 为 <code>NULL</code> 因为我们不知道任何有关其他<code>队列</code>实体的信息：</p>
+<pre><code class="language-C">node += idx;
+node-&gt;locked = 0;
+node-&gt;next = NULL;
+</code></pre>
+<p>我们已经创建了对于执行当前线程想获取锁的处理器的队列的<code>每个 cpu（per-cpu）</code> 的拷贝，这意味着锁的拥有者可能在这个时刻释放了锁。因此我们可能通过 <code>queued_spin_trylock</code> 函数的调用尝试去再次获取锁。</p>
+<pre><code class="language-C">if (queued_spin_trylock(lock))
+		goto release;
+</code></pre>
+<p><code>queued_spin_trylock</code> 函数在 <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock.h">include/asm-generic/qspinlock.h</a> 头文件中被定义而且就像 <code>queued_spin_lock</code> 函数一样：</p>
+<pre><code class="language-C">static __always_inline int queued_spin_trylock(struct qspinlock *lock)
+{
+	if (!atomic_read(&amp;lock-&gt;val) &amp;&amp;
+	   (atomic_cmpxchg_acquire(&amp;lock-&gt;val, 0, _Q_LOCKED_VAL) == 0))
+		return 1;
+	return 0;
+}
+</code></pre>
+<p>如果锁成功被获取那么我们跳过<code>释放</code>标签而释放<code>队列</code>中的一个节点：</p>
+<pre><code class="language-C">release:
+	this_cpu_dec(mcs_nodes[0].count);
+</code></pre>
+<p>现在我们不再需要它了，因为锁已经获得了。如果 <code>queued_spin_trylock</code> 不成功，我们更新队列的尾部：</p>
+<pre><code class="language-C">old = xchg_tail(lock, tail);
+</code></pre>
+<p>然后检索原先的尾部。下一步是检查<code>队列</code>是否为空。这个例子中我们需要用新的实体链接之前的实体：</p>
+<pre><code class="language-C">if (old &amp; _Q_TAIL_MASK) {
+	prev = decode_tail(old);
+	WRITE_ONCE(prev-&gt;next, node);
+
+    arch_mcs_spin_lock_contended(&amp;node-&gt;locked);
+}
+</code></pre>
+<p>队列实体链接之后，我们开始等待直到队列的头部到来。由于我们等待头部，我们需要对可能在这个等待实践加入的新的节点做一些检查：</p>
+<pre><code class="language-C">next = READ_ONCE(node-&gt;next);
+if (next)
+	prefetchw(next);
+</code></pre>
+<p>如果新节点被添加，我们从通过使用 <a href="http://www.felixcloutier.com/x86/PREFETCHW.html">PREFETCHW</a> 指令指出下一个队列实体的内存中预先去除缓存线（cache line）。以优化为目的我们现在预先载入这个指针。我们只是改变了队列的头而这意味着有将要到来的 <code>MCS</code> 进行解锁操作并且下一个实体会被创建。</p>
+<p>是的，从这个时刻我们在<code>队列</code>的头部。但是在我们有能力获取锁之前，我们需要至少等待两个事件：当前锁的拥有者释放锁和第二个线程处于<code>待定</code>位也获取锁：</p>
+<pre><code class="language-C">smp_cond_acquire(!((val = atomic_read(&amp;lock-&gt;val)) &amp; _Q_LOCKED_PENDING_MASK));
+</code></pre>
+<p>两个线程都释放锁后，<code>队列</code>的头部会持有锁。最后我们只是需要更新<code>队列</code>尾部然后移除从队列中移除头部。</p>
+<p>以上。</p>
+<h2 id="总结">总结</h2>
+<p>这是 Linux 内核<a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">同步原语</a>章节第二部分的结尾。在上一个<a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">部分</a>我们已经见到了第一个同步原语<code>自旋锁</code>通过 Linux 内核 实现的<code>排队自旋锁（ticket spinlock）</code>。在这个部分我们了解了另一个<code>自旋锁</code>机制的实现 - <code>队列自旋锁</code>。下一个部分我们继续深入 Linux 内核同步原语。</p>
+<p>如果您有疑问或者建议，请在twitter <a href="https://twitter.com/0xAX">0xAX</a> 上联系我，通过 <a href="anotherworldofworld@gmail.com">email</a> 联系我，或者创建一个 <a href="https://github.com/0xAX/linux-insides/issues/new">issue</a>.</p>
+<p><strong>友情提示：英语不是我的母语，对于译文给您带来了的不便我感到非常抱歉。如果您发现任何错误请给我发送PR到 <a href="https://github.com/0xAX/linux-insides">linux-insides</a>。</strong></p>
+<h2 id="链接">链接</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt">interrupt</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_handler">interrupt handler</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Test-and-set">Test and Set</a></li>
+<li><a href="http://www.cs.rochester.edu/~scott/papers/1991_TOCS_synch.pdf">MCS</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/per-cpu.html">per-cpu variables</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Linearizability">atomic instruction</a></li>
+<li><a href="http://x86.renejeschke.de/html/file_module_x86_id_41.html">CMPXCHG instruction</a></li>
+<li><a href="http://x86.renejeschke.de/html/file_module_x86_id_159.html">LOCK instruction</a></li>
+<li><a href="https://en.wikipedia.org/wiki/NOP">NOP instruction</a></li>
+<li><a href="http://www.felixcloutier.com/x86/PREFETCHW.html">PREFETCHW instruction</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/SyncPrim/sync-1.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/181/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/181/index.html">命令行的艺术</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/101.html">jlevy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 46710个">46710</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/106/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/106/index.html">Spark 编程指南简体中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/65.html">aiyanbo</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 150个">150</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/154/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/154/index.html">Python 学习总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/86.html">itroger</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/23/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/cplusplus_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/23/index.html">数据结构思维</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 286个">286</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7502;var bookPageRelUrl ='SyncPrim/sync-2.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

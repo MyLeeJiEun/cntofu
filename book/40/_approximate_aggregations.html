@@ -1,0 +1,1134 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>近似聚合-Elasticsearch权威指南(Elasticsearch Definitive Guide)</title>
+<meta content='近似聚合,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='keywords'>
+<meta content='近似聚合,Elasticsearch权威指南,Elasticsearch Definitive Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/asciidoc.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/40/_sorting_multivalue_buckets.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">多桶排序</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/40/significant-terms.html">
+<span class="">通过聚合发现异常指标</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/40/index.html">Elasticsearch权威指南 (Elasticsearch Definitive Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/elasticsearch-cn/elasticsearch-definitive-guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  asc-content-section  uk-margin-bottom">
+<h2 id="_approximate_aggregations">近似聚合</h2>
+<div class="paragraph">
+<p>如果所有的数据都在一台机器上，那么生活会容易许多。 CS201 课上教的经典算法就足够应付这些问题。如果所有的数据都在一台机器上，那么也就不需要像 Elasticsearch 这样的分布式软件了。不过一旦我们开始分布式存储数据，就需要小心地选择算法。</p>
+</div>
+<div class="paragraph">
+<p>有些算法可以分布执行，到目前为止讨论过的所有聚合都是单次请求获得精确结果的。这些类型的算法通常被认为是 <em>高度并行的</em> ，因为它们无须任何额外代价，就能在多台机器上并行执行。比如当计算 <code>max</code> 度量时，以下的算法就非常简单：</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li> <p>把请求广播到所有分片。</p> </li>
+<li> <p>查看每个文档的 price 字段。如果 <code>price &gt; current_max</code> ，将 <code>current_max</code> 替换成 <code>price</code> 。</p> </li>
+<li> <p>返回所有分片的最大 price 并传给协调节点。</p> </li>
+<li> <p>找到从所有分片返回的最大 price 。这是最终的最大值。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>这个算法可以随着机器数的线性增长而横向扩展，无须任何协调操作（机器之间不需要讨论中间结果），而且内存消耗很小（一个整型就能代表最大值）。</p>
+</div>
+<div class="paragraph">
+<p>不幸的是，不是所有的算法都像获取最大值这样简单。更加复杂的操作则需要在算法的性能和内存使用上做出权衡。对于这个问题，我们有个三角因子模型：大数据、精确性和实时性。</p>
+</div>
+<div class="paragraph">
+<p>我们需要选择其中两项：</p>
+</div>
+<div class="dlist">
+<dl>
+<dt class="hdlist1">
+精确 + 实时
+</dt>
+<dd>
+<p>数据可以存入单台机器的内存之中，我们可以随心所欲，使用任何想用的算法。结果会 100% 精确，响应会相对快速。</p>
+</dd>
+<dt class="hdlist1">
+大数据 + 精确
+</dt>
+<dd>
+<p>传统的 Hadoop。可以处理 PB 级的数据并且为我们提供精确的答案，但它可能需要几周的时间才能为我们提供这个答案。</p>
+</dd>
+<dt class="hdlist1">
+大数据 + 实时
+</dt>
+<dd>
+<p>近似算法为我们提供准确但不精确的结果。</p>
+</dd>
+</dl>
+</div>
+<div class="paragraph">
+<p>Elasticsearch 目前支持两种近似算法（ <code>cardinality</code> 和 <code>percentiles</code> ）。 它们会提供准确但不是 100% 精确的结果。 以牺牲一点小小的估算错误为代价，这些算法可以为我们换来高速的执行效率和极小的内存消耗。</p>
+</div>
+<div class="paragraph">
+<p>对于 <em>大多数</em> 应用领域，能够 <em>实时</em> 返回高度准确的结果要比 100% 精确结果重要得多。乍一看这可能是天方夜谭。有人会叫 <em>“我们需要精确的答案！”</em> 。但仔细考虑 0.5% 误差所带来的影响：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>99% 的网站延时都在 132ms 以下。</p> </li>
+<li> <p>0.5% 的误差对以上延时的影响在正负 0.66ms 。</p> </li>
+<li> <p>近似计算的结果会在毫秒内返回，而“完全正确”的结果就可能需要几秒，甚至无法返回。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>只要简单的查看网站的延时情况，难道我们会在意近似结果是 132.66ms 而不是 132ms 吗？当然，不是所有的领域都能容忍这种近似结果，但对于绝大多数来说是没有问题的。接受近似结果更多的是一种 <em>文化观念上</em> 的壁垒而不是商业或技术上的需要。</p>
+</div>
+<div class="sect2">
+<h3 id="cardinality">统计去重后的数量</h3>
+<div class="paragraph">
+<p>Elasticsearch 提供的首个近似聚合是 <code>cardinality</code> （注：基数）度量。 它提供一个字段的基数，即该字段的 <em>distinct</em> 或者 <em>unique</em> 值的数目。 你可能会对 SQL 形式比较熟悉：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-sql" data-lang="sql">SELECT COUNT(DISTINCT color)
+FROM cars</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>去重是一个很常见的操作，可以回答很多基本的业务问题：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>网站独立访客是多少？</p> </li>
+<li> <p>卖了多少种汽车？</p> </li>
+<li> <p>每月有多少独立用户购买了商品？</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>我们可以用 <code>cardinality</code> 度量确定经销商销售汽车颜色的数量：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /cars/transactions/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "distinct_colors" : {
+            "cardinality" : {
+              "field" : "color"
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>返回的结果表明已经售卖了三种不同颜色的汽车：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">...
+"aggregations": {
+  "distinct_colors": {
+     "value": 3
+  }
+}
+...</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>可以让我们的例子变得更有用：每月有多少颜色的车被售出？为了得到这个度量，我们只需要将一个 <code>cardinality</code> 度量嵌入一个 <code>date_histogram</code> ：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /cars/transactions/_search
+{
+  "size" : 0,
+  "aggs" : {
+      "months" : {
+        "date_histogram": {
+          "field": "sold",
+          "interval": "month"
+        },
+        "aggs": {
+          "distinct_colors" : {
+              "cardinality" : {
+                "field" : "color"
+              }
+          }
+        }
+      }
+  }
+}</code></pre>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_学会权衡">学会权衡</h4>
+<div class="paragraph">
+<p>正如我们本章开头提到的， <code>cardinality</code> 度量是一个近似算法。 它是基于 <a href="http://static.googleusercontent.com/media/research.google.com/en//pubs/archive/40671.pdf">HyperLogLog++</a> （HLL）算法的。 HLL 会先对我们的输入作哈希运算，然后根据哈希运算的结果中的 bits 做概率估算从而得到基数。</p>
+</div>
+<div class="paragraph">
+<p>我们不需要理解技术细节（如果确实感兴趣，可以阅读这篇论文）， 但我们最好应该关注一下这个算法的 <em>特性</em> ：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>可配置的精度，用来控制内存的使用（更精确 ＝ 更多内存）。</p> </li>
+<li> <p>小的数据集精度是非常高的。</p> </li>
+<li> <p>我们可以通过配置参数，来设置去重需要的固定内存使用量。无论数千还是数十亿的唯一值，内存使用量只与你配置的精确度相关。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>要配置精度，我们必须指定 <code>precision_threshold</code> 参数的值。 这个阈值定义了在何种基数水平下我们希望得到一个近乎精确的结果。参考以下示例：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /cars/transactions/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "distinct_colors" : {
+            "cardinality" : {
+              "field" : "color",
+              "precision_threshold" : 100 <b class="conum">(1)</b>
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>precision_threshold</code> 接受 0–40,000 之间的数字，更大的值还是会被当作 40,000 来处理。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>示例会确保当字段唯一值在 100 以内时会得到非常准确的结果。尽管算法是无法保证这点的，但如果基数在阈值以下，几乎总是 100% 正确的。高于阈值的基数会开始节省内存而牺牲准确度，同时也会对度量结果带入误差。</p>
+</div>
+<div class="paragraph">
+<p>对于指定的阈值，HLL 的数据结构会大概使用 <code>precision_threshold * 8</code> 字节的内存，所以就必须在牺牲内存和获得额外的准确度间做平衡。</p>
+</div>
+<div class="paragraph">
+<p>在实际应用中， <code>100</code> 的阈值可以在唯一值为百万的情况下仍然将误差维持 5% 以内。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_速度优化">速度优化</h4>
+<div class="paragraph">
+<p>如果想要获得唯一值的数目， <em>通常</em> 需要查询整个数据集合（或几乎所有数据）。 所有基于所有数据的操作都必须迅速，原因是显然的。 HyperLogLog 的速度已经很快了，它只是简单的对数据做哈希以及一些位操作。</p>
+</div>
+<div class="paragraph">
+<p>但如果速度对我们至关重要，可以做进一步的优化。 因为 HLL 只需要字段内容的哈希值，我们可以在索引时就预先计算好。 就能在查询时跳过哈希计算然后将哈希值从 fielddata 直接加载出来。</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tbody>
+<tr>
+<td class="icon">
+<div class="title">
+Note
+</div> </td>
+<td class="content">
+<div class="paragraph">
+<p>预先计算哈希值只对内容很长或者基数很高的字段有用，计算这些字段的哈希值的消耗在查询时是无法忽略的。</p>
+</div>
+<div class="paragraph">
+<p>尽管数值字段的哈希计算是非常快速的，存储它们的原始值通常需要同样（或更少）的内存空间。这对低基数的字符串字段同样适用，Elasticsearch 的内部优化能够保证每个唯一值只计算一次哈希。</p>
+</div>
+<div class="paragraph">
+<p>基本上说，预先计算并不能保证所有的字段都更快，它只对那些具有高基数和/或者内容很长的字符串字段有作用。需要记住的是，预计算只是简单的将查询消耗的时间提前转移到索引时，并非没有任何代价，区别在于你可以选择在 <em>什么时候</em> 做这件事，要么在索引时，要么在查询时。</p>
+</div> </td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="paragraph">
+<p>要想这么做，我们需要为数据增加一个新的多值字段。我们先删除索引，再增加一个包括哈希值字段的映射，然后重新索引：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">DELETE /cars/
+
+PUT /cars/
+{
+  "mappings": {
+    "transactions": {
+      "properties": {
+        "color": {
+          "type": "string",
+          "fields": {
+            "hash": {
+              "type": "murmur3" <b class="conum">(1)</b>
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+POST /cars/transactions/_bulk
+{ "index": {}}
+{ "price" : 10000, "color" : "red", "make" : "honda", "sold" : "2014-10-28" }
+{ "index": {}}
+{ "price" : 20000, "color" : "red", "make" : "honda", "sold" : "2014-11-05" }
+{ "index": {}}
+{ "price" : 30000, "color" : "green", "make" : "ford", "sold" : "2014-05-18" }
+{ "index": {}}
+{ "price" : 15000, "color" : "blue", "make" : "toyota", "sold" : "2014-07-02" }
+{ "index": {}}
+{ "price" : 12000, "color" : "green", "make" : "toyota", "sold" : "2014-08-19" }
+{ "index": {}}
+{ "price" : 20000, "color" : "red", "make" : "honda", "sold" : "2014-11-05" }
+{ "index": {}}
+{ "price" : 80000, "color" : "red", "make" : "bmw", "sold" : "2014-01-01" }
+{ "index": {}}
+{ "price" : 25000, "color" : "blue", "make" : "ford", "sold" : "2014-02-12" }</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>多值字段的类型是 <code>murmur3</code> ，这是一个哈希函数。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>现在当我们执行聚合时，我们使用 <code>color.hash</code> 字段而不是 <code>color</code> 字段：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /cars/transactions/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "distinct_colors" : {
+            "cardinality" : {
+              "field" : "color.hash" <b class="conum">(1)</b>
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>注意我们指定的是哈希过的多值字段，而不是原始字段。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>现在 <code>cardinality</code> 度量会读取 <code>"color.hash"</code> 里的值（预先计算的哈希值），取代动态计算原始值的哈希。</p>
+</div>
+<div class="paragraph">
+<p>单个文档节省的时间是非常少的，但是如果你聚合一亿数据，每个字段多花费 10 纳秒的时间，那么在每次查询时都会额外增加 1 秒，如果我们要在非常大量的数据里面使用 <code>cardinality</code> ，我们可以权衡使用预计算的意义，是否需要提前计算 hash，从而在查询时获得更好的性能，做一些性能测试来检验预计算哈希是否适用于你的应用场景。。</p>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="percentiles">百分位计算</h3>
+<div class="paragraph">
+<p>Elasticsearch 提供的另外一个近似度量就是 <code>percentiles</code> 百分位数度量。 百分位数展现某以具体百分比下观察到的数值。例如，第95个百分位上的数值，是高于 95% 的数据总和。</p>
+</div>
+<div class="paragraph">
+<p>百分位数通常用来找出异常。在（统计学）的正态分布下，第 0.13 和 第 99.87 的百分位数代表与均值距离三倍标准差的值。任何处于三倍标准差之外的数据通常被认为是不寻常的，因为它与平均值相差太大。</p>
+</div>
+<div class="paragraph">
+<p>更具体的说，假设我们正运行一个庞大的网站，一个很重要的工作是保证用户请求能得到快速响应，因此我们就需要监控网站的延时来判断响应是否能保证良好的用户体验。</p>
+</div>
+<div class="paragraph">
+<p>在此场景下，一个常用的度量方法就是平均响应延时。 但这并不是一个好的选择（尽管很常用），因为平均数通常会隐藏那些异常值， 中位数有着同样的问题。 我们可以尝试最大值，但这个度量会轻而易举的被单个异常值破坏。</p>
+</div>
+<div class="paragraph">
+<p>在图 <a href="#percentile-mean-median">Average request latency over time</a> 查看问题。如果我们依靠如平均值或中位数这样的简单度量，就会得到像这样一幅图 <a href="#percentile-mean-median">Average request latency over time</a> 。</p>
+</div>
+<div id="percentile-mean-median" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_33in01.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_33in01.png" alt="Assessing website latency using mean/median"></a>
+</div>
+<div class="title">
+Figure 40. Average request latency over time
+</div>
+</div>
+<div class="paragraph">
+<p>一切正常。 图上有轻微的波动，但没有什么值得关注的。 但如果我们加载 99 百分位数时（这个值代表最慢的 1% 的延时），我们看到了完全不同的一幅画面，如图 <a href="#percentile-mean-median-percentile">Average request latency with 99th percentile over time</a> 。</p>
+</div>
+<div id="percentile-mean-median-percentile" class="imageblock">
+<div class="content">
+<a href="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_33in02.png" data-uk-lightbox><img src="https://img.cntofu.com/book/elasticsearch-definitive-guide/images/elas_33in02.png" alt="Assessing website latency using percentiles"></a>
+</div>
+<div class="title">
+Figure 41. Average request latency with 99th percentile over time
+</div>
+</div>
+<div class="paragraph">
+<p>令人吃惊！在上午九点半时，均值只有 75ms。如果作为一个系统管理员，我们都不会看他第二眼。 一切正常！但 99 百分位告诉我们有 1% 的用户碰到的延时超过 850ms，这是另外一幅场景。 在上午4点48时也有一个小波动，这甚至无法从平均值和中位数曲线上观察到。</p>
+</div>
+<div class="paragraph">
+<p>这只是百分位的一个应用场景，百分位还可以被用来快速用肉眼观察数据的分布，检查是否有数据倾斜或双峰甚至更多。</p>
+</div>
+<div class="sect3">
+<h4 id="_百分位度量">百分位度量</h4>
+<div class="paragraph">
+<p>让我加载一个新的数据集（汽车的数据不太适用于百分位）。我们要索引一系列网站延时数据然后运行一些百分位操作进行查看：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">POST /website/logs/_bulk
+{ "index": {}}
+{ "latency" : 100, "zone" : "US", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 80, "zone" : "US", "timestamp" : "2014-10-29" }
+{ "index": {}}
+{ "latency" : 99, "zone" : "US", "timestamp" : "2014-10-29" }
+{ "index": {}}
+{ "latency" : 102, "zone" : "US", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 75, "zone" : "US", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 82, "zone" : "US", "timestamp" : "2014-10-29" }
+{ "index": {}}
+{ "latency" : 100, "zone" : "EU", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 280, "zone" : "EU", "timestamp" : "2014-10-29" }
+{ "index": {}}
+{ "latency" : 155, "zone" : "EU", "timestamp" : "2014-10-29" }
+{ "index": {}}
+{ "latency" : 623, "zone" : "EU", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 380, "zone" : "EU", "timestamp" : "2014-10-28" }
+{ "index": {}}
+{ "latency" : 319, "zone" : "EU", "timestamp" : "2014-10-29" }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>数据有三个值：延时、数据中心的区域以及时间戳。让我们对数据全集进行 <em>百分位</em> 操作以获得数据分布情况的直观感受：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /website/logs/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "load_times" : {
+            "percentiles" : {
+                "field" : "latency" <b class="conum">(1)</b>
+            }
+        },
+        "avg_load_time" : {
+            "avg" : {
+                "field" : "latency" <b class="conum">(2)</b>
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>percentiles</code> 度量被应用到 latency 延时字段。</p> </li>
+<li> <p>为了比较，我们对相同字段使用 <code>avg</code> 度量。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>默认情况下，<code>percentiles</code> 度量会返回一组预定义的百分位数值： <code>[1, 5, 25, 50, 75, 95, 99]</code> 。它们表示了人们感兴趣的常用百分位数值，极端的百分位数在范围的两边，其他的一些处于中部。在返回的响应中，我们可以看到最小延时在 75ms 左右，而最大延时差不多有 600ms。与之形成对比的是，平均延时在 200ms 左右， 信息并不是很多：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">...
+"aggregations": {
+  "load_times": {
+     "values": {
+        "1.0": 75.55,
+        "5.0": 77.75,
+        "25.0": 94.75,
+        "50.0": 101,
+        "75.0": 289.75,
+        "95.0": 489.34999999999985,
+        "99.0": 596.2700000000002
+     }
+  },
+  "avg_load_time": {
+     "value": 199.58333333333334
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>所以显然延时的分布很广，让我们看看它们是否与数据中心的地理区域有关：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /website/logs/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "zones" : {
+            "terms" : {
+                "field" : "zone" <b class="conum">(1)</b>
+            },
+            "aggs" : {
+                "load_times" : {
+                    "percentiles" : { <b class="conum">(2)</b>
+                      "field" : "latency",
+                      "percents" : [50, 95.0, 99.0] <b class="conum">(3)</b>
+                    }
+                },
+                "load_avg" : {
+                    "avg" : {
+                        "field" : "latency"
+                    }
+                }
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p>首先根据区域我们将延时分到不同的桶中。</p> </li>
+<li> <p>再计算每个区域的百分位数值。</p> </li>
+<li> <p>percents 参数接受了我们想返回的一组百分位数，因为我们只对长的延时感兴趣。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>在响应结果中，我们发现欧洲区域（EU）要比美国区域（US）慢很多，在美国区域（US），50 百分位与 99 百分位十分接近，它们都接近均值。</p>
+</div>
+<div class="paragraph">
+<p>与之形成对比的是，欧洲区域（EU）在 50 和 99 百分位有较大区分。现在，显然可以发现是欧洲区域（EU）拉低了延时的统计信息，我们知道欧洲区域的 50% 延时都在 300ms+。</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">...
+"aggregations": {
+  "zones": {
+     "buckets": [
+        {
+           "key": "eu",
+           "doc_count": 6,
+           "load_times": {
+              "values": {
+                 "50.0": 299.5,
+                 "95.0": 562.25,
+                 "99.0": 610.85
+              }
+           },
+           "load_avg": {
+              "value": 309.5
+           }
+        },
+        {
+           "key": "us",
+           "doc_count": 6,
+           "load_times": {
+              "values": {
+                 "50.0": 90.5,
+                 "95.0": 101.5,
+                 "99.0": 101.9
+              }
+           },
+           "load_avg": {
+              "value": 89.66666666666667
+           }
+        }
+     ]
+  }
+}
+...</code></pre>
+</div>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_百分位等级">百分位等级</h4>
+<div class="paragraph">
+<p>这里有另外一个紧密相关的度量叫 <code>percentile_ranks</code> 。 <code>percentiles</code> 度量告诉我们落在某个百分比以下的所有文档的最小值。例如，如果 50 百分位是 119ms，那么有 50% 的文档数值都不超过 119ms。 <code>percentile_ranks</code> 告诉我们某个具体值属于哪个百分位。119ms 的 <code>percentile_ranks</code> 是在 50 百分位。 这基本是个双向关系，例如：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>50 百分位是 119ms。</p> </li>
+<li> <p>119ms 百分位等级是 50 百分位。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>所以假设我们网站必须维持的服务等级协议（SLA）是响应时间低于 210ms。然后，开个玩笑，我们老板警告我们如果响应时间超过 800ms 会把我开除。可以理解的是，我们希望知道有多少百分比的请求可以满足 SLA 的要求（并期望至少在 800ms 以下！）。</p>
+</div>
+<div class="paragraph">
+<p>为了做到这点，我们可以应用 <code>percentile_ranks</code> 度量而不是 <code>percentiles</code> 度量：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">GET /website/logs/_search
+{
+    "size" : 0,
+    "aggs" : {
+        "zones" : {
+            "terms" : {
+                "field" : "zone"
+            },
+            "aggs" : {
+                "load_times" : {
+                    "percentile_ranks" : {
+                      "field" : "latency",
+                      "values" : [210, 800] <b class="conum">(1)</b>
+                    }
+                }
+            }
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<ol>
+<li> <p><code>percentile_ranks</code> 度量接受一组我们希望分级的数值。</p> </li>
+</ol>
+</div>
+<div class="paragraph">
+<p>在聚合运行后，我们能得到两个值：</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-js" data-lang="js">"aggregations": {
+  "zones": {
+     "buckets": [
+        {
+           "key": "eu",
+           "doc_count": 6,
+           "load_times": {
+              "values": {
+                 "210.0": 31.944444444444443,
+                 "800.0": 100
+              }
+           }
+        },
+        {
+           "key": "us",
+           "doc_count": 6,
+           "load_times": {
+              "values": {
+                 "210.0": 100,
+                 "800.0": 100
+              }
+           }
+        }
+     ]
+  }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>这告诉我们三点重要的信息：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>在欧洲（EU），210ms 的百分位等级是 31.94% 。</p> </li>
+<li> <p>在美国（US），210ms 的百分位等级是 100% 。</p> </li>
+<li> <p>在欧洲（EU）和美国（US），800ms 的百分位等级是 100% 。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>通俗的说，在欧洲区域（EU）只有 32% 的响应时间满足服务等级协议（SLA），而美国区域（US）始终满足服务等级协议的。但幸运的是，两个区域所有响应时间都在 800ms 以下，所以我们还不会被炒鱿鱼（至少目前不会）。</p>
+</div>
+<div class="paragraph">
+<p><code>percentile_ranks</code> 度量提供了与 <code>percentiles</code> 相同的信息，但它以不同方式呈现，如果我们对某个具体数值更关心，使用它会更方便。</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_学会权衡_2">学会权衡</h4>
+<div class="paragraph">
+<p>和基数一样，计算百分位需要一个近似算法。 朴素的 实现会维护一个所有值的有序列表， 但当我们有几十亿数据分布在几十个节点时，这几乎是不可能的。</p>
+</div>
+<div class="paragraph">
+<p>取而代之的是 <code>percentiles</code> 使用一个 TDigest 算法，（由 Ted Dunning 在 <a href="https://github.com/tdunning/t-digest/blob/master/docs/t-digest-paper/histo.pdf">Computing Extremely Accurate Quantiles Using T-Digests</a> 里面提出的）。 与 HyperLogLog 一样，不需要理解完整的技术细节，但有必要了解算法的特性：</p>
+</div>
+<div class="ulist">
+<ul>
+<li> <p>百分位的准确度与百分位的 <em>极端程度</em> 相关，也就是说 1 或 99 的百分位要比 50 百分位要准确。这只是数据结构内部机制的一种特性，但这是一个好的特性，因为多数人只关心极端的百分位。</p> </li>
+<li> <p>对于数值集合较小的情况，百分位非常准确。如果数据集足够小，百分位可能 100% 精确。</p> </li>
+<li> <p>随着桶里数值的增长，算法会开始对百分位进行估算。它能有效在准确度和内存节省之间做出权衡。 不准确的程度比较难以总结，因为它依赖于 聚合时数据的分布以及数据量的大小。</p> </li>
+</ul>
+</div>
+<div class="paragraph">
+<p>与 <code>cardinality</code> 类似，我们可以通过修改参数 <code>compression</code> 来控制内存与准确度之间的比值。</p>
+</div>
+<div class="paragraph">
+<p>TDigest 算法用节点近似计算百分比：节点越多，准确度越高（同时内存消耗也越大），这都与数据量成正比。 <code>compression</code> 参数限制节点的最大数目为 <code>20 * compression</code> 。</p>
+</div>
+<div class="paragraph">
+<p>因此，通过增加压缩比值，可以以消耗更多内存为代价提高百分位数准确性。更大的压缩比值会使算法运行更慢，因为底层的树形数据结构的存储也会增长，也导致操作的代价更高。默认的压缩比值是 <code>100</code> 。</p>
+</div>
+<div class="paragraph">
+<p>一个节点大约使用 32 字节的内存，所以在最坏的情况下（例如，大量数据有序存入），默认设置会生成一个大小约为 64KB 的 TDigest。 在实际应用中，数据会更随机，所以 TDigest 使用的内存会更少。</p>
+</div>
+</div>
+</div>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/117/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/117/index.html">成为专业程序员路上用到的各种优秀资料、神器及框架</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">26页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/31/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/7/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/netty_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/7/index.html">Netty 4.x 用户指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="netty">netty</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1131个">1131</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/194/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/postgresql_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/194/index.html">postgresql教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/110.html">hfpp2012</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="postgresql">postgresql</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9个">9</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/173/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/173/index.html">HBase中文参考指南 3.0</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 51个">51</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/35/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/django_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/35/index.html">Django 1.8 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="django">django</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">172页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/40/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/foreword_id.html" title="序言" data-book-page-rel-url="foreword_id.html" data-book-page-id="9242">序言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/preface.html" title="前言" data-book-page-rel-url="preface.html" data-book-page-id="9243">前言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/_who_should_read_this_book.html" title="谁应该读这本书" data-book-page-rel-url="_who_should_read_this_book.html" data-book-page-id="9244">谁应该读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_why_we_wrote_this_book.html" title="为什么我们要写这本书" data-book-page-rel-url="_why_we_wrote_this_book.html" data-book-page-id="9245">为什么我们要写这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_elasticsearch_version.html" title="Elasticsearch 版本" data-book-page-rel-url="_elasticsearch_version.html" data-book-page-id="9246">Elasticsearch 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_how_to_read_this_book.html" title="如何读这本书" data-book-page-rel-url="_how_to_read_this_book.html" data-book-page-id="9247">如何读这本书</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_navigating_this_book.html" title="本书导航" data-book-page-rel-url="_navigating_this_book.html" data-book-page-id="9248">本书导航</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_online_resources.html" title="在线资源" data-book-page-rel-url="_online_resources.html" data-book-page-id="9249">在线资源</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_conventions_used_in_this_book.html" title="本书协议约定" data-book-page-rel-url="_conventions_used_in_this_book.html" data-book-page-id="9250">本书协议约定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_using_code_examples.html" title="使用代码示例" data-book-page-rel-url="_using_code_examples.html" data-book-page-id="9251">使用代码示例</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_acknowledgments.html" title="鸣谢" data-book-page-rel-url="_acknowledgments.html" data-book-page-id="9252">鸣谢</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/getting-started.html" title="基础入门" data-book-page-rel-url="getting-started.html" data-book-page-id="9253">基础入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/intro.html" title="你知道的, 为了搜索&#8230;&#8203;" data-book-page-rel-url="intro.html" data-book-page-id="9254">你知道的, 为了搜索&#8230;&#8203;</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-cluster.html" title="集群内的原理" data-book-page-rel-url="distributed-cluster.html" data-book-page-id="9255">集群内的原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/data-in-data-out.html" title="数据输入和输出" data-book-page-rel-url="data-in-data-out.html" data-book-page-id="9256">数据输入和输出</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-docs.html" title="分布式文档存储" data-book-page-rel-url="distributed-docs.html" data-book-page-id="9257">分布式文档存储</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search.html" title="搜索——最基本的工具" data-book-page-rel-url="search.html" data-book-page-id="9258">搜索——最基本的工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/mapping-analysis.html" title="映射和分析" data-book-page-rel-url="mapping-analysis.html" data-book-page-id="9259">映射和分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-body-search.html" title="请求体查询" data-book-page-rel-url="full-body-search.html" data-book-page-id="9260">请求体查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/sorting.html" title="排序与相关性" data-book-page-rel-url="sorting.html" data-book-page-id="9261">排序与相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/distributed-search.html" title="执行分布式检索" data-book-page-rel-url="distributed-search.html" data-book-page-id="9262">执行分布式检索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/index-management.html" title="索引管理" data-book-page-rel-url="index-management.html" data-book-page-id="9263">索引管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/inside-a-shard.html" title="分片内部原理" data-book-page-rel-url="inside-a-shard.html" data-book-page-id="9264">分片内部原理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/search-in-depth.html" title="深入搜索" data-book-page-rel-url="search-in-depth.html" data-book-page-id="9265">深入搜索</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/structured-search.html" title="结构化搜索" data-book-page-rel-url="structured-search.html" data-book-page-id="9266">结构化搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/full-text-search.html" title="全文搜索" data-book-page-rel-url="full-text-search.html" data-book-page-id="9267">全文搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/multi-field-search.html" title="多字段搜索" data-book-page-rel-url="multi-field-search.html" data-book-page-id="9268">多字段搜索</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/proximity-matching.html" title="近似匹配" data-book-page-rel-url="proximity-matching.html" data-book-page-id="9269">近似匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/partial-matching.html" title="部分匹配" data-book-page-rel-url="partial-matching.html" data-book-page-id="9270">部分匹配</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/controlling-relevance.html" title="控制相关度" data-book-page-rel-url="controlling-relevance.html" data-book-page-id="9271">控制相关度</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/languages.html" title="处理人类语言" data-book-page-rel-url="languages.html" data-book-page-id="9272">处理人类语言</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/language-intro.html" title="开始处理各种语言" data-book-page-rel-url="language-intro.html" data-book-page-id="9273">开始处理各种语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/identifying-words.html" title="词汇识别" data-book-page-rel-url="identifying-words.html" data-book-page-id="9274">词汇识别</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/token-normalization.html" title="归一化词元" data-book-page-rel-url="token-normalization.html" data-book-page-id="9275">归一化词元</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stemming.html" title="将单词还原为词根" data-book-page-rel-url="stemming.html" data-book-page-id="9276">将单词还原为词根</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/stopwords.html" title="停用词: 性能与精度" data-book-page-rel-url="stopwords.html" data-book-page-id="9277">停用词: 性能与精度</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/synonyms.html" title="同义词" data-book-page-rel-url="synonyms.html" data-book-page-id="9278">同义词</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/fuzzy-matching.html" title="拼写错误" data-book-page-rel-url="fuzzy-matching.html" data-book-page-id="9279">拼写错误</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/aggregations.html" title="聚合" data-book-page-rel-url="aggregations.html" data-book-page-id="9280">聚合</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/aggs-high-level.html" title="高阶概念" data-book-page-rel-url="aggs-high-level.html" data-book-page-id="9281">高阶概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_aggregation_test_drive.html" title="尝试聚合" data-book-page-rel-url="_aggregation_test_drive.html" data-book-page-id="9282">尝试聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_building_bar_charts.html" title="条形图" data-book-page-rel-url="_building_bar_charts.html" data-book-page-id="9283">条形图</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_looking_at_time.html" title="按时间统计" data-book-page-rel-url="_looking_at_time.html" data-book-page-id="9284">按时间统计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_scoping_aggregations.html" title="范围限定的聚合" data-book-page-rel-url="_scoping_aggregations.html" data-book-page-id="9285">范围限定的聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_filtering_queries_and_aggregations.html" title="过滤和聚合" data-book-page-rel-url="_filtering_queries_and_aggregations.html" data-book-page-id="9286">过滤和聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_sorting_multivalue_buckets.html" title="多桶排序" data-book-page-rel-url="_sorting_multivalue_buckets.html" data-book-page-id="9287">多桶排序</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_approximate_aggregations.html" title="近似聚合" data-book-page-rel-url="_approximate_aggregations.html" data-book-page-id="9288">近似聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/significant-terms.html" title="通过聚合发现异常指标" data-book-page-rel-url="significant-terms.html" data-book-page-id="9289">通过聚合发现异常指标</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/docvalues-and-fielddata.html" title="Doc Values and Fielddata" data-book-page-rel-url="docvalues-and-fielddata.html" data-book-page-id="9290">Doc Values and Fielddata</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/_closing_thoughts.html" title="总结" data-book-page-rel-url="_closing_thoughts.html" data-book-page-id="9291">总结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geoloc.html" title="地理位置" data-book-page-rel-url="geoloc.html" data-book-page-id="9292">地理位置</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/geopoints.html" title="地理坐标点" data-book-page-rel-url="geopoints.html" data-book-page-id="9293">地理坐标点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geohashes.html" title="Geohashes" data-book-page-rel-url="geohashes.html" data-book-page-id="9294">Geohashes</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-aggs.html" title="地理位置聚合" data-book-page-rel-url="geo-aggs.html" data-book-page-id="9295">地理位置聚合</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/geo-shapes.html" title="地理形状" data-book-page-rel-url="geo-shapes.html" data-book-page-id="9296">地理形状</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/modeling-your-data.html" title="数据建模" data-book-page-rel-url="modeling-your-data.html" data-book-page-id="9297">数据建模</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/relations.html" title="关联关系处理" data-book-page-rel-url="relations.html" data-book-page-id="9298">关联关系处理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/nested-objects.html" title="嵌套对象" data-book-page-rel-url="nested-objects.html" data-book-page-id="9299">嵌套对象</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/parent-child.html" title="父-子关系文档" data-book-page-rel-url="parent-child.html" data-book-page-id="9300">父-子关系文档</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/scale.html" title="扩容设计" data-book-page-rel-url="scale.html" data-book-page-id="9301">扩容设计</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../book/40/administration.html" title="管理、监控和部署" data-book-page-rel-url="administration.html" data-book-page-id="9302">管理、监控和部署</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/40/cluster-admin.html" title="监控" data-book-page-rel-url="cluster-admin.html" data-book-page-id="9303">监控</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/deploy.html" title="部署" data-book-page-rel-url="deploy.html" data-book-page-id="9304">部署</a>
+</li>
+<li>
+<a class="pjax" href="../../book/40/post_deploy.html" title="部署后" data-book-page-rel-url="post_deploy.html" data-book-page-id="9305">部署后</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =40;var bookPageId =9288;var bookPageRelUrl ='_approximate_aggregations.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

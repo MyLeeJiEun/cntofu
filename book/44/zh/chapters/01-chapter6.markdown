@@ -1,0 +1,768 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>文件系统操作-Shell 编程范例</title>
+<meta content='文件系统操作,Shell 编程范例' name='keywords'>
+<meta content='文件系统操作,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/chapters/01-chapter5.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">文件操作</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/44/zh/chapters/01-chapter7.markdown">
+<span class="">进程操作</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="文件系统操作">文件系统操作</h1>
+<ul>
+<li><a href="#toc_23937_24032_1">前言</a></li>
+<li><a href="#toc_23937_24032_2">文件系统在 Linux 操作系统中的位置</a></li>
+<li><a href="#toc_23937_24032_3">硬件管理和设备驱动</a></li>
+<li><a href="#toc_23937_24032_4">范例：查找设备所需的驱动文件</a></li>
+<li><a href="#toc_23937_24032_5">范例：查看已经加载的设备驱动</a></li>
+<li><a href="#toc_23937_24032_6">范例：卸载设备驱动</a></li>
+<li><a href="#toc_23937_24032_7">范例：挂载设备驱动</a></li>
+<li><a href="#toc_23937_24032_8">范例：查看设备驱动对应的设备文件</a></li>
+<li><a href="#toc_23937_24032_9">范例：访问设备文件</a></li>
+<li><a href="#toc_23937_24032_10">理解、查看磁盘分区</a></li>
+<li><a href="#toc_23937_24032_11">磁盘分区基本原理</a></li>
+<li><a href="#toc_23937_24032_12">通过分析 MBR 来理解分区原理</a></li>
+<li><a href="#toc_23937_24032_13">分区和文件系统的关系</a></li>
+<li><a href="#toc_23937_24032_14">常见分区类型</a></li>
+<li><a href="#toc_23937_24032_15">范例：格式化文件系统</a></li>
+<li><a href="#toc_23937_24032_16">分区、逻辑卷和文件系统的关系</a></li>
+<li><a href="#toc_23937_24032_17">文件系统的可视化结构</a></li>
+<li><a href="#toc_23937_24032_18">范例：挂载文件系统</a></li>
+<li><a href="#toc_23937_24032_19">范例：卸载某个分区</a></li>
+<li><a href="#toc_23937_24032_20">如何制作一个文件系统</a></li>
+<li><a href="#toc_23937_24032_21">范例：用 dd 创建一个固定大小的文件</a></li>
+<li><a href="#toc_23937_24032_22">范例：用 mkfs 格式化文件</a></li>
+<li><a href="#toc_23937_24032_23">范例：挂载刚创建的文件系统</a></li>
+<li><a href="#toc_23937_24032_24">范例：对文件系统进行读、写、删除等操作</a></li>
+<li><a href="#toc_23937_24032_25">如何开发自己的文件系统</a></li>
+<li><a href="#toc_23937_24032_26">后记</a></li>
+</ul>
+<p><span id="toc_23937_24032_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>准备了很久，找了好多天资料，还不知道应该如何动笔写：因为担心拿捏不住，所以一方面继续查找资料，一方面思考如何来写。作为《Shell编程范例》的一部分，希望它能够很好地帮助 Shell 程序员理解如何用 Shell 命令来完成和 Linux 系统关系非常大的文件系统的各种操作，希望让 Shell 程序员中对文件系统"混沌"的状态从此消失，希望文件系统以一种更为清晰的样子呈现在眼前。</p>
+<p><span id="toc_23937_24032_2"></span></p>
+<h2 id="文件系统在-linux-操作系统中的位置">文件系统在 Linux 操作系统中的位置</h2>
+<p>如何来认识文件系统呢？从 Shell 程序员的角度来看，文件系统就是一个用来组织各种文件的方法。但是文件系统无法独立于硬件存储设备和操作系统而存在，因此还是有必要来弄清楚硬件存储设备、分区、操作系统、逻辑卷、文件系统等各种概念之间的联系，以便理解文件系统常规操作的一些“细节”。这个联系或许（也许会有一些问题）可以通过这样一种方式来呈现：</p>
+<p><a href="https://img.cntofu.com/book/open-shell-book/zh/chapters/pic/Linux_FileSystem_Architecture.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/open-shell-book/zh/chapters/pic/Linux_FileSystem_Architecture.jpg" alt="Linux FileSystem Architecture"></a></p>
+<p>从图中可以清晰地看到各个“概念”之间的关系，它们以不同层次分布，覆盖硬件设备、系统内核空间、系统用户空间。在用户空间，用户可以不管内核如何操作具体硬件设备，仅仅使用程序员设计的各种界面就可以，而普通程序员也仅仅需要利用内核提供的各种接口（System Call）或者一些C库来和内核进行交互，而无须关心具体的实现细节。不过对于操作系统开发人员，他们需要在内核空间设计特定的数据结构来管理和组织底层的硬件设备。</p>
+<p>下面从下到上的方式（即从底层硬件开始），用工具来分析和理解图中几个重要概念。（如果有兴趣，可以先看看下面的几则资料）</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-vfs/">从文件 I/O 看 Linux 的虚拟文件系统</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-linux-filesystem/index.html?ca=drs-cn">Linux 文件系统剖析</a></li>
+<li><a href="http://man.chinaunix.net/tech/lyceum/linuxK/fs/filesystem.html">第九章 文件系统</a></li>
+<li><a href="http://unix-cd.com/vc/www/28/2007-06/1178.html">Linux 逻辑盘卷管理 LVM 详解</a></li>
+</ul>
+<p><span id="toc_23937_24032_3"></span></p>
+<h2 id="硬件管理和设备驱动">硬件管理和设备驱动</h2>
+<p>Linux 系统通过设备驱动管理硬件设备。如果添加了新的硬件设备，那么需要编写相应的硬件驱动来管理它。对于一些常见的硬件设备，系统已经自带了相应的驱动，编译内核时，选中它们，然后编译成内核的一部分或者以模块的方式编译。如果以模块的方式编译，那么可以在系统的 <code>/lib/modules/$(uname -r)</code>目录下找到对应的模块文件。</p>
+<p><span id="toc_23937_24032_4"></span></p>
+<h3 id="范例查找设备所需的驱动文件">范例：查找设备所需的驱动文件</h3>
+<p>比如，可以这样找到相应的 scsi 驱动和 usb 驱动对应的模块文件：</p>
+<p>更新系统中文件索引数据库(有点慢）</p>
+<pre><code>$ updatedb
+</code></pre>
+<p>查找 scsi 相关的驱动</p>
+<pre><code>$ locate scsi*.ko
+</code></pre>
+<p>查找 usb 相关的驱动</p>
+<pre><code>$ locate usb*.ko
+</code></pre>
+<p>这些驱动以 <code>.ko</code> 为后缀，在安装系统时默认编译为了模块。实际上可以把它们编译为内核的一部分，仅仅需要在编译内核时选择为<code>[*]</code>即可。但是，很多情况下会以模块的方式编译它们，这样可以减少内核的大小，并根据需要灵活地加载和卸载它们。下面简单地演示如何卸载模块、加载模块以及查看已加载模块的状态。</p>
+<p>可通过 <code>/proc</code> 文件系统的 <code>modules</code> 文件检查内核中已加载的各个模块的状态，也可以通过 <code>lsmod</code> 命令直接查看它们。</p>
+<pre><code>$ cat /proc/modules
+</code></pre>
+<p>或者</p>
+<pre><code>$ lsmod
+</code></pre>
+<p><span id="toc_23937_24032_5"></span></p>
+<h3 id="范例查看已经加载的设备驱动">范例：查看已经加载的设备驱动</h3>
+<p>查看 scsi 和 usb 相关驱动，结果各列为模块名、模块大小、被其他模块的引用情况（引用次数、引用它们的模块）</p>
+<pre><code>$ lsmod | egrep "scsi|usb"
+usbhid                 29536  0
+hid                    28928  1 usbhid
+usbcore               138632  4 usbhid,ehci_hcd,ohci_hcd
+scsi_mod              147084  4 sg,sr_mod,sd_mod,libata
+</code></pre>
+<p><span id="toc_23937_24032_6"></span></p>
+<h3 id="范例卸载设备驱动">范例：卸载设备驱动</h3>
+<p>下面卸载 <code>usbhid</code> 模块看看（不要卸载scsi的驱动！因为你的系统可能就跑在上面，如果确实想玩玩，卸载前记得保存数据），通过 <code>rmmod</code> 命令就可以实现，先切换到 Root 用户：</p>
+<pre><code>$ sudo -s
+# rmmod usbhid
+</code></pre>
+<p>再查看该模块的信息，已经看不到了吧</p>
+<pre><code>$ lsmod | grep ^usbhid
+</code></pre>
+<p><span id="toc_23937_24032_7"></span></p>
+<h3 id="范例挂载设备驱动">范例：挂载设备驱动</h3>
+<p>如果有个 usb 鼠标，那么移动一下，是不是发现动不了啦？因为设备驱动都没有了，设备自然就没法用罗。不过不要紧张，既然知道原因，那么重新加载驱动就可以，下面用 <code>insmod</code> 把 <code>usbhid</code> 模块重新加载上。</p>
+<pre><code>$ sudo -s
+# insmod `locate usbhid.ko`
+</code></pre>
+<p><code>locate usbhid.ko</code> 是为了找出 <code>usbhid.ko</code> 模块的路径，如果之前没有 <code>updatedb</code>，估计用它是找不到了，不过也可以直接到 <code>/lib/modules</code> 目录下用 <code>find</code> 把 <code>usbhid.ko</code> 文件找到。</p>
+<pre><code># insmod $(find /lib/modules -name "*usbhid.ko*" | grep `uname -r`)
+</code></pre>
+<p>现在鼠标又可以用啦，不信再动一下鼠标 :-)</p>
+<p>到这里，硬件设备和设备驱动之间关系应该是比较清楚了。如果没有，那么继续下面的内容。</p>
+<p><span id="toc_23937_24032_8"></span></p>
+<h3 id="范例查看设备驱动对应的设备文件">范例：查看设备驱动对应的设备文件</h3>
+<p>Linux 设备驱动关联着相应的设备文件，而设备文件则和硬件设备一一对应。这些设备文件都统一存放在系统的 <code>/dev/</code> 目录下。</p>
+<p>例如，scsi 设备对应<code>/dev/sda</code>，<code>/dev/sda1</code>，<code>/dev/sda2</code>... 下面查看这些设备信息。</p>
+<pre><code>$ ls -l /dev/sda*
+brw-rw---- 1 root disk 8, 0 2007-12-28 22:49 /dev/sda
+brw-rw---- 1 root disk 8, 1 2007-12-28 22:50 /dev/sda1
+brw-rw---- 1 root disk 8, 3 2007-12-28 22:49 /dev/sda3
+brw-rw---- 1 root disk 8, 4 2007-12-28 22:49 /dev/sda4
+brw-rw---- 1 root disk 8, 5 2007-12-28 22:50 /dev/sda5
+brw-rw---- 1 root disk 8, 6 2007-12-28 22:50 /dev/sda6
+brw-rw---- 1 root disk 8, 7 2007-12-28 22:50 /dev/sda7
+brw-rw---- 1 root disk 8, 8 2007-12-28 22:50 /dev/sda8
+</code></pre>
+<p>可以看到第一列第一个字符都是 <code>b</code>，第五列都是数字 8 。 <code>b</code> 表示该文件是一个块设备文件，对应地，如果是 <code>c</code> 则表示字符设备（例如 `/dev/ttyS0)，关于块设备和字符设备的区别，可以看这里：</p>
+<blockquote>
+<ul>
+<li>字符设备：字符设备就是能够像字节流一样访问的设备，字符终端和串口就属于字符设备。</li>
+</ul>
+</blockquote>
+<blockquote>
+<ul>
+<li>块设备：块设备上可以容纳文件系统。与字符设备不同，在读写时，块设备每次只能传输一个或多个完整的块。在 Linux 操作系统中，应用程序可以像访问字符设备一样读写块设备（一次读取或写入任意的字节数据）。因此，块设备和字符设备的区别仅仅是在内核中对于数据的管理不同。</li>
+</ul>
+</blockquote>
+<p>数字 8 则是该硬件设备在内核中对应的设备编号，可以在内核的 <code>Documentation/devices.txt</code> 和 <code>/proc/devices</code> 文件中找到设备号分配情况。但是为什么同一个设备会对应不同的设备文件（<code>/dev/sda</code> 后面为什么还有不同的数字，而且 <code>ls</code> 结果中的第 6 列和它们对应起来）。这实际上是为了区分不同设备的不同部分。对于硬盘，这样可以处理硬盘内部的不同分区。就内核而言，它仅仅需要通过第 5 列的设备号就可以找到对应的硬件设备，但是对于驱动模块来说，它还需要知道如何处理不同的分区，于是就多了一个辅设备号，即第 6 列对应的内容。这样一个设备就有了主设备号（第 5 列）和辅设备号（第 6 列），从而方便地实现对各种硬件设备的管理。</p>
+<p>因为设备文件和硬件是对应的，这样可以直接从 <code>/dev/sda</code> （如果是 <code>IDE</code> 的硬盘，那么对应的设备就是 <code>/dev/hda</code> 啦）设备中读出硬盘的信息，例如：</p>
+<p><span id="toc_23937_24032_9"></span></p>
+<h3 id="范例访问设备文件">范例：访问设备文件</h3>
+<p>用 <code>dd</code> 命令复制出硬盘的前 512 个字节，要 Root 用户</p>
+<pre><code>$ sudo dd if=/dev/sda of=mbr.bin bs=512 count=1
+</code></pre>
+<p>用 <code>file</code> 命令查看相应的信息</p>
+<pre><code>$ file mbr.bin
+mbr.bin: x86 boot sector, LInux i386 boot LOader; partition 3: ID=0x82, starthead 254, startsector 19535040, 1959930 sectors; partition 4: ID=0x5, starthead 254, startsector 21494970, 56661255 sectors, code offset 0x48
+</code></pre>
+<p>也可以用 <code>od</code> 命令以 16 进制的形式读取并进行分析</p>
+<pre><code>$ od -x mbr.bin
+</code></pre>
+<p><code>bs</code> 是块的大小（以字节 <code>bytes</code> 为单位），<code>count</code> 是块数</p>
+<p>因为这些信息并不直观（而且下面会进一步深入分析），那么先来看看另外一个设备文件，将可以非常直观地演示设备文件和硬件的对应关系。还是以鼠标为例吧，下面来读取鼠标对应的设备文件的信息。</p>
+<pre><code>$ sudo -s
+# cat /dev/input/mouse1 | od -x
+</code></pre>
+<p>你的鼠标驱动可能不太一样，所以设备文件可能是其他的，但是都会在 <code>/dev/input</code> 下。</p>
+<p>移动鼠标看看，是不是发现有不同信息输出。基于这一原理，我们经常通过在一端读取设备文件 <code>/dev/ttyS0</code> 中的内容，而在另一端往设备文件 <code>/dev/ttyS0</code> 中写入内容来检查串口线是否被损坏。</p>
+<p>到这里，对设备驱动、设备文件和硬件设备之间的关联应该是印象更深刻了。如果想深入了解设备驱动的工作原理和设备驱动的编写，那么看看下面列出的相关资料，开始设备驱动的编写历程吧。</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://www.cyberciti.biz/tips/compiling-linux-kernel-26.html">Compile linux kernel 2.6</a></li>
+<li><a href="http://www.blue1000.com/bkhtml/2001-02/2409.htm">Linux 系统的硬件驱动程序编写原理</a></li>
+<li><a href="http://soft.zdnet.com.cn/software_zone/2007/1108/617545.shtml">Linux 下 USB设备的原理、配置、常见问题</a></li>
+<li><a href="http://www.tldp.org/LDP/lkmpg/2.6/html/lkmpg.html">The Linux Kernel Module Programming Guide</a></li>
+<li><a href="http://lwn.net/Kernel/LDD3/">Linux 设备驱动开发</a></li>
+</ul>
+<p><span id="toc_23937_24032_10"></span></p>
+<h2 id="理解查看磁盘分区">理解、查看磁盘分区</h2>
+<p>实际上内存、u 盘等都可以作为文件系统底层的“存储”设备，但是这里仅用硬盘作为实例来介绍磁盘和分区的关系。</p>
+<p>目前 Linux 的分区依然采用第一台PC硬盘所使用的分区原理，下面逐步分析和演示这一分区原理。</p>
+<p><span id="toc_23937_24032_11"></span></p>
+<h3 id="磁盘分区基本原理">磁盘分区基本原理</h3>
+<p>先来看看几个概念：</p>
+<ul>
+<li>设备管理和分区</li>
+</ul>
+<p>Linux 下，每一个存储设备对应一个系统的设备文件，对于硬盘等 <code>IDE</code> 和 <code>SCSI</code> 设备，在系统的 <code>/dev</code> 目录下可以找到对应的包含字符 <code>hd</code> 和 <code>sd</code> 的设备文件。而根据硬盘连接的主板设备接口和数据线接口的不同，在 <code>hd</code> 或者 <code>sd</code> 字符后面可以添加一个从 <code>a</code> 到 <code>z</code> 的字符，例如 <code>hda</code>，<code>hdb</code>，<code>hdc</code> 和 <code>sda</code>，<code>sdb</code>，<code>sdc</code> 等，另外为了区别同一个硬件设备的不同分区，在后面还可以添加了一个数字，例如 <code>hda1</code>，<code>hda2</code>，<code>hda3</code> 和 <code>sda1</code>，<code>sda2</code>，<code>sda3</code>，所以在 <code>/dev</code> 目录下，可以看到很多类似的设备文件。</p>
+<ul>
+<li>各分区的作用</li>
+</ul>
+<p>在分区时常遇到主分区和逻辑分区的问题，这实际上是为了方便扩展分区，正如后面的逻辑卷的引入是为了更好地管理多个硬盘一样，引入主分区和逻辑分区可以方便地进行分区的管理。</p>
+<p>Linux 系统中每一个硬盘设备最多由 4 个主分区（包括扩展分区）构成。</p>
+<p>主分区的作用是计算机用来进行启动操作系统的，因此每一个操作系统的启动程序或者称作是引导程序，都应该存放在主分区上。 Linux 规定主分区（或者扩展分区）占用分区编号中的前 4 个。所以会看到主分区对应的设备文件为 <code>/dev/hda1-4</code> 或者 <code>/dev/sda1-4</code>，而不会是 <code>hda5</code> 或者 <code>sda5</code> 。</p>
+<p>扩展分区则是为了扩展更多的逻辑分区的，在 Linux 下，逻辑分区占用了 <code>hda5-16</code> 或者 <code>sda5-16</code> 等 12 个编号。</p>
+<ul>
+<li>分区类型</li>
+</ul>
+<p>它规定了这个分区上的文件系统的类型。Linux支持诸如msdoc,vfat,ext2,ext3等诸多的文件系统类型，更多信息在下一小节进行进一步的介绍。</p>
+<p><span id="toc_23937_24032_12"></span></p>
+<h3 id="通过分析-mbr-来理解分区原理">通过分析 MBR 来理解分区原理</h3>
+<p>下面通过分析硬盘的前 512 个字节（即 <code>MBR</code>）来分析和理解分区。</p>
+<p>先来看看这张图：</p>
+<p><a href="https://img.cntofu.com/book/open-shell-book/zh/chapters/pic/MBR_Architecture.jpg" data-uk-lightbox><img src="https://img.cntofu.com/book/open-shell-book/zh/chapters/pic/MBR_Architecture.jpg" alt="MBR Architecture"></a></p>
+<p>它用来描述 <code>MBR</code> 的结构。 <code>MBR</code> 包括引导部分、分区表、以及结束标记 `(55AAH)，分别占用了 512 字节中 446 字节、 64 字节和 2 字节。这里仅仅关注分区表部分，即中间的 64 字节以及图中左边的部分。</p>
+<p>由于我用的是 <code>SCSI</code> 的硬盘，下面从 <code>/dev/sda</code> 设备中把硬盘的前 512 个字节拷贝到文件 <code>mbr.bin</code> 中。</p>
+<pre><code>$ sudo -s
+# dd if=/dev/sda of=mbr.bin bs=512 count=1
+</code></pre>
+<p>下面用 <code>file</code>，<code>od</code>，<code>fdisk</code> 等命令来分析这段 <code>MBR</code> 的数据，并对照上图以便加深理解。</p>
+<pre><code>$ file mbr.bin
+mbr.bin: x86 boot sector, LInux i386 boot LOader; partition 3: ID=0x82, starthead 254, startsector 19535040, 1959930 sectors; partition 4: ID=0x5, starthead 254, startsector 21494970, 56661255 sectors, code offset 0x48
+$ od -x mbr.bin | tail -6   #仅关注中间的64字节，所以截取了结果中后6行
+0000660 0000 0000 0000 0000 a666 a666 0000 0180
+0000700 0001 fe83 ffff 003f 0000 1481 012a 0000
+0000720 0000 0000 0000 0000 0000 0000 0000 fe00
+0000740 ffff fe82 ffff 14c0 012a e7fa 001d fe00
+0000760 ffff fe05 ffff fcba 0147 9507 0360 aa55
+$ sudo -s
+# fdisk -l | grep ^/  #仅分析MBR相关的部分，不分析逻辑分区部分
+/dev/sda1   *           1        1216     9767488+  83  Linux
+/dev/sda3            1217        1338      979965   82  Linux swap / Solaris
+/dev/sda4            1339        4865    28330627+   5  Extended
+</code></pre>
+<p><code>file</code> 命令的结果显示，刚拷贝的 512 字节是启动扇区，用分号分开的几个部分分别是 <code>bootloader</code>，分区 3 和分区 4 。分区 3 的类型是 82，即 <code>swap</code> 分区（可以通过 <code>fdisk</code> 命令的 <code>l</code> 命令列出相关信息），它对应 <code>fdisk</code> 的结果中 <code>/dev/sda3</code> 所在行的第 5 列，分区 3 的扇区数是 1959930，转换成字节数是 <code>1959930\*512</code> （目前，硬盘的默认扇区大小是 512 字节），而 <code>swap</code> 分区的默认块大小是 1024 字节，这样块数就是 <code>:</code></p>
+<pre><code>$ echo 1959930*512/1024 | bc
+979965
+</code></pre>
+<p>正好是 <code>fdisk</code> 结果中 <code>/dev/sda3</code> 所在行的第四列对应的块数，同样地，可以对照 <code>fdisk</code> 和 <code>file</code> 的结果分析分区 4 。</p>
+<p>再来看看 <code>od</code> 命令以十六进制显示的结果，同样考虑分区 3，计算一下发现，分区 3 对应的 <code>od</code> 命令的结果为：</p>
+<pre><code>fe00 ffff fe82 ffff 14c0 012a e7fa 001d
+</code></pre>
+<p>首先是分区标记，<code>00H</code>，从上图中，看出它就不是引导分区（<code>80H</code> 标记的才是引导分区），而分区类型呢？为 <code>82H</code>，和 <code>file</code> 显示结果一致，现在再来关注一下分区大小，即 <code>file</code> 结果中的扇区数。</p>
+<pre><code>$ echo "ibase=10;obase=16;1959930" | bc
+1DE7FA
+</code></pre>
+<p>刚好对应 <code>e7fa 001d</code>，同样地考虑引导分区的结果：</p>
+<blockquote>
+<p>0180 0001 fe83 ffff 003f 0000 1481 012a</p>
+</blockquote>
+<p>分区标记： <code>80H</code>，正好反应了这个分区是引导分区，随后是引导分区所在的磁盘扇区情况，010100，即 1 面 0 道 1 扇区。其他内容可以对照分析。</p>
+<p>考虑到时间关系，更多细节请参考下面的资料或者查看看系统的相关手册。</p>
+<p>补充：安装系统时，可以用 <code>fdisk</code>，<code>cfdisk</code> 等命令进行分区。如果要想从某个分区启动，那么需要打上 <code>80H</code> 标记，例如可通过 <code>cfdisk</code> 把某个分区设置为 <code>bootable</code> 来实现。</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://www-128.ibm.com/developerworks/linux/library/l-linuxboot/">Inside the linux boot process</a></li>
+<li><a href="http://docs.huihoo.com/gnu_linux/own_os/booting.htm">Develop your own OS: booting</a></li>
+<li><a href="http://blog.csdn.net/fowse/article/details/7220021">Redhat9 磁盘分区简介</a></li>
+<li><a href="http://www.tldp.org/HOWTO/Partition/">Linux partition HOWTO</a></li>
+</ul>
+<p><span id="toc_23937_24032_13"></span></p>
+<h2 id="分区和文件系统的关系">分区和文件系统的关系</h2>
+<p>在没有引入逻辑卷之前，分区类型和文件系统类型几乎可以同等对待，设置分区类型的过程就是格式化分区，建立相应的文件系统类型的过程。</p>
+<p>下面主要介绍如何建立分区和文件系统类型的联系，即如何格式化分区为指定的文件系统类型。</p>
+<p><span id="toc_23937_24032_14"></span></p>
+<h3 id="常见分区类型">常见分区类型</h3>
+<p>先来看看 Linux 下文件系统的常见类型（如果要查看所有 Linux 支持的文件类型，可以用 <code>fdisk</code> 命令的 <code>l</code> 命令查看，或者通过 <code>man fs</code> 查看，也可通过 <code>/proc/filesystems</code> 查看到当前内核支持的文件系统类型）</p>
+<ul>
+<li><code>ext2</code>，<code>ext3</code>，<code>ext4</code> ：这三个是 Linux 根文件系统通常采用的类型</li>
+<li><code>swap</code> ：这个是实现 Linux 虚拟内存时采用的一种文件系统，安装时一般需要建立一个专门的分区，并格式化为 <code>swap</code> 文件系统（如果想添加更多 <code>swap</code> 分区，可以参考本节的<a href="http://soft.zdnet.com.cn/software_zone/2007/1010/545261.shtml">参考资料</a>，熟悉 <code>dd</code>，<code>mkswap</code>，<code>swapon</code>，<code>swapoff</code> 等命令的用法）</li>
+<li><code>proc</code> ：这是一种比较特别的文件系统，作为内核和用户之间的一个接口存在，建立在内存中（可以通过 <code>cat</code> 命令查看 <code>/proc</code> 系统下的文件，甚至可以通过修改 <code>/proc/sys</code> 下的文件实时调整内核配置，当前前提是需要把 <code>proc</code> 文件系统挂载上： <code>mount -t proc proc /proc</code></li>
+</ul>
+<p>除了上述文件系统类型外，Linux 支持包括 <code>vfat</code>，<code>iso</code>，<code>xfs</code>，<code>nfs</code> 在内各种常见的文件系统类型，在 Linux 下，可以自由地查看和操作 Windows 等其他操作系统使用的文件系统。</p>
+<p>那么如何建立磁盘和这些文件系统类型的关联呢？格式化。</p>
+<p>格式化的过程实际上就是重新组织分区的过程，可通过 <code>mkfs</code> 命令来实现，当然也可以通过 <code>fdisk</code> 等命令来实现。这里仅介绍 <code>mkfs</code>，<code>mkfs</code> 可用来对一个已有的分区进行格式化，不能实现分区操作（如果要对一个磁盘进行分区和格式化，那么可以用 <code>fdisk</code>）。格式化后，相应分区上的数据就会通过某种特别的文件系统类型进行组织。</p>
+<p><span id="toc_23937_24032_15"></span></p>
+<h3 id="范例格式化文件系统">范例：格式化文件系统</h3>
+<p>例如：把 <code>/dev/sda9</code> 分区格式化为 <code>ext3</code> 的文件系统。</p>
+<pre><code>$ sudo -s
+# mkfs -t ext3 /dev/sda9
+</code></pre>
+<p>如果要列出各个分区的文件系统类型，那么可以用 <code>fdisk -l</code> 命令。</p>
+<p>更多信息请参考下列资料。</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://soft.zdnet.com.cn/software_zone/2007/1010/545261.shtml">Linux 下加载 swap 分区的步骤</a></li>
+<li><a href="http://www.examda.com/linux/fudao/20071212/113445321.html">Linux 下 ISO 镜像文件的制作与刻录</a></li>
+<li>RAM 磁盘分区解释: <a href="http://oldlinux.org/oldlinux/viewthread.php?tid=2677">[1]</a>, <a href="http://www.ibm.com/developerworks/cn/linux/l-initrd.html">[2]</a></li>
+<li><a href="http://www.ibm.com/Search/?q=%E9%AB%98%E7%BA%A7%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E5%AE%9E%E7%8E%B0%E8%80%85%E6%8C%87%E5%8D%97&amp;v=17&amp;en=utf&amp;lang=en&amp;cc=us">高级文件系统实现者指南</a></li>
+</ul>
+<p><span id="toc_23937_24032_16"></span></p>
+<h2 id="分区逻辑卷和文件系统的关系">分区、逻辑卷和文件系统的关系</h2>
+<p>上一节直接把分区格式化为某种文件系统类型，但是考虑到扩展新的存储设备的需要，开发人员在文件系统和分区之间引入了逻辑卷。考虑到时间关系，这里不再详述，请参考资料：<a href="http://unix-cd.com/vc/www/28/2007-06/1178.html">Linux 逻辑卷管理详解</a></p>
+<p><span id="toc_23937_24032_17"></span></p>
+<h2 id="文件系统的可视化结构">文件系统的可视化结构</h2>
+<p>文件系统最终呈现出来的是一种可视化的结构，可用ls,find,tree等命令把它呈现出来。它就像一颗倒挂的“树”，在树的节点上还可以挂载新的“树”。</p>
+<p>下面简单介绍文件系统的挂载。</p>
+<p>一个文件系统可以通过一个设备挂载（<code>mount</code>）到某个目录下，这个目录被称为挂载点。有趣的是，在 Linux 下，一个目录本身还可以挂载到另外一个目录下，一个格式化了的文件也可以通过一个特殊的设备 <code>/dev/loop</code> 进行挂载（如 <code>iso</code> 文件）。另外，就文件系统而言，Linux 不仅支持本地文件系统，还支持远程文件系统（如 <code>nfs</code>）。</p>
+<p><span id="toc_23937_24032_18"></span></p>
+<h3 id="范例挂载文件系统">范例：挂载文件系统</h3>
+<p>下面简单介绍文件系统挂载的几个实例。</p>
+<ul>
+<li>根文件系统的挂载</li>
+</ul>
+<p>挂载需要 Root 权限，例如，挂载系统根文件系统 <code>/dev/sda1</code> 到 <code>/mnt</code></p>
+<pre><code>$ sudo -s
+# mount -t ext3 /dev/sda1 /mnt/
+</code></pre>
+<p>查看 <code>/dev/sda1</code> 的挂载情况，可以看到，一个设备可以多次挂载</p>
+<pre><code>$ mount | grep sda1
+/dev/sda1 on / type ext3 (rw,errors=remount-ro)
+/dev/sda1 on /mnt type ext3 (rw)
+</code></pre>
+<p>对于一个已经挂载的文件系统，为支持不同属性可以重新挂载</p>
+<pre><code>$ mount -n -o remount, rw /
+</code></pre>
+<ul>
+<li>挂载一个新增设备</li>
+</ul>
+<p>如果内核已经支持 USB 接口，那么插入 u 盘时，可以通过 <code>dmesg</code> 命令查看对应的设备号，并挂载它。</p>
+<p>查看 <code>dmesg</code> 结果中的最后几行内容，找到类似 <code>/dev/sdN</code> 的信息，找出 u 盘对应的设备号</p>
+<pre><code>$ dmesg
+</code></pre>
+<p>这里假设 u 盘是 <code>vfat</code> 格式，以便在一些打印店里的 Windows 上也可使用</p>
+<pre><code># mount -t vfat /dev/sdN /path/to/mountpoint_directory
+</code></pre>
+<ul>
+<li>挂载一个 iso 文件或者是光盘</li>
+</ul>
+<p>对于一些iso文件或者是 iso 格式的光盘，同样可以通过 <code>mount</code> 命令挂载。</p>
+<p>对于 iso 文件：</p>
+<pre><code># mount -t iso9660 /path/to/isofile /path/to/mountpoint_directory
+</code></pre>
+<p>对于光盘：</p>
+<pre><code># mount -t iso9660 /dev/cdrom /path/to/mountpoint_directory
+</code></pre>
+<ul>
+<li>挂载一个远程文件系统</li>
+</ul>
+<pre><code># mount -t nfs remote_ip:/path/to/share_directory /path/to/local_directory
+</code></pre>
+<ul>
+<li>挂载一个 proc 文件系统</li>
+</ul>
+<pre><code># mount -t proc proc /proc
+</code></pre>
+<p><code>proc</code> 文件系统组织在内存中，但是可以把它挂载到某个目录下。通常把它挂载在 <code>/proc</code> 目录下，以便一些系统管理和配置工具使用它。例如 <code>top</code> 命令用它分析内存的使用情况（读取 <code>/proc/meminfo</code> 和 <code>/proc/stat</code> 等文件中的内容）； <code>lsmod</code> 命令通过它获取内核模块的状态（读取 <code>/proc/modules</code>）； <code>netstat</code> 命令通过它获取网络的状态（读取 <code>/proc/net/dev</code> 等文件）。当然，也可以编写相关工具。除此之外，通过调整 <code>/proc/sys</code> 目录下的文件，可以动态地调整系统配置，比如往 <code>/proc/sys/net/ipv4/ip_forward</code> 文件中写入数字 1 就可以让内核支持数据包转发。（更多信息请参考 <code>proc</code> 的帮助，<code>man</code> <code>proc</code>）</p>
+<ul>
+<li>挂载一个目录</li>
+</ul>
+<pre><code>$ mount --bind /path/to/needtomount_directory /path/to/mountpoint_directory
+</code></pre>
+<p>这个非常有意思，比如可以把某个目录挂载到 ftp 服务的根目录下，而无须把内容复制过去，就可以把相应目录中的资源提供给别人共享。</p>
+<p><span id="toc_23937_24032_19"></span></p>
+<h3 id="范例卸载某个分区">范例：卸载某个分区</h3>
+<p>以上都只提到了挂载，那怎么卸载呢？用 <code>umount</code> 命令跟上挂载的源地址或者挂载点（设备，文件，远程目录等）就可以。例如：</p>
+<pre><code>$ umount /path/to/mountpoint_directory
+</code></pre>
+<p>或者</p>
+<pre><code>$ umount /path/to/mount_source
+</code></pre>
+<p>如果想管理大量的或者经常性的挂载服务，那么每次手动挂载是很糟糕的事情。这时就可利用 <code>mount</code> 的配置文件 <code>/etc/fstab</code>，把 <code>mount</code> 对应的参数写到 <code>/etc/fstab</code> 文件对应的列中即可实现批量挂载（ <code>mount -a</code> ）和卸载（ <code>umount -a</code> ）。 <code>/etc/fstab</code> 中各列分别为文件系统、挂载点、类型、相关选项。更多信息可参考 <code>fstab</code> 的帮助（ <code>man fstab</code> ）。</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://www.xxlinux.com/linux/article/accidence/technique/20070521/8493.html">Linux 硬盘分区以及其挂载原理</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-vfs/">从文件 I/O 看 Linux 的虚拟文件系统</a></li>
+<li><a href="http://www.tinylab.org/callgraph-draw-the-calltree-of-c-functions/">源码分析：静态分析 C 程序函数调用关系图</a></li>
+</ul>
+<p><span id="toc_23937_24032_20"></span></p>
+<h2 id="如何制作一个文件系统">如何制作一个文件系统</h2>
+<p>Linux 文件系统下有一些最基本的目录，不同的目录下存放着不同作用的各类文件。最基本的目录有 <code>/etc</code>，<code>/lib</code>，<code>/dev</code>，<code>/bin</code> 等，它们分别存放着系统配置文件，库文件，设备文件和可执行程序。这些目录一般情况下是必须的，在做嵌入式开发时，需要手动或者是用 <code>busybox</code> 等工具来创建这样一个基本的文件系统。这里仅制作一个非常简单的文件系统，并对该文件系统进行各种常规操作，以便加深对文件系统的理解。</p>
+<p><span id="toc_23937_24032_21"></span></p>
+<h3 id="范例用-dd-创建一个固定大小的文件">范例：用 dd 创建一个固定大小的文件</h3>
+<p>还记得 <code>dd</code> 命令么？就用它来产生一个固定大小的文件，这个为 <code>1M(1024\*1024 bytes)</code> 的文件</p>
+<pre><code>$ dd if=/dev/zero of=minifs bs=1024 count=1024
+</code></pre>
+<p>查看文件类型，这里的 <code>minifs</code> 是一个充满 <code>\\0</code> 的文件，没有任何特定的数据结构</p>
+<pre><code>$ file minifs
+minifs: data
+</code></pre>
+<p>说明： <code>/dev/zero</code> 是一个非常特殊的设备，如果读取它，可以获取任意多个 <code>\\0</code> 。</p>
+<p>接着把该文件格式化为某个指定文件类型的文件系统。（是不是觉得不可思议，文件也可以格式化？是的，不光是设备可以，文件也可以以某种文件系统类型进行组织，但是需要注意的是，某些文件系统（如 <code>ext3</code>）要求被格式化的目标最少有 <code>64M</code> 的空间）。</p>
+<p><span id="toc_23937_24032_22"></span></p>
+<h3 id="范例用-mkfs-格式化文件">范例：用 mkfs 格式化文件</h3>
+<pre><code>$ mkfs.ext2 minifs
+</code></pre>
+<p>查看此时的文件类型，这时文件 <code>minifs</code> 就以 <code>ext2</code> 文件系统的格式组织了</p>
+<pre><code>$ file minifs
+minifs: Linux rev 1.0 ext2 filesystem data
+</code></pre>
+<p><span id="toc_23937_24032_23"></span></p>
+<h3 id="范例挂载刚创建的文件系统">范例：挂载刚创建的文件系统</h3>
+<p>因为该文件以文件系统的类型组织了，那么可以用 <code>mount</code> 命令挂载并使用它。</p>
+<p>请切换到 <code>root</code> 用户挂载它，并通过 <code>-o loop</code> 选项把它关联到一个特殊设备 <code>/dev/loop</code></p>
+<pre><code>$ sudo -s
+# mount minifs /mnt/ -o loop
+</code></pre>
+<p>查看该文件系统信息，仅可以看到一个目录文件 <code>lost+found</code></p>
+<pre><code>$ ls /mnt/
+lost+found
+</code></pre>
+<p><span id="toc_23937_24032_24"></span></p>
+<h3 id="范例对文件系统进行读写删除等操作">范例：对文件系统进行读、写、删除等操作</h3>
+<p>在该文件系统下进行各种常规操作，包括读、写、删除等。(每次操作前先把 <code>minifs</code> 文件保存一份，以便比较，结合相关资料就可以深入地分析各种操作对文件系统的改变情况，从而深入理解文件系统作为一种组织数据的方式的实现原理等)</p>
+<pre><code>$ cp minifs minifs.bak
+$ cd /mnt
+$ touch hello
+$ cd -
+$ cp minifs minifs-touch.bak
+$ od -x minifs.bak &gt; orig.od
+$ od -x minifs-touch.bak &gt; touch.od
+</code></pre>
+<p>创建一个文件后，比较此时文件系统和之前文件系统的异同</p>
+<pre><code>$ diff orig.od touch.od
+diff orig.od touch.od
+61,63c61,64
+&lt; 0060020 000c 0202 2e2e 0000 000b 0000 03e8 020a
+&lt; 0060040 6f6c 7473 662b 756f 646e 0000 0000 0000
+&lt; 0060060 0000 0000 0000 0000 0000 0000 0000 0000
+---
+&gt; 0060020 000c 0202 2e2e 0000 000b 0000 0014 020a
+&gt; 0060040 6f6c 7473 662b 756f 646e 0000 000c 0000
+&gt; 0060060 03d4 0105 6568 6c6c 006f 0000 0000 0000
+&gt; 0060100 0000 0000 0000 0000 0000 0000 0000 0000
+</code></pre>
+<p>通过比较发现：添加文件，文件系统的相应位置发生了明显的变化</p>
+<pre><code>$ echo "hello, world" &gt; /mnt/hello
+</code></pre>
+<p>执行 <code>sync</code> 命令，确保缓存中的数据已经写入磁盘（还记得本节图 1 的 <code>buffer cache</code> 吧，这里就是把 <code>cache</code> 中的数据写到磁盘中）</p>
+<pre><code>$ sync
+$ cp minifs minifs-echo.bak
+$ od -x minifs-echo.bak &gt; echo.od
+</code></pre>
+<p>写入文件内容后，比较文件系统和之前的异同</p>
+<pre><code>$ diff touch.od echo.od
+</code></pre>
+<p>查看文件系统中的字符串</p>
+<pre><code>$ strings minifs
+lost+found
+hello
+hello, world
+</code></pre>
+<p>删除 <code>hello</code> 文件，查看文件系统变化</p>
+<pre><code>$ rm /mnt/hello
+$ cp minifs minifs-rm.bak
+$ od -x minifs-rm.bak &gt; rm.od
+$ diff echo.od rm.od
+</code></pre>
+<p>通过查看文件系统的字符串发现：删除文件时并没有覆盖文件内容，所以从理论上说内容此时还是可恢复的</p>
+<pre><code>$ strings minifs
+lost+found
+hello
+hello, world
+</code></pre>
+<p>上面仅仅演示了一些分析文件系统的常用工具，并分析了几个常规的操作，如果想非常深入地理解文件系统的实现原理，请熟悉使用上述工具并阅读相关资料。</p>
+<p>参考资料：</p>
+<ul>
+<li><a href="http://202.201.1.130:8080/docs/summer_school_2007/team3/doc/build_a_mini_filesystem_from_scratch">Build a mini filesystem in linux from scratch</a></li>
+<li><a href="http://202.201.1.130:8080/docs/summer_school_2007/team3/doc/build_a_mini_filesystem_with_busybox">Build a mini filesystem in linux with BusyBox</a></li>
+<li><a href="http://man.chinaunix.net/tech/lyceum/linuxK/fs/filesystem.html">ext2 文件系统</a></li>
+</ul>
+<p><span id="toc_23937_24032_25"></span></p>
+<h2 id="如何开发自己的文件系统">如何开发自己的文件系统</h2>
+<p>随着 <code>fuse</code> 的出现，在用户空间开发文件系统成为可能，如果想开发自己的文件系统，那么推荐阅读：<a href="http://www.ibm.com/developerworks/cn/linux/l-fuse/">使用 fuse 开发自己的文件系统</a>。</p>
+<p><span id="toc_23937_24032_26"></span></p>
+<h2 id="后记">后记</h2>
+<ul>
+<li>2007 年 12 月 22 日，收集了很多资料，写了整体的框架</li>
+<li>2007 年 12 月 28 日下午，完成初稿，考虑到时间关系，很多细节也没有进一步分析，另外有些部分可能存在理解上的问题，欢迎批评指正</li>
+<li>2007 年 12 月 28 日晚，修改部分资料，并正式公开该篇文档</li>
+<li>29 号，添加设备驱动和硬件设备一小节</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/191/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/46/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/104/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/104/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">83页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/136/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/136/index.html">Serverless 架构应用开发指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 396个">396</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/169/index.html">
+<img class="uk-book-cover" src="/static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/169/index.html">PyTorch 1.0 中文文档 & 教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">87页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 874个">874</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/115/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/115/index.html">ANTLR 4简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">19页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2888;var bookPageRelUrl ='zh/chapters/01-chapter6.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

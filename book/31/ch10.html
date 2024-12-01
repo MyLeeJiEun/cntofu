@@ -1,0 +1,624 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>第十章 条件变量-操作系统思考(Think OS: A Brief Introduction to Operating Systems)</title>
+<meta content='第十章 条件变量,操作系统思考,Think OS: A Brief Introduction to Operating Systems' name='keywords'>
+<meta content='第十章 条件变量,操作系统思考,Think OS: A Brief Introduction to Operating Systems' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/31/ch9.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">第九章 线程</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/31/ch11.html">
+<span class="">第十一章 C语言中的信..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/31/index.html">操作系统思考 (Think OS: A Brief Introduction to Operating Systems)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/wizardforcel/think-os-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="第十章-条件变量">第十章 条件变量</h1>
+<blockquote>
+<p>作者：<a href="http://greenteapress.com/wp/">Allen B. Downey</a></p>
+</blockquote>
+<blockquote>
+<p>原文：<a href="http://greenteapress.com/thinkos/html/thinkos011.html">Chapter 10 Condition variables</a></p>
+</blockquote>
+<blockquote>
+<p>译者：<a href="https://github.com/">飞龙</a></p>
+</blockquote>
+<blockquote>
+<p>协议：<a href="http://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
+</blockquote>
+<p>像上一章所展示的那样，许多简单的同步问题都可以用互斥体解决。这一章中我会介绍一个更大的挑战，著名的“生产者-消费者”问题，以及一个用于解决它的新工具，条件变量。</p>
+<h2 id="101-工作队列">10.1 工作队列</h2>
+<p>在一些多线程的程序中，线程被组织用于执行不同的任务。通常它们使用队列来相互通信，其中一些线程叫做“生产者”，向队列中放入数据，另一些线程叫做“消费者”，从队列取出数据。</p>
+<p>例如，在GUI应用中，可能有一个运行GUI的线程响应用户事件，而其它线程负责处理用户的请求。这里，GUI线程可能将数据放入队列中，而“后台”线程从队列中取出请求并执行。</p>
+<p>为了支持这种组织，我们需要一个“线程安全”的队列实现，也就是说每个线程都可以同时访问队列。我们至少需要处理一个特殊情况，队列是空的，以及如果队列的大小有限制，队列是满的。</p>
+<p>我会从一个非线程安全的简单队列开始，之后我们会观察其中的错误并修复它。这个示例的代码在本书仓库的<code>queue</code>目录中。<code>queue.c</code>文件包含了一个环形缓冲区的基本实现。你可以在<a href="https://en.wikipedia.org/wiki/Circular_buffer">环形缓冲区的维基百科</a>查询更多信息。</p>
+<p>下面是结构体的定义：</p>
+<pre><code class="language-c">typedef struct {
+  int *array;
+  int length;
+  int next_in;
+  int next_out;
+} Queue;
+</code></pre>
+<p><code>array</code>是包含队列元素的数组。在这个例子中，元素都是整数，但是通常它们都是一些结构体，包含用户事件、工作项目以及其它。</p>
+<p><code>length</code>是数组的长度，<code>next_in</code>是数组的下标，用于索引下个元素应该添加到哪里；与之相似， <code>next_out</code>是应该被移除的下个元素的下标。</p>
+<p><code>make_queue</code>为这个结构体分配空间，并且初始化所有字段：</p>
+<pre><code class="language-c">Queue *make_queue(int length)
+{
+  Queue *queue = (Queue *) malloc(sizeof(Queue));
+  queue-&gt;length = length;
+  queue-&gt;array = (int *) malloc(length * sizeof(int));
+  queue-&gt;next_in = 0;
+  queue-&gt;next_out = 0;
+  return queue;
+}
+</code></pre>
+<p><code>next_out</code>的初始值需要一些解释。由于队列一开始为空，没有可移除的下一个元素，所以<code>next_out</code>是无效的。<code>next_out==next_in</code>是个特殊情况，它表示队列为空，所以我们可以编写：</p>
+<pre><code class="language-c">int queue_empty(Queue *queue)
+{
+  return (queue-&gt;next_in == queue-&gt;next_out);
+}
+</code></pre>
+<p>现在我们可以使用<code>queue_push</code>向队列里面添加元素：</p>
+<pre><code class="language-c">void queue_push(Queue *queue, int item) {
+  if (queue_full(queue)) {
+    perror_exit("queue is full");
+  }
+  
+  queue-&gt;array[queue-&gt;next_in] = item;
+  queue-&gt;next_in = queue_incr(queue, queue-&gt;next_in);
+}
+</code></pre>
+<p>如果队列满了，<code>queue_push</code>打印出错误信息并退出，我之后会解释<code>queue_full</code>。</p>
+<p>如果队列没有满，<code>queue_push</code>插入新元素，之后使用<code>queue_incr</code>增加<code>next_in</code>：</p>
+<pre><code class="language-c">int queue_incr(Queue *queue, int i)
+{
+  return (i+1) % queue-&gt;length;
+}
+</code></pre>
+<p>当索引<code>i</code>到达队列末尾时，它会转换为0。于是这样就很微妙了。如果我们持续向队列添加元素，最后<code>next_in</code>会赶上<code>next_out</code>。但是如果<code>next_in == next_out</code>我们会错误地认为队列是空的。</p>
+<p>为了避免这种情况，我们定义另一种特殊情况来表示队列是满的：</p>
+<pre><code class="language-c">int queue_full(Queue *queue)
+{
+  return (queue_incr(queue, queue-&gt;next_in) == queue-&gt;next_out);
+}
+</code></pre>
+<p>如果<code>next_in</code>增加后与<code>next_out</code>重合，那么我们如果添加新的元素，就会使队列看起来是空的。所以我们在“末尾”留出一个元素（要记住队列的末尾可能位于任何地方，不一定是数组末尾）。</p>
+<p>现在我们可以编写<code>queue_pop</code>，它移除并返回队列的下一个元素：</p>
+<pre><code class="language-c">int queue_pop(Queue *queue) {
+  if (queue_empty(queue)) {
+    perror_exit("queue is empty");
+  }
+  
+  int item = queue-&gt;array[queue-&gt;next_out];
+  queue-&gt;next_out = queue_incr(queue, queue-&gt;next_out);
+  return item;
+}
+</code></pre>
+<p>如果你尝试从空队列中弹出元素，<code>queue_pop</code>会打印错误信息并退出。</p>
+<h2 id="102-生产者和消费者">10.2 生产者和消费者</h2>
+<p>现在让我们创建一些访问这个队列的线程。下面是生产者的代码：</p>
+<pre><code class="language-c">void *producer_entry(void *arg)
+{
+  int i;
+  Shared *shared = (Shared *) arg;
+
+  for (i=0; i&lt;QUEUE_LENGTH-1; i++) {
+    printf("adding item %d\n", i);
+    queue_push(shared-&gt;queue, i);
+  }
+  pthread_exit(NULL);
+}
+</code></pre>
+<p>下面是消费者的代码：</p>
+<pre><code class="language-c">void *consumer_entry(void *arg)
+{
+  int i;
+  int item;
+  Shared *shared = (Shared *) arg;
+
+  for (i=0; i&lt;QUEUE_LENGTH-1; i++) {
+    item = queue_pop(shared-&gt;queue);
+    printf("consuming item %d\n", item);
+  }
+  pthread_exit(NULL);
+}
+</code></pre>
+<p>下面是用于启动线程并等待它们的主线程代码：</p>
+<pre><code class="language-c">int i;
+pthread_t child[NUM_CHILDREN];
+
+Shared *shared = make_shared();
+
+child[0] = make_thread(producer_entry, shared);
+child[1] = make_thread(consumer_entry, shared);
+
+for (i=0; i&lt;NUM_CHILDREN; i++) {
+    join_thread(child[i]);
+}
+</code></pre>
+<p>最后，下面是包含队列的共享结构：</p>
+<pre><code class="language-c">typedef struct {
+  Queue *queue;
+} Shared;
+
+Shared *make_shared()
+{
+  Shared *shared = check_malloc(sizeof(Shared));
+  shared-&gt;queue = make_queue(QUEUE_LENGTH);
+  return shared;
+}
+</code></pre>
+<p>到目前为止我们所写的代码是一个好的开始，但是有如下几种问题：</p>
+<ul>
+<li>队列的访问不是线程安全的。不同的线程能同时访问<code>array</code>、<code>next_in</code>和<code>next_out</code>，并且会使队列处于损坏的、“不一致”的状态。</li>
+<li>如果消费者首先被调度，它会发现队列为空，打印错误信息并退出。我们应该阻塞住消费者，直到队列非空。与之相似，我们应该在队列满了的情况下阻塞住生产者。</li>
+</ul>
+<p>在下一节中，我们会使用互斥体解决这一个问题。之后的章节中我们会使用条件变量解决第二个问题。</p>
+<h2 id="103-互斥体">10.3 互斥体</h2>
+<p>我们可以使用互斥体使队列线程安全。这个版本的代码在<code>queue_mutex.c</code>中。</p>
+<p>首先我们向队列结构中添加一个互斥体指针：</p>
+<pre><code class="language-c">typedef struct {
+  int *array;
+  int length;
+  int next_in;
+  int next_out;
+  Mutex *mutex;          //-- this line is new
+} Queue;
+</code></pre>
+<p>之后在<code>make_queue</code>中初始化互斥体：</p>
+<pre><code class="language-c">Queue *make_queue(int length)
+{
+  Queue *queue = (Queue *) malloc(sizeof(Queue));
+  queue-&gt;length = length;
+  queue-&gt;array = (int *) malloc(length * sizeof(int));
+  queue-&gt;next_in = 0;
+  queue-&gt;next_out = 0;
+  queue-&gt;mutex = make_mutex();   //-- new
+  return queue;
+}
+</code></pre>
+<p>接下来向<code>queue_push</code>添加同步代码：</p>
+<pre><code class="language-c">void queue_push(Queue *queue, int item) {
+  mutex_lock(queue-&gt;mutex);   //-- new
+  if (queue_full(queue)) {
+    mutex_unlock(queue-&gt;mutex);   //-- new
+    perror_exit("queue is full");
+  }
+  
+  queue-&gt;array[queue-&gt;next_in] = item;
+  queue-&gt;next_in = queue_incr(queue, queue-&gt;next_in);
+  mutex_unlock(queue-&gt;mutex);   //-- new
+}
+</code></pre>
+<p>在检查队列是否已满之前，我们需要锁住互斥体。如果队列是满的，我们需要在退出之前解锁互斥体。否则线程应该保持互斥体锁住，使其它线程不能前进。</p>
+<p><code>queue_pop</code>的同步代码与之相似：</p>
+<pre><code class="language-c">int queue_pop(Queue *queue) {
+  mutex_lock(queue-&gt;mutex);
+  if (queue_empty(queue)) {
+    mutex_unlock(queue-&gt;mutex);
+    perror_exit("queue is empty");
+  }
+  
+  int item = queue-&gt;array[queue-&gt;next_out];
+  queue-&gt;next_out = queue_incr(queue, queue-&gt;next_out);
+  mutex_unlock(queue-&gt;mutex);
+  return item;
+}
+</code></pre>
+<p>要注意其它队列函数，<code>queue_full</code>、<code>queue_empty</code>和<code>queue_incr</code>都不需要锁住互斥体。任何调用这些函数的线程都需要首先锁住互斥体。这些要求是这些函数的接口文档的一部分。</p>
+<p>使用这些额外的代码，队列就线程安全了。如果你运行它，你不会看到任何的同步错误。但是似乎消费者会在某个时间上退出，因为队列是空的。或者生产者会由于队列是满足而退出。</p>
+<p>下一步就是添加条件变量。</p>
+<h2 id="104-条件变量">10.4 条件变量</h2>
+<p>条件变量是条件相关的数据结构。它允许线程在某些条件变为真之前被阻塞。例如，<code>thread_push</code>可能希望检查队列是否已满，如果是这样，就在队列未满之前阻塞。所以我们感兴趣的“条件”就是“队列未满”。</p>
+<p>与之相似，<code>thread_pop</code>希望等待“队列非空”的条件。</p>
+<p>下面是我们向代码添加这些功能的方式。首先我们向队列结构中添加两个条件变量：</p>
+<pre><code class="language-c">typedef struct {
+  int *array;
+  int length;
+  int next_in;
+  int next_out;
+  Mutex *mutex;
+  Cond *nonempty;   //-- new
+  Cond *nonfull;    //-- new
+} Queue;
+</code></pre>
+<p>之后在<code>make_queue</code>中初始化它们：</p>
+<pre><code class="language-c">Queue *make_queue(int length)
+{
+  Queue *queue = (Queue *) malloc(sizeof(Queue));
+  queue-&gt;length = length;
+  queue-&gt;array = (int *) malloc(length * sizeof(int));
+  queue-&gt;next_in = 0;
+  queue-&gt;next_out = 0;
+  queue-&gt;mutex = make_mutex();
+  queue-&gt;nonempty = make_cond();   //-- new
+  queue-&gt;nonfull = make_cond();    //-- new
+  return queue;
+}
+</code></pre>
+<p>现在在<code>queue_pop</code>中，如果我们发现队列为空，我们不要退出，而是使用条件变量来阻塞：</p>
+<pre><code class="language-c">int queue_pop(Queue *queue) {
+  mutex_lock(queue-&gt;mutex);
+  while (queue_empty(queue)) {
+    cond_wait(queue-&gt;nonempty, queue-&gt;mutex);  //-- new
+  }
+  
+  int item = queue-&gt;array[queue-&gt;next_out];
+  queue-&gt;next_out = queue_incr(queue, queue-&gt;next_out);
+  mutex_unlock(queue-&gt;mutex);
+  cond_signal(queue-&gt;nonfull);   //-- new
+  return item;
+}
+</code></pre>
+<p><code>cond_wait</code>有点复杂，所以让我们慢慢来。第一个参数是条件变量。这里我们需要等待的条件是“队列非空”。第二个变量是保护队列的互斥体。在你调用<code>cond_wait</code>之前，你需要先锁住互斥体，否则它不会生效。</p>
+<p>当锁住互斥体的线程调用<code>cond_wait</code>时，它首先解锁互斥体，之后阻塞。这非常重要。如果<code>cond_wait</code>不在阻塞之前解锁互斥体，其它线程就不能访问队列，不能添加任何物品，队列会永远为空。</p>
+<p>所以当消费者阻塞在<code>nonempty</code>的时候，生产者也可以运行。让我们来观察生产者运行<code>queue_push</code>时会发生什么：</p>
+<pre><code class="language-c">void queue_push(Queue *queue, int item) {
+  mutex_lock(queue-&gt;mutex);
+  while (queue_full(queue)) {
+    cond_wait(queue-&gt;nonfull, queue-&gt;mutex);    //-- new
+  }
+  
+  queue-&gt;array[queue-&gt;next_in] = item;
+  queue-&gt;next_in = queue_incr(queue, queue-&gt;next_in);
+  mutex_unlock(queue-&gt;mutex);
+  cond_signal(queue-&gt;nonempty);  //-- new
+}
+</code></pre>
+<p>让我们假设队列现在未满，于是生产者并不会调用<code>cond_wait</code>也不会阻塞。它会向队列添加新的元素并解锁互斥体。但是在退出之前，它做了额外的一件事：它向<code>nonempty</code>条件变量发送信号。</p>
+<p>向条件变量发送更新好表示条件为真，或者至少它可能为真。如果没有任何线程在等待条件变量，信号就不起作用。</p>
+<p>如果有线程在等待条件变量，它们<strong>全部</strong>会从<code>cond_wait</code>解除阻塞并且恢复执行。但是在被唤醒的进程从<code>cond_wait</code>返回之前，它需要等待并再次锁住互斥体。</p>
+<p>现在我们回到<code>queue_pop</code>来观察当线程从<code>cond_wait</code>返回时会发生什么。它会循环到<code>while</code>语句的开头，并再次检查条件。我会在之后解释其原因，但是现在让我们假设条件为真，也就是说队列非空。</p>
+<p>当线程从<code>while</code>循环退出之后，我们知道了两件事情：（1）条件为真，所以队列中至少有一个物品，（2）互斥体是锁住的，所以访问队列是安全的。</p>
+<p>在移除物品之后，<code>queue_pop</code>解锁了互斥体，发送了队列未满的信号，之后退出。</p>
+<p>在下一节我会向你展示我的<code>Cond</code>的工作原因，但是首先我想回答两个常见问题：</p>
+<ul>
+<li> <p>为什么<code>cond_wait</code>在<code>while</code>循环中，而不是<code>if</code>语句中？也就是说，为什么在从<code>cond_wait</code>返回之后要再次检查条件？</p> <p>需要再次检查条件的首要原因就是信号拦截的可能性。假设线程A在等待<code>nonempty</code>，线程B向队列添加元素，之后向<code>nonempty</code>发送信号。线程A被唤醒并且尝试锁住互斥体，但是在轮到它之前，邪恶的线程C插进来了，锁住了互斥体，从队列中弹出物品并且解锁了互斥体。现在队列再次为空，但是线程A没有被阻塞。线程A会锁住互斥体并且从<code>cond_wait</code>返回。如果线程A不再次检查条件，它会尝试从空队列中弹出元素，可能会产生错误。</p>
+<blockquote>
+<p>译者注：有些条件变量的实现可以每次只唤醒一个线程，比如Java对象的<code>notify</code>方法。这种情况就可以使用<code>if</code>。</p>
+</blockquote> </li>
+<li> <p>当人们了解条件变量时，另一个问题是“条件变量怎么知道它关联了哪个条件？”</p> <p>这一问题可以理解，因为在<code>Cond</code>结构和有关条件之间没有明显的关联。在它的使用方式中，关联是隐性的。</p> <p>下面是一种理解它的办法：当你调用<code>cond_wait</code>时，<code>Cond</code>所关联的条件为假；当你调用<code>cond_signal</code>时它为真。当然，可能有一些条件第一种情况下为真，第二种情况下为假。正确的情况只在程序员的脑子中，所以它应该在文档中有详细的解释。</p> </li>
+</ul>
+<h2 id="105-条件变量的实现">10.5 条件变量的实现</h2>
+<p>我在上一节中使用的条件变量是<code>pthread_cond_t</code>类型的包装，它定义在POSIX线程API中。这非常类似于<code>Mutex</code>，它是<code>pthread_mutex_t</code>的包装。两个包装都定义在<code>utils.c</code>和<code>utils.h</code>中。</p>
+<p>下面是类型定义：</p>
+<pre><code class="language-c">typedef pthread_cond_t Cond;
+</code></pre>
+<p><code>make_cond</code>分配空间，初始化条件变量，之后返回指针：</p>
+<pre><code class="language-c">Cond *make_cond()
+{
+  Cond *cond = check_malloc(sizeof(Cond)); 
+  int n = pthread_cond_init(cond, NULL);
+  if (n != 0) perror_exit("make_cond failed");
+ 
+  return cond;
+}
+</code></pre>
+<p>下面是<code>cond_wait</code>和<code>cond_signal</code>的包装：</p>
+<pre><code class="language-c">void cond_wait(Cond *cond, Mutex *mutex)
+{
+  int n = pthread_cond_wait(cond, mutex);
+  if (n != 0) perror_exit("cond_wait failed");
+}
+
+void cond_signal(Cond *cond)
+{
+  int n = pthread_cond_signal(cond);
+  if (n != 0) perror_exit("cond_signal failed");
+}
+</code></pre>
+<p>到这里就应该没有什么意外的东西了。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/195/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/36/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/114/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/29/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/29/index.html">雪城大学计算机与网络安全讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7个">7</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/184/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/80/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/80/index.html">Java后端开发相关学习笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/51.html">Kuangcp</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">172页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23个">23</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/31/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/README.html" title="操作系统思考 中文版" data-book-page-rel-url="README.html" data-book-page-id="1992">操作系统思考 中文版</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch0.html" title="第零章 前言" data-book-page-rel-url="ch0.html" data-book-page-id="1993">第零章 前言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch1.html" title="第一章 编译" data-book-page-rel-url="ch1.html" data-book-page-id="1994">第一章 编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch2.html" title="第二章 进程" data-book-page-rel-url="ch2.html" data-book-page-id="1995">第二章 进程</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch3.html" title="第三章 虚拟内存" data-book-page-rel-url="ch3.html" data-book-page-id="1996">第三章 虚拟内存</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch4.html" title="第四章 文件和文件系统" data-book-page-rel-url="ch4.html" data-book-page-id="1997">第四章 文件和文件系统</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch5.html" title="第五章 更多的位与字节" data-book-page-rel-url="ch5.html" data-book-page-id="1998">第五章 更多的位与字节</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch6.html" title="第六章 内存管理" data-book-page-rel-url="ch6.html" data-book-page-id="1999">第六章 内存管理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch7.html" title="第七章 缓存" data-book-page-rel-url="ch7.html" data-book-page-id="2000">第七章 缓存</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch8.html" title="第八章 多任务" data-book-page-rel-url="ch8.html" data-book-page-id="2001">第八章 多任务</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch9.html" title="第九章 线程" data-book-page-rel-url="ch9.html" data-book-page-id="2002">第九章 线程</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch10.html" title="第十章 条件变量" data-book-page-rel-url="ch10.html" data-book-page-id="2003">第十章 条件变量</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/ch11.html" title="第十一章 C语言中的信号量" data-book-page-rel-url="ch11.html" data-book-page-id="2004">第十一章 C语言中的信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../book/31/donors.html" title="捐赠名单" data-book-page-rel-url="donors.html" data-book-page-id="2005">捐赠名单</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =31;var bookPageId =2003;var bookPageRelUrl ='ch10.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,1328 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Database——Eloquent Model 关联源码分析-Laravel 源码详解</title>
+<meta content='Laravel Database——Eloquent Model 关联源码分析,Laravel 源码详解' name='keywords'>
+<meta content='Laravel Database——Eloquent Model 关联源码分析,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Dat..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html">
+<span class="">Laravel Dat..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="laravel-databaseeloquent-model-关联源码分析">Laravel Database——Eloquent Model 关联源码分析</h1>
+<h2 id="前言">前言</h2>
+<p>数据库表通常相互关联。<code>laravel</code> 中的模型关联功能使得关于数据库的关联代码变得更加简单，更加优雅。本文会详细说说关于模型关联的源码，以便更好的理解和使用关联模型。官方文档：<a href="https://d.laravel-china.org/docs/5.5/eloquent-relationships#defining-relationships">Eloquent：关联</a></p>
+<h2 id="定义关联">定义关联</h2>
+<p>所谓的定义关联，就是在一个 <code>Model</code> 中定义一个关联函数，我们利用这个关联函数去操作另外一个 <code>Model</code>，例如，<code>user</code> 表是用户表，<code>posts</code> 是用户发的文章，一个用户可以发表多篇文章，我们就可以这样写：</p>
+<pre><code class="language-php">$user-&gt;posts()-&gt;where('active', 1)-&gt;get();
+</code></pre>
+<p>这表明了我们想通过 <code>$user</code> 这个用户查询到状态 <code>active</code> 为 1 的所有文章，<code>posts</code> 就是关联函数，我们可以通过这个关联函数去操作另一个与 <code>user</code> 关联的表。</p>
+<p>在说模型关联的定义之前，我们要先说说父模型与子模型的概念。所谓的父模型是指在模型关系中主动的一方，例如用户模型和文章模型中的用户，相应的子模型就是模型关系中的被动一方，例如文章模型。在正向定义中，被关联的是子模型，而在反向关联中，被关联的是父模型。</p>
+<p>我们知道，关联有多种形式，各种关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/scheme.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/scheme.png" alt=""></a></p>
+<h2 id="hasone-一对一">hasOne 一对一</h2>
+<p>我们以官方文档的例子来说明，一个 <code>User</code> 模型可能关联一个 <code>Phone</code> 模型：</p>
+<pre><code class="language-php">class User extends Model
+{
+    /**
+     * 获得与用户关联的电话记录。
+     */
+    public function phone()
+    {
+        $this-&gt;hasOne('App\Phone', 'user_id', 'id');
+    }
+}
+</code></pre>
+<p>我们来看看 <code>hasOne</code> 的源码：</p>
+<pre><code class="language-php">public function hasOne($related, $foreignKey = null, $localKey = null)
+{
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    $foreignKey = $foreignKey ?: $this-&gt;getForeignKey();
+
+    $localKey = $localKey ?: $this-&gt;getKeyName();
+
+    return new HasOne($instance-&gt;newQuery(), $this, $instance-&gt;getTable().'.'.$foreignKey, $localKey);
+}
+</code></pre>
+<p><code>newRelatedInstance</code> 函数负责建立一个新的被关联的模型实例，主要目的是设置数据库连接：</p>
+<pre><code class="language-php">protected function newRelatedInstance($class)
+{
+    return tap(new $class, function ($instance) {
+        if (! $instance-&gt;getConnectionName()) {
+            $instance-&gt;setConnection($this-&gt;connection);
+        }
+    });
+}
+
+</code></pre>
+<p>在一对一的关系中，<code>foreignKey</code> 外键名默认是父模型的类名和主键名的蛇形变量，<code>localKey</code> 是父模型的主键名：</p>
+<pre><code class="language-php">public function getForeignKey()
+{
+    return Str::snake(class_basename($this)).'_'.$this-&gt;primaryKey;
+}
+</code></pre>
+<p><code>hasOne</code> 函数的构造函数继承 <code>HasOneOrMany</code> 类，也就是说，一对一与一对多构造函数相同，这部分主要设置外键名：</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $parent, $foreignKey, $localKey)
+{
+    $this-&gt;localKey = $localKey;
+    $this-&gt;foreignKey = $foreignKey;
+
+    parent::__construct($query, $parent);
+}
+</code></pre>
+<p><code>HasOneOrMany</code> 类继承 <code>Relation</code> 类，这部分主要设置 <code>parent</code> (父模型)、被关联模型（子模型）与被关联模型（子模型）的查询构造器：</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $parent)
+{
+    $this-&gt;query = $query;
+    $this-&gt;parent = $parent;
+    $this-&gt;related = $query-&gt;getModel();
+
+    $this-&gt;addConstraints();
+}
+</code></pre>
+<p><code>hasOne</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/hasOne%27.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/hasOne%27.png" alt=""></a></p>
+<p>除了保存被关联模型的查询构造器、被关联模型与 <code>parent</code> 模型之外，还会提供额外的限制条件：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    if (static::$constraints) {
+        $this-&gt;query-&gt;where($this-&gt;foreignKey, '=', $this-&gt;getParentKey());
+
+        $this-&gt;query-&gt;whereNotNull($this-&gt;foreignKey);
+    }
+}
+
+public function getParentKey()
+{
+    return $this-&gt;parent-&gt;getAttribute($this-&gt;localKey);
+}
+</code></pre>
+<p>限制条件为被关联模型和关联模型建立外键约束关系：</p>
+<pre><code class="language-php">select phone where phone.user_id = 1 (user.id)
+</code></pre>
+<h2 id="hasmany-一对多">hasMany 一对多</h2>
+<p>在模型关联的定义中，一对一与一对多源码是一样的：</p>
+<pre><code class="language-php">public function hasMany($related, $foreignKey = null, $localKey = null)
+{
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    $foreignKey = $foreignKey ?: $this-&gt;getForeignKey();
+
+    $localKey = $localKey ?: $this-&gt;getKeyName();
+
+    return new HasMany(
+        $instance-&gt;newQuery(), $this, $instance-&gt;getTable().'.'.$foreignKey, $localKey
+    );
+}
+</code></pre>
+<p><code>hasMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/hasMany.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/hasMany.png" alt=""></a></p>
+<p>限制条件与一对一相同，为被关联模型和关联模型建立外键约束关系：</p>
+<pre><code class="language-php">select phone where phone.user_id = 1 (user.id)
+</code></pre>
+<h2 id="belongsto-一对一一对多-反向关联">belongsTo 一对一、一对多 反向关联</h2>
+<p>如果想要从文章反向查找作者用户，那么可以定义反向关联：</p>
+<pre><code class="language-php">public function user()
+{
+    return $this-&gt;belongsTo('App\User', 'foreign_key', 'other_key');
+}
+</code></pre>
+<p><code>belongsTo</code> 源码：</p>
+<pre><code class="language-php">public function belongsTo($related, $foreignKey = null, $ownerKey = null, $relation = null)
+{
+    if (is_null($relation)) {
+        $relation = $this-&gt;guessBelongsToRelation();
+    }
+
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    if (is_null($foreignKey)) {
+        $foreignKey = Str::snake($relation).'_'.$instance-&gt;getKeyName();
+    }
+
+    $ownerKey = $ownerKey ?: $instance-&gt;getKeyName();
+
+    return new BelongsTo(
+        $instance-&gt;newQuery(), $this, $foreignKey, $ownerKey, $relation
+    );
+}
+
+</code></pre>
+<p>正向定义与反向定义不同的是多了一个参数 <code>relation</code>，这个参数默认值是从 <code>debug_backtrace</code> 函数获取的：</p>
+<pre><code class="language-php">protected function guessBelongsToRelation()
+{
+    list($one, $two, $caller) = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3);
+
+    return $caller['function'];
+}
+</code></pre>
+<p>也就是我们的关联函数名 <code>user</code>，<code>belongsTo</code> 函数会将关联函数名作为关联名保存起来。</p>
+<p>另一个不同是外键的默认名称，不再是类名 + 主键名，而是关联名 + 主键名：</p>
+<pre><code class="language-php">if (is_null($foreignKey)) {
+    $foreignKey = Str::snake($relation).'_'.$instance-&gt;getKeyName();
+}
+</code></pre>
+<p>我们接着看 <code>belongsTo</code> 函数：</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $child, $foreignKey, $ownerKey, $relation)
+{
+    $this-&gt;ownerKey = $ownerKey;
+    $this-&gt;relation = $relation;
+    $this-&gt;foreignKey = $foreignKey;
+
+    $this-&gt;child = $child;
+
+    parent::__construct($query, $child);
+}
+
+</code></pre>
+<p>我们可以看出来，相对于正向关联，反向关联除了保存外键名与主键名之外，还保存了关系名、子模型。值得注意的是，反向关联中 <code>related</code> 代表父模型，<code>parent</code> 代表子模型，与正向关联相反。</p>
+<p><code>hasMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/belongsTo1.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/belongsTo1.png" alt=""></a></p>
+<p>约束条件也相应地进行反转改变：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    if (static::$constraints) {
+        $table = $this-&gt;related-&gt;getTable();
+
+        $this-&gt;query-&gt;where($table.'.'.$this-&gt;ownerKey, '=', $this-&gt;child-&gt;{$this-&gt;foreignKey});
+    }
+}
+
+</code></pre>
+<p>限制条件：</p>
+<pre><code class="language-php">select user where user.id = 1 (post.user_id)
+</code></pre>
+<h2 id="belongsmany-多对多">belongsMany 多对多</h2>
+<p>多对多关系由于中间表的原因相对来说比较复杂，涉及的参数也非常多。我们以官网例子：</p>
+<pre><code class="language-php">class User extends Model
+{
+    /**
+     * 获得此用户的角色。
+     */
+    public function roles()
+    {
+        return $this-&gt;belongsToMany('App\Role', 'role_user', 'user_id', 'role_id');
+    }
+}
+</code></pre>
+<p><code>User</code> 表与 <code>role</code> 表是多对多关系，另外有一中间表 <code>user_role</code> 表，我们在定义关系的时候，<code>related</code> 是被关联模型，<code>table</code> 是中间表，<code>foreignPivotKey</code> 是中间表中父模型外键名，<code>relatedPivotKey</code> 是中间表中子模型外键名，<code>parentKey</code> 是父模型主键名，<code>relatedKey</code> 是子模型主键名，<code>relation</code> 是关系名。</p>
+<pre><code class="language-php">public function belongsToMany($related, $table = null, $foreignPivotKey = null, $relatedPivotKey = null, $parentKey = null, $relatedKey = null, $relation = null)
+{
+    if (is_null($relation)) {
+        $relation = $this-&gt;guessBelongsToManyRelation();
+    }
+
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    $foreignPivotKey = $foreignPivotKey ?: $this-&gt;getForeignKey();
+
+    $relatedPivotKey = $relatedPivotKey ?: $instance-&gt;getForeignKey();
+
+    if (is_null($table)) {
+        $table = $this-&gt;joiningTable($related);
+    }
+
+    return new BelongsToMany(
+        $instance-&gt;newQuery(), $this, $table, $foreignPivotKey,
+        $relatedPivotKey, $parentKey ?: $this-&gt;getKeyName(),
+        $relatedKey ?: $instance-&gt;getKeyName(), $relation
+    );
+}
+
+</code></pre>
+<p>获取关联名称仍然使用的是 <code>debug_backtrace</code> 函数，不同于<code>guessBelongsToRelation</code> 函数只有 <code>belongsTo</code> 调用, <code>guessBelongsToManyRelation</code> 函数还可以被 <code>morphedByMany</code> 函数调用，所以不能单纯的限制返回堆栈帧：</p>
+<pre><code class="language-php">public static $manyMethods = [
+    'belongsToMany', 'morphToMany', 'morphedByMany',
+    'guessBelongsToManyRelation', 'findFirstMethodThatIsntRelation',
+];
+    
+protected function guessBelongsToManyRelation()
+{
+    $caller = Arr::first(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS), function ($trace) {
+        return ! in_array($trace['function'], Model::$manyMethods);
+    });
+
+    return ! is_null($caller) ? $caller['function'] : null;
+}
+
+</code></pre>
+<p>默认的中间表是两个表名的蛇形变量：</p>
+<pre><code class="language-php">public function joiningTable($related)
+{
+    $models = [
+        Str::snake(class_basename($related)),
+        Str::snake(class_basename($this)),
+    ];
+
+    sort($models);
+
+    return strtolower(implode('_', $models));
+}
+
+</code></pre>
+<p><code>BelongsToMany</code> 的初始化也需要保存这些变量：</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $parent, $table, $foreignPivotKey,
+                                $relatedPivotKey, $parentKey, $relatedKey, $relationName = null)
+{
+    $this-&gt;table = $table;
+    $this-&gt;parentKey = $parentKey;
+    $this-&gt;relatedKey = $relatedKey;
+    $this-&gt;relationName = $relationName;
+    $this-&gt;relatedPivotKey = $relatedPivotKey;
+    $this-&gt;foreignPivotKey = $foreignPivotKey;
+
+    parent::__construct($query, $parent);
+}
+
+</code></pre>
+<p><code>belongsToMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/belongsMany1.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/belongsMany1.png" alt=""></a></p>
+<p>反向的多对多模型关系：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/belongsMany2.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/belongsMany2.png" alt=""></a></p>
+<p>限制条件：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    $this-&gt;performJoin();
+
+    if (static::$constraints) {
+        $this-&gt;addWhereConstraints();
+    }
+}
+
+protected function performJoin($query = null)
+{
+    $query = $query ?: $this-&gt;query;
+
+    $baseTable = $this-&gt;related-&gt;getTable();
+
+    $key = $baseTable.'.'.$this-&gt;relatedKey;
+
+    $query-&gt;join($this-&gt;table, $key, '=', $this-&gt;getQualifiedRelatedPivotKeyName());
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    $this-&gt;query-&gt;where(
+        $this-&gt;getQualifiedForeignPivotKeyName(), '=', $this-&gt;parent-&gt;{$this-&gt;parentKey}
+    );
+
+    return $this;
+}
+</code></pre>
+<p>本例中的 where 条件：</p>
+<pre><code class="language-php">select role join role_user on role_user.role_id = 1 (role.id)
+
+select role where role_user.user_id = 1 (user.id)
+
+</code></pre>
+<h2 id="hasmanythrough-远程一对多">hasManyThrough 远程一对多</h2>
+<p>远层一对多 关联提供了方便、简短的方式通过中间的关联来获得远层的关联。以官方例子来看：</p>
+<pre><code class="language-php">class Country extends Model
+{
+    public function posts()
+    {
+        return $this-&gt;hasManyThrough(
+            'App\Post',
+            'App\User',
+            'country_id', // 用户表外键...
+            'user_id', // 文章表外键...
+            'id', // 国家表本地键...
+            'id' // 用户表本地键...
+        );
+    }
+}
+</code></pre>
+<p>可以看到，远程一对多的参数比较多。第一个参数 <code>related</code> 是最终被关联的模型，<code>through</code> 是中间模型，<code>firstKey</code> 是中间模型关于父模型的外键，<code>secondKey</code> 是最终被关联的模型关于中间模型的外键，<code>localKey</code> 是父模型的主键，<code>secondLocalKey</code> 是中间模型的主键：</p>
+<pre><code class="language-php">public function hasManyThrough($related, $through, $firstKey = null, $secondKey = null, $localKey = null, $secondLocalKey = null)
+{
+    $through = new $through;
+
+    $firstKey = $firstKey ?: $this-&gt;getForeignKey();
+
+    $secondKey = $secondKey ?: $through-&gt;getForeignKey();
+
+    $localKey = $localKey ?: $this-&gt;getKeyName();
+
+    $secondLocalKey = $secondLocalKey ?: $through-&gt;getKeyName();
+
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    return new HasManyThrough($instance-&gt;newQuery(), $this, $through, $firstKey, $secondKey, $localKey, $secondLocalKey);
+}
+
+</code></pre>
+<p>HasManyThrough 的初始化：</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $farParent, Model $throughParent, $firstKey, $secondKey, $localKey, $secondLocalKey)
+{
+    $this-&gt;localKey = $localKey;
+    $this-&gt;firstKey = $firstKey;
+    $this-&gt;secondKey = $secondKey;
+    $this-&gt;farParent = $farParent;
+    $this-&gt;throughParent = $throughParent;
+    $this-&gt;secondLocalKey = $secondLocalKey;
+
+    parent::__construct($query, $throughParent);
+}
+
+</code></pre>
+<p><code>hasManyThrough</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/HasManyThrough.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/HasManyThrough.png" alt=""></a></p>
+<p>限制条件：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    $localValue = $this-&gt;farParent[$this-&gt;localKey];
+
+    $this-&gt;performJoin();
+
+    if (static::$constraints) {
+        $this-&gt;query-&gt;where($this-&gt;getQualifiedFirstKeyName(), '=', $localValue);
+    }
+}
+
+protected function performJoin(Builder $query = null)
+{
+    $query = $query ?: $this-&gt;query;
+
+    $farKey = $this-&gt;getQualifiedFarKeyName();
+
+    $query-&gt;join($this-&gt;throughParent-&gt;getTable(), $this-&gt;getQualifiedParentKeyName(), '=', $farKey);
+
+    if ($this-&gt;throughParentSoftDeletes()) {
+        $query-&gt;whereNull($this-&gt;throughParent-&gt;getQualifiedDeletedAtColumn());
+    }
+}
+
+public function getQualifiedParentKeyName()
+{
+    return $this-&gt;parent-&gt;getTable().'.'.$this-&gt;secondLocalKey;
+}
+
+public function getQualifiedFarKeyName()
+{
+    return $this-&gt;getQualifiedForeignKeyName();
+}
+
+public function getQualifiedForeignKeyName()
+{
+    return $this-&gt;related-&gt;getTable().'.'.$this-&gt;secondKey;
+}
+
+public function getQualifiedFirstKeyName()
+{
+    return $this-&gt;throughParent-&gt;getTable().'.'.$this-&gt;firstKey;
+}
+</code></pre>
+<p>本例中的限制条件：</p>
+<pre><code class="language-php">
+select post join user on user.id = post.user_id
+
+select post where user.delete_at is null
+
+select post where user.country_id = 1 (country.id)
+
+</code></pre>
+<h2 id="morphonemorphmany-多态关联">morphOne/morphMany 多态关联</h2>
+<p>多态关联允许我们应用一个表来单独作为多个表的属性，多态关联存在一对一、一对多、多对多的情形。所谓一对一、一对多是指，一个模型只拥有一个属性或多个属性，例如官网中的例子：</p>
+<blockquote>
+<p>用户可以「评论」文章和视频。使用多态关联，您可以用一个 comments 表同时满足这两个使用场景</p>
+</blockquote>
+<pre><code class="language-php">class Post extends Model
+{
+    /**
+     * 获得此文章的所有评论。
+     */
+    public function comments()
+    {
+        return $this-&gt;morphMany('App\Comment', 'commentable');
+    }
+}
+
+class Video extends Model
+{
+    /**
+     * 获得此视频的所有评论。
+     */
+    public function comments()
+    {
+        return $this-&gt;morphMany('App\Comment', 'commentable');
+    }
+}
+
+</code></pre>
+<p>这个 <code>comments</code> 表就是属性表，当文章和视频只能有一个评论的时候，那么就是一对一多态关联；如果文章和视频可以由多个评论的时候，就是一对多多态关联。</p>
+<p>这种属性表一般会有两个固定的字段：<code>commentable_type</code> 用于标识该条评论是文章的还是视频的、<code>commentable_id</code> 用于记录文章或视频的主键 <code>id</code>。</p>
+<p>我们可以把多态关联看作普通的一对一、一对多关系，只是外键参数是 <code>type</code> 与 <code>id</code> 的组合。</p>
+<p><code>related</code> 是属性表，也就是这里的 <code>comments</code>，<code>type</code> 参数是属性表中存储父模型类型的列名(commentable_type)，<code>id</code> 参数是属性表中存储父模型主键的列名(commentable_id)，而 <code>name</code> 专用于省略 <code>type</code> 参数与 <code>id</code> 参数，<code>localKey</code> 是指父模型的主键。</p>
+<pre><code class="language-php">public function morphOne($related, $name, $type = null, $id = null, $localKey = null)
+{
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    list($type, $id) = $this-&gt;getMorphs($name, $type, $id);
+
+    $table = $instance-&gt;getTable();
+
+    $localKey = $localKey ?: $this-&gt;getKeyName();
+
+    return new MorphOne($instance-&gt;newQuery(), $this, $table.'.'.$type, $table.'.'.$id, $localKey);
+}
+
+public function morphMany($related, $name, $type = null, $id = null, $localKey = null)
+{
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    list($type, $id) = $this-&gt;getMorphs($name, $type, $id);
+
+    $table = $instance-&gt;getTable();
+
+    $localKey = $localKey ?: $this-&gt;getKeyName();
+
+    return new MorphMany($instance-&gt;newQuery(), $this, $table.'.'.$type, $table.'.'.$id, $localKey);
+}
+
+protected function getMorphs($name, $type, $id)
+{
+    return [$type ?: $name.'_type', $id ?: $name.'_id'];
+}
+</code></pre>
+<p>一对一、一对多多态关联主要保存属性表中表示类型的列名，还有需要向该类型列中写入的父模型名称，一般来说，默认会写父模型的类名(<code>App\Post</code>、<code>App\Video</code>)</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $parent, $type, $id, $localKey)
+{
+    $this-&gt;morphType = $type;
+
+    $this-&gt;morphClass = $parent-&gt;getMorphClass();
+
+    parent::__construct($query, $parent, $id, $localKey);
+}
+
+public function getMorphClass()
+{
+    $morphMap = Relation::morphMap();
+
+    if (! empty($morphMap) &amp;&amp; in_array(static::class, $morphMap)) {
+        return array_search(static::class, $morphMap, true);
+    }
+
+    return static::class;
+}
+</code></pre>
+<p>不过我们也可以自定义写入的值：</p>
+<pre><code class="language-php">Relation::morphMap([
+    'posts' =&gt; 'App\Post',
+    'videos' =&gt; 'App\Video',
+]);
+</code></pre>
+<p>这样，就会把 <code>App\Post</code> 换成 <code>posts</code>，<code>App\Video</code> 换成 <code>videos</code>。我们来看看这个 <code>多态映射表</code> 函数：</p>
+<pre><code class="language-php">public static function morphMap(array $map = null, $merge = true)
+{
+    $map = static::buildMorphMapFromModels($map);
+
+    if (is_array($map)) {
+        static::$morphMap = $merge &amp;&amp; static::$morphMap
+                        ? array_merge(static::$morphMap, $map) : $map;
+    }
+
+    return static::$morphMap;
+}
+
+protected static function buildMorphMapFromModels(array $models = null)
+{
+    if (is_null($models) || Arr::isAssoc($models)) {
+        return $models;
+    }
+
+    return array_combine(array_map(function ($model) {
+        return (new $model)-&gt;getTable();
+    }, $models), $models);
+}
+</code></pre>
+<p>可以看到，<code>buildMorphMapFromModels</code> 函数将字符串 <code>App\Post</code> 转为 <code>model</code>，并利用 <code>array_combine</code> 转为键。</p>
+<p><code>morphOne</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/morphOne.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/morphOne.png" alt=""></a></p>
+<p><code>morphMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/morphMany.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/morphMany.png" alt=""></a></p>
+<p>限制条件：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    if (static::$constraints) {
+        parent::addConstraints();
+
+        $this-&gt;query-&gt;where($this-&gt;morphType, $this-&gt;morphClass);
+    }
+}
+
+public function addConstraints()
+{
+    if (static::$constraints) {
+        $this-&gt;query-&gt;where($this-&gt;foreignKey, '=', $this-&gt;getParentKey());
+
+        $this-&gt;query-&gt;whereNotNull($this-&gt;foreignKey);
+    }
+}
+
+</code></pre>
+<p>本例中的限制条件：</p>
+<pre><code class="language-php">
+select comments where comment.commentable_id = post.id
+
+select comments where comment.commentable_id is not null
+
+select comments where comment.commentable_type = 'App\Post'
+
+</code></pre>
+<h2 id="morphto-反向多态关联">morphTo 反向多态关联</h2>
+<p>和一对一、一对多的 <code>belongsTo</code> 相似，多态关联还可以定义反向关联 <code>morphTo</code>:</p>
+<pre><code class="language-php">class Comment extends Model
+{
+    /**
+     * 获得拥有此评论的模型。
+     */
+    public function commentable()
+    {
+        return $this-&gt;morphTo();
+    }
+}
+</code></pre>
+<p>与 <code>belongsTo</code> 类似，<code>morphTo</code> 也是利用 <code>debug_backtrace</code> 获取关联名称。当前如果正处于预加载状态的时候，<code>Comment</code> 一般还没有从数据库获取数据，<code>$this-&gt;{$type}</code> 是空值，这个时候需要去除预加载来初始化：</p>
+<pre><code class="language-php">public function morphTo($name = null, $type = null, $id = null)
+{
+    $name = $name ?: $this-&gt;guessBelongsToRelation();
+
+    list($type, $id) = $this-&gt;getMorphs(
+        Str::snake($name), $type, $id
+    );
+
+    return empty($class = $this-&gt;{$type})
+                ? $this-&gt;morphEagerTo($name, $type, $id)
+                : $this-&gt;morphInstanceTo($class, $name, $type, $id);
+}
+
+protected function morphEagerTo($name, $type, $id)
+{
+    return new MorphTo(
+        $this-&gt;newQuery()-&gt;setEagerLoads([]), $this, $id, null, $type, $name
+    );
+}
+
+protected function morphInstanceTo($target, $name, $type, $id)
+{
+    $instance = $this-&gt;newRelatedInstance(
+        static::getActualClassNameForMorph($target)
+    );
+
+    return new MorphTo(
+        $instance-&gt;newQuery(), $this, $id, $instance-&gt;getKeyName(), $type, $name
+    );
+}
+</code></pre>
+<p>多态的成员变量 <code>morphType</code> 代表属性表的类型列，<code>morphClass</code></p>
+<p><code>MorphTo</code> 的成员变量只有一个 <code>morphType</code>:</p>
+<pre><code class="language-php">public function __construct(Builder $query, Model $parent, $foreignKey, $ownerKey, $type, $relation)
+{
+    $this-&gt;morphType = $type;
+
+    parent::__construct($query, $parent, $foreignKey, $ownerKey, $relation);
+}
+</code></pre>
+<p><code>morphTo</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/morphTo.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/morphTo.png" alt=""></a></p>
+<p>限制条件与 <code>belongsTo</code> 相同：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    if (static::$constraints) {
+        $table = $this-&gt;related-&gt;getTable();
+
+        $this-&gt;query-&gt;where($table.'.'.$this-&gt;ownerKey, '=', $this-&gt;child-&gt;{$this-&gt;foreignKey});
+    }
+}
+</code></pre>
+<p>本例中的限制条件</p>
+<pre><code class="language-php">
+select post where post.id = comments.commentable_id
+
+</code></pre>
+<h2 id="多对多多态关联">多对多多态关联</h2>
+<p>除了传统的多态关联，您也可以定义「多对多」的多态关联。例如，Post 模型和 Video 模型可以共享一个多态关联至 Tag 模型。 使用多对多多态关联可以让您在文章和视频中共享唯一的标签列表。</p>
+<pre><code class="language-php">class Post extends Model
+{
+    /**
+     * 获得此文章的所有标签。
+     */
+    public function tags()
+    {
+        return $this-&gt;morphToMany('App\Tag', 'taggable');
+    }
+}
+
+</code></pre>
+<p>多对多多态关联与多对多关联的代码类似，不同的是中间表不再是两个父模型的蛇形变量，而是 <code>name</code> 的复数，值得注意的是 <code>foreignPivotKey</code> 代表中间表中对当前 <code>post</code> 或者 <code>video</code> 的外键，一般会放在 <code>taggable_id</code> 字段中，<code>relatedPivotKey</code> 代表中间表中对属性表 <code>tag</code> 的外键 <code>tag_id</code>:</p>
+<pre><code class="language-php">public function morphToMany($related, $name, $table = null, $foreignPivotKey = null,
+                                $relatedPivotKey = null, $parentKey = null,
+                                $relatedKey = null, $inverse = false)
+{
+    $caller = $this-&gt;guessBelongsToManyRelation();
+
+    $instance = $this-&gt;newRelatedInstance($related);
+
+    $foreignPivotKey = $foreignPivotKey ?: $name.'_id';
+
+    $relatedPivotKey = $relatedPivotKey ?: $instance-&gt;getForeignKey();
+
+    $table = $table ?: Str::plural($name);
+
+    return new MorphToMany(
+        $instance-&gt;newQuery(), $this, $name, $table,
+        $foreignPivotKey, $relatedPivotKey, $parentKey ?: $this-&gt;getKeyName(),
+        $relatedKey ?: $instance-&gt;getKeyName(), $caller, $inverse
+    );
+}
+</code></pre>
+<p><code>MorphToMany</code> 的构造函数依然有 <code>morphType</code> 与 <code>morphClass</code>，<code>morphType</code> 标识着当前中间表的记录类型是 <code>Post</code>，还是 <code>videos</code>，<code>morphClass</code> 的值默认值是 <code>Post</code> 类或者 <code>videos</code> 的全名，正向关联的时候，<code>inverse</code> 是 <code>false</code>，反向关联的时候, <code>inverse</code> 是 <code>true</code>。</p>
+<pre><code class="language-php"> public function __construct(Builder $query, Model $parent, $name, $table, $foreignPivotKey,
+                                $relatedPivotKey, $parentKey, $relatedKey, $relationName = null, $inverse = false)
+{
+    $this-&gt;inverse = $inverse;
+    $this-&gt;morphType = $name.'_type';
+    $this-&gt;morphClass = $inverse ? $query-&gt;getModel()-&gt;getMorphClass() : $parent-&gt;getMorphClass();
+
+    parent::__construct(
+        $query, $parent, $table, $foreignPivotKey,
+        $relatedPivotKey, $parentKey, $relatedKey, $relationName
+    );
+}
+</code></pre>
+<p>正向关联的时候，<code>parent</code> 类是 <code>Post</code> 类或者 <code>videos</code> 类，反向关联的时候 <code>related</code> 是 <code>Post</code> 类或者 <code>videos</code> 类。</p>
+<p>限制条件：</p>
+<pre><code class="language-php">protected function addWhereConstraints()
+{
+    parent::addWhereConstraints();
+
+    $this-&gt;query-&gt;where($this-&gt;table.'.'.$this-&gt;morphType, $this-&gt;morphClass);
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    $this-&gt;query-&gt;where(
+        $this-&gt;getQualifiedForeignPivotKeyName(), '=', $this-&gt;parent-&gt;{$this-&gt;parentKey}
+    );
+
+    return $this;
+}
+
+public function getQualifiedForeignPivotKeyName()
+{
+    return $this-&gt;table.'.'.$this-&gt;foreignPivotKey;
+}
+</code></pre>
+<p>官网中例子限制条件转化为 <code>sql</code> (假设 <code>Post</code> 的主键为 1) ：</p>
+<pre><code class="language-php">where taggables.taggable_id = 1;
+
+where taggables.taggable_type = 'App\Post'
+
+</code></pre>
+<p><code>morphToMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/morphToMany.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/morphToMany.png" alt=""></a></p>
+<p>限制条件：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    $this-&gt;performJoin();
+
+    if (static::$constraints) {
+        $this-&gt;addWhereConstraints();
+    }
+}
+
+protected function performJoin($query = null)
+{
+    $query = $query ?: $this-&gt;query;
+
+    $baseTable = $this-&gt;related-&gt;getTable();
+
+    $key = $baseTable.'.'.$this-&gt;relatedKey;
+
+    $query-&gt;join($this-&gt;table, $key, '=', $this-&gt;getQualifiedRelatedPivotKeyName());
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    parent::addWhereConstraints();
+
+    $this-&gt;query-&gt;where($this-&gt;table.'.'.$this-&gt;morphType, $this-&gt;morphClass);
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    $this-&gt;query-&gt;where(
+        $this-&gt;getQualifiedForeignPivotKeyName(), '=', $this-&gt;parent-&gt;{$this-&gt;parentKey}
+    );
+
+    return $this;
+}
+</code></pre>
+<p>本例中的限制条件：</p>
+<pre><code class="language-php">select tag join tagable on tagable.tag_id = tag.id
+
+select tags where tagable.tagables_id = post.id
+
+select tags where tagable.tagables_type = 'App\Tag'
+
+</code></pre>
+<h2 id="多对多多态反向关联">多对多多态反向关联</h2>
+<p>官方文档例子：</p>
+<pre><code class="language-php">class Tag extends Model
+{
+    /**
+     * 获得此标签下所有的文章。
+     */
+    public function posts()
+    {
+        return $this-&gt;morphedByMany('App\Post', 'taggable');
+    }
+}
+
+</code></pre>
+<p>与正向关联相反，<code>relatedPivotKey</code> 代表中间表中对 <code>related</code> 表 <code>post</code> 或者 <code>video</code> 的外键，一般会放在 <code>taggable_id</code> 字段中，<code>foreignPivotKey</code> 代表中间表中对当前属性表 <code>tag</code> 的外键 <code>tag_id</code>：</p>
+<pre><code class="language-php">public function morphedByMany($related, $name, $table = null, $foreignPivotKey = null,
+                                  $relatedPivotKey = null, $parentKey = null, $relatedKey = null)
+{
+    $foreignPivotKey = $foreignPivotKey ?: $this-&gt;getForeignKey();
+
+    $relatedPivotKey = $relatedPivotKey ?: $name.'_id';
+
+    return $this-&gt;morphToMany(
+        $related, $name, $table, $foreignPivotKey,
+        $relatedPivotKey, $parentKey, $relatedKey, true
+    );
+}
+
+</code></pre>
+<p>官网中例子限制条件转化为 <code>sql</code> (假设 <code>Tag</code> 的主键为 1) ：</p>
+<pre><code class="language-php">where taggables.tag_id = 1;
+
+where taggables.taggable_type = 'App\Post'
+
+</code></pre>
+<p><code>morphedByMany</code> 的模型关系如下：</p>
+<p><a href="http://owql68l6p.bkt.clouddn.com/morphedByMany.png" data-uk-lightbox><img src="http://owql68l6p.bkt.clouddn.com/morphedByMany.png" alt=""></a></p>
+<p>限制条件与 <code>morphToMany</code> 一致：</p>
+<pre><code class="language-php">public function addConstraints()
+{
+    $this-&gt;performJoin();
+
+    if (static::$constraints) {
+        $this-&gt;addWhereConstraints();
+    }
+}
+
+protected function performJoin($query = null)
+{
+    $query = $query ?: $this-&gt;query;
+
+    $baseTable = $this-&gt;related-&gt;getTable();
+
+    $key = $baseTable.'.'.$this-&gt;relatedKey;
+
+    $query-&gt;join($this-&gt;table, $key, '=', $this-&gt;getQualifiedRelatedPivotKeyName());
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    parent::addWhereConstraints();
+
+    $this-&gt;query-&gt;where($this-&gt;table.'.'.$this-&gt;morphType, $this-&gt;morphClass);
+
+    return $this;
+}
+
+protected function addWhereConstraints()
+{
+    $this-&gt;query-&gt;where(
+        $this-&gt;getQualifiedForeignPivotKeyName(), '=', $this-&gt;parent-&gt;{$this-&gt;parentKey}
+    );
+
+    return $this;
+}
+
+</code></pre>
+<p>本例中的限制条件</p>
+<pre><code class="language-php">select post join post on post.id = tagables.tagable_id
+
+select post where tagables.tag_id = tag.id
+
+select post where tagables.tagable_type = 'App\Post'
+
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/12/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/swift_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/12/index.html">Swift 官方教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/8.html">numbbbbb</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="swift">swift</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 18022个">18022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/99/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/99/index.html">ECMAScript 6入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/156/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/30/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/atom_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/30/index.html">Atom飞行手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="atom">atom</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 45个">45</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/20/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/20/index.html">Java 8 简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 133个">133</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/9/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/9/index.html">分布式 Java</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/6.html">waylau</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">27页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 176个">176</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7770;var bookPageRelUrl ='Laravel%20Database——Eloquent%20Model%20关联源码分析.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

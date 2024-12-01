@@ -1,0 +1,831 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>内存块-Linux 内核揭密</title>
+<meta content='内存块,Linux 内核揭密' name='keywords'>
+<meta content='内存块,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/MM/README.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">内存管理</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/MM/linux-mm-2.html">
+<span class="">固定映射地址和 ior..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="内核内存管理-第一部分">内核内存管理. 第一部分.</h1>
+<h2 id="简介">简介</h2>
+<p>内存管理是操作系统内核中最复杂的部分之一(我认为没有之一)。在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-3.html">讲解内核进入点之前的准备工作</a>时，我们在调用 <code>start_kernel</code> 函数前停止了讲解。<code>start_kernel</code> 函数在内核启动第一个 <code>init</code> 进程前初始化了所有的内核特性(包括那些依赖于架构的特性)。你也许还记得在引导时建立了初期页表、识别页表和固定映射页表，但是复杂的内存管理部分还没有开始工作。当 <code>start_kernel</code> 函数被调用时，我们会看到从初期内存管理到更复杂的内存管理数据结构和技术的转变。为了更好地理解内核的初始化过程，我们需要对这些技术有更清晰的理解。本章节是内存管理框架和 API 的不同部分的概述，从 <code>memblock</code> 开始。</p>
+<h2 id="内存块">内存块</h2>
+<p>内存块是在引导初期，泛用内核内存分配器还没有开始工作时对内存区域进行管理的方法之一。以前它被称为 <code>逻辑内存块</code>，但是内核接纳了 <a href="https://lkml.org/lkml/2010/7/13/68">Yinghai Lu 提供的补丁</a>后改名为 <code>memblock</code> 。<code>x86_64</code> 架构上的内核会使用这个方法。我们已经在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-3.html">讲解内核进入点之前的准备工作</a>时遇到过了它。现在是时候对它更加熟悉了。我们会看到它是被怎样实现的。</p>
+<p>我们首先会学习 <code>memblock</code> 的数据结构。以下所有的数据结构都在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/memblock.h">include/linux/memblock.h</a> 头文件中定义。</p>
+<p>第一个结构体的名字就叫做 <code>memblock</code>。它的定义如下：</p>
+<pre><code class="language-C">struct memblock {
+         bool bottom_up;
+         phys_addr_t current_limit;
+         struct memblock_type memory;   --&gt; array of memblock_region
+         struct memblock_type reserved; --&gt; array of memblock_region
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+         struct memblock_type physmem;
+#endif
+};
+</code></pre>
+<p>这个结构体包含五个域。第一个 <code>bottom_up</code> 域置为 <code>true</code> 时允许内存以自底向上模式进行分配。下一个域是 <code>current_limit</code>。 这个域描述了内存块的尺寸限制。接下来的三个域描述了内存块的类型。内存块的类型可以是：被保留，内存和物理内存(如果 <code>CONFIG_HAVE_MEMBLOCK_PHYS_MAP</code> 编译配置选项被开启)。接下来我们来看看下一个数据结构- <code>memblock_type</code> 。让我们来看看它的定义：</p>
+<pre><code class="language-C">struct memblock_type {
+	unsigned long cnt;
+	unsigned long max;
+	phys_addr_t total_size;
+	struct memblock_region *regions;
+};
+</code></pre>
+<p>这个结构体提供了关于内存类型的信息。它包含了描述当前内存块中内存区域的数量、所有内存区域的大小、内存区域的已分配数组的尺寸和指向 <code>memblock_region</code> 结构体数据的指针的域。<code>memblock_region</code> 结构体描述了一个内存区域，定义如下：</p>
+<pre><code class="language-C">struct memblock_region {
+        phys_addr_t base;
+        phys_addr_t size;
+        unsigned long flags;
+#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+        int nid;
+#endif
+};
+</code></pre>
+<p><code>memblock_region</code> 提供了内存区域的基址和大小，<code>flags</code> 域可以是：</p>
+<pre><code class="language-C">#define MEMBLOCK_ALLOC_ANYWHERE	(~(phys_addr_t)0)
+#define MEMBLOCK_ALLOC_ACCESSIBLE	0
+#define MEMBLOCK_HOTPLUG	0x1
+</code></pre>
+<p>同时，如果 <code>CONFIG_HAVE_MEMBLOCK_NODE_MAP</code> 编译配置选项被开启， <code>memblock_region</code> 结构体也提供了整数域 - <a href="http://en.wikipedia.org/wiki/Non-uniform_memory_access">numa</a> 节点选择器。</p>
+<p>我们将以上部分想象为如下示意图：</p>
+<pre><code>+---------------------------+   +---------------------------+
+|         memblock          |   |                           |
+|  _______________________  |   |                           |
+| |        memory         | |   |       Array of the        |
+| |      memblock_type    |-|--&gt;|      membock_region       |
+| |_______________________| |   |                           |
+|                           |   +---------------------------+
+|  _______________________  |   +---------------------------+
+| |       reserved        | |   |                           |
+| |      memblock_type    |-|--&gt;|       Array of the        |
+| |_______________________| |   |      memblock_region      |
+|                           |   |                           |
++---------------------------+   +---------------------------+
+</code></pre>
+<p>这三个结构体： <code>memblock</code>， <code>memblock_type</code> 和 <code>memblock_region</code> 是 <code>Memblock</code> 的主要组成部分。现在我们可以进一步了解 <code>Memblock</code> 和 它的初始化过程了。</p>
+<h2 id="内存块初始化">内存块初始化</h2>
+<p>所有 <code>memblock</code> 的 API 都在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/memblock.h">include/linux/memblock.h</a> 头文件中描述, 所有函数的实现都在 <a href="https://github.com/torvalds/linux/blob/master/mm/memblock.c">mm/memblock.c</a> 源码中。首先我们来看一下源码的开头部分和 <code>memblock</code> 结构体的初始化吧。</p>
+<pre><code class="language-C">struct memblock memblock __initdata_memblock = {
+	.memory.regions		= memblock_memory_init_regions,
+	.memory.cnt		    = 1,
+	.memory.max		    = INIT_MEMBLOCK_REGIONS,
+
+	.reserved.regions	= memblock_reserved_init_regions,
+	.reserved.cnt		= 1,
+	.reserved.max		= INIT_MEMBLOCK_REGIONS,
+
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+	.physmem.regions	= memblock_physmem_init_regions,
+	.physmem.cnt		= 1,
+	.physmem.max		= INIT_PHYSMEM_REGIONS,
+#endif
+	.bottom_up		    = false,
+	.current_limit		= MEMBLOCK_ALLOC_ANYWHERE,
+};
+</code></pre>
+<p>在这里我们可以看到 <code>memblock</code> 结构体的同名变量的初始化。首先请注意 <code>__initdata_memblock</code> 。这个宏的定义就像这样：</p>
+<pre><code class="language-C">#ifdef CONFIG_ARCH_DISCARD_MEMBLOCK
+    #define __init_memblock __meminit
+    #define __initdata_memblock __meminitdata
+#else
+    #define __init_memblock
+    #define __initdata_memblock
+#endif
+</code></pre>
+<p>你会发现这个宏依赖于 <code>CONFIG_ARCH_DISCARD_MEMBLOCK</code> 。如果这个编译配置选项开启，内存块的代码会被放置在 <code>.init</code> 段，这样它就会在内核引导完毕后被释放掉。</p>
+<p>接下来我们可以看看 <code>memblock_type memory</code> ， <code>memblock_type reserved</code> 和 <code>memblock_type physmem</code> 域的初始化。在这里我们只对 <code>memblock_type.regions</code> 的初始化过程感兴趣，请注意每一个 <code>memblock_type</code> 域都是 <code>memblock_region</code> 的数组初始化的：</p>
+<pre><code class="language-C">static struct memblock_region memblock_memory_init_regions[INIT_MEMBLOCK_REGIONS] __initdata_memblock;
+static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_REGIONS] __initdata_memblock;
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+static struct memblock_region memblock_physmem_init_regions[INIT_PHYSMEM_REGIONS] __initdata_memblock;
+#endif
+</code></pre>
+<p>每个数组包含了 128 个内存区域。我们可以在 <code>INIT_MEMBLOCK_REGIONS</code> 宏定义中看到它：</p>
+<pre><code class="language-C">#define INIT_MEMBLOCK_REGIONS   128
+</code></pre>
+<p>请注意所有的数组定义中也用到了在 <code>memblock</code> 中使用过的 <code>__initdata_memblock</code> 宏(如果忘掉了就翻到上面重温一下)。</p>
+<p>最后两个域描述了 <code>bottom_up</code> 分配是否被开启以及当前内存块的限制：</p>
+<pre><code class="language-C">#define MEMBLOCK_ALLOC_ANYWHERE (~(phys_addr_t)0)
+</code></pre>
+<p>这个限制是 <code>0xffffffffffffffff</code>.</p>
+<p>On this step the initialization of the <code>memblock</code> structure has been finished and we can look on the Memblock API. 到此为止 <code>memblock</code> 结构体的初始化就结束了，我们可以开始看内存块相关 API 了。</p>
+<h2 id="内存块应用程序接口">内存块应用程序接口</h2>
+<p>我们已经结束了 <code>memblock</code> 结构体的初始化讲解，现在我们要开始看内存块 API 和它的实现了。就像我上面说过的，所有 <code>memblock</code> 的实现都在 <a href="https://github.com/torvalds/linux/blob/master/mm/memblock.c">mm/memblock.c</a> 中。为了理解 <code>memblock</code> 是怎样被实现和工作的，让我们先看看它的用法。内核中有<a href="http://lxr.free-electrons.com/ident?i=memblock">很多地方</a>用到了内存块。举个例子，我们来看看 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/e820.c#L1061">arch/x86/kernel/e820.c</a> 中的 <code>memblock_x86_fill</code> 函数。这个函数使用了 <a href="http://en.wikipedia.org/wiki/E820">e820</a> 提供的内存映射并使用 <code>memblock_add</code> 函数在 <code>memblock</code> 中添加了内核保留的内存区域。既然我们首先遇到了 <code>memblock_add</code> 函数，让我们从它开始讲解吧。</p>
+<p>这个函数获取了物理基址和内存区域的大小并把它们加到了 <code>memblock</code> 中。<code>memblock_add</code> 函数本身没有做任何特殊的事情，它只是调用了</p>
+<pre><code class="language-C">memblock_add_range(&amp;memblock.memory, base, size, MAX_NUMNODES, 0);
+</code></pre>
+<p>函数。我们将内存块类型 - <code>memory</code>，内存基址和内存区域大小，节点的最大数目和标志传进去。如果 <code>CONFIG_NODES_SHIFT</code> 没有被设置，最大节点数目就是 1，否则是 <code>1 &lt;&lt; CONFIG_NODES_SHIFT</code>。<code>memblock_add_range</code> 函数将新的内存区域加到了内存块中，它首先检查传入内存区域的大小，如果是 0 就直接返回。然后，这个函数会用 <code>memblock_type</code> 来检查 <code>memblock</code> 中的内存区域是否存在。如果不存在，我们就简单地用给定的值填充一个新的 <code>memory_region</code> 然后返回(我们已经在<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-3.html">对内核内存管理框架的初览</a>中看到了它的实现)。如果 <code>memblock_type</code> 不为空，我们就会使用提供的 <code>memblock_type</code> 将新的内存区域加到 <code>memblock</code> 中。</p>
+<p>首先，我们获取了内存区域的结束点：</p>
+<pre><code class="language-C">phys_addr_t end = base + memblock_cap_size(base, &amp;size);
+</code></pre>
+<p><code>memblock_cap_size</code> 调整了 <code>size</code> 使 <code>base + size</code> 不会溢出。它的实现非常简单：</p>
+<pre><code class="language-C">static inline phys_addr_t memblock_cap_size(phys_addr_t base, phys_addr_t *size)
+{
+	return *size = min(*size, (phys_addr_t)ULLONG_MAX - base);
+}
+</code></pre>
+<p><code>memblock_cap_size</code> 返回了提供的值与 <code>ULLONG_MAX - base</code> 中的较小值作为新的尺寸。</p>
+<p>之后，我们获得了新的内存区域的结束地址，<code>memblock_add_range</code> 会检查与已加入内存区域是否重叠以及能否合并。将新的内存区域插入 <code>memblock</code> 包含两步：</p>
+<ul>
+<li>将新内存区域的不重叠部分作为单独的区域加入；</li>
+<li>合并所有相接的区域。</li>
+</ul>
+<p>我们会迭代所有的已存储内存区域来检查是否与新区域重叠：</p>
+<pre><code class="language-C">	for (i = 0; i &lt; type-&gt;cnt; i++) {
+		struct memblock_region *rgn = &amp;type-&gt;regions[i];
+		phys_addr_t rbase = rgn-&gt;base;
+		phys_addr_t rend = rbase + rgn-&gt;size;
+
+		if (rbase &gt;= end)
+			break;
+		if (rend &lt;= base)
+			continue;
+        ...
+		...
+		...
+	}
+</code></pre>
+<p>如果新的内存区域不与已有区域重叠，直接插入。否则我们会检查这个新内存区域是否合适并调用 <code>memblock_double_array</code> 函数：</p>
+<pre><code class="language-C">while (type-&gt;cnt + nr_new &gt; type-&gt;max)
+	if (memblock_double_array(type, obase, size) &lt; 0)
+		return -ENOMEM;
+	insert = true;
+	goto repeat;
+</code></pre>
+<p><code>memblock_double_array</code> 会将提供的区域数组长度加倍。然后我们会将 <code>insert</code> 置为 <code>true</code>，接着跳转到 <code>repeat</code> 标签。第二步，我们会从 <code>repeat</code> 标签开始，迭代同样的循环然后使用 <code>memblock_insert_region</code> 函数将当前内存区域插入内存块：</p>
+<pre><code class="language-C">	if (base &lt; end) {
+		nr_new++;
+		if (insert)
+			memblock_insert_region(type, i, base, end - base,
+					       nid, flags);
+	}
+</code></pre>
+<p>我们在第一步将 <code>insert</code> 置为 <code>true</code>，现在 <code>memblock_insert_region</code> 会检查这个标志。<code>memblock_insert_region</code> 的实现与我们将新区域插入空 <code>memblock_type</code> 的实现(看上面)几乎相同。这个函数会获取最后一个内存区域：</p>
+<pre><code class="language-C">struct memblock_region *rgn = &amp;type-&gt;regions[idx];
+</code></pre>
+<p>然后用 <code>memmove</code> 拷贝这部分内存：</p>
+<pre><code class="language-C">memmove(rgn + 1, rgn, (type-&gt;cnt - idx) * sizeof(*rgn));
+</code></pre>
+<p>之后我们会填充 <code>memblock_region</code> 域，然后增长 <code>memblock_type</code> 的尺寸。在函数执行的结束，<code>memblock_add_range</code> 会调用 <code>memblock_merge_regions</code> 来在第二步合并相邻可合并的内存区域。</p>
+<p>还有第二种情况，新的内存区域与已储存区域完全重叠。比如 <code>memblock</code> 中已经有了 <code>region1</code> :</p>
+<pre><code>0                    0x1000
++-----------------------+
+|                       |
+|                       |
+|        region1        |
+|                       |
+|                       |
++-----------------------+
+</code></pre>
+<p>现在我们想在 <code>memblock</code> 中添加 <code>region2</code> ，它的基址和尺寸如下：</p>
+<pre><code>0x100                 0x2000
++-----------------------+
+|                       |
+|                       |
+|        region2        |
+|                       |
+|                       |
++-----------------------+
+</code></pre>
+<p>在这种情况下，新内存区域的基址会被像下面这样设置：</p>
+<pre><code class="language-C">base = min(rend, end);
+</code></pre>
+<p>所以在我们设置的这种场景中，它会被设置为 <code>0x1000</code> 。然后我们会在第二步中将这个区域插入：</p>
+<pre><code>if (base &lt; end) {
+	nr_new++;
+	if (insert)
+		memblock_insert_region(type, i, base, end - base, nid, flags);
+}
+</code></pre>
+<p>在这种情况下我们会插入 <code>overlapping portion</code> (我们之插入地址高的部分，因为低地址部分已经被包含在重叠区域里了)，然后会使用 <code>memblock_merge_regions</code> 合并剩余部分区域。就像我上文中所说的那样，这个函数会合并相邻的可合并区域。它会从给定的 <code>memblock_type</code> 遍历所有的内存区域，取出两个相邻区域 - <code>type-&gt;regions[i]</code> 和 <code>type-&gt;regions[i + 1]</code>，并检查他们是否拥有同样的标志，是否属于同一个节点，第一个区域的末尾地址是否与第二个区域的基地址相同。</p>
+<pre><code class="language-C">while (i &lt; type-&gt;cnt - 1) {
+	struct memblock_region *this = &amp;type-&gt;regions[i];
+	struct memblock_region *next = &amp;type-&gt;regions[i + 1];
+	if (this-&gt;base + this-&gt;size != next-&gt;base ||
+	    memblock_get_region_node(this) !=
+	    memblock_get_region_node(next) ||
+	    this-&gt;flags != next-&gt;flags) {
+		BUG_ON(this-&gt;base + this-&gt;size &gt; next-&gt;base);
+		i++;
+		continue;
+	}
+</code></pre>
+<p>如果上面所说的这些条件全部符合，我们就会更新第一个区域的长度，将第二个区域的长度加上去。</p>
+<pre><code class="language-C">this-&gt;size += next-&gt;size;
+</code></pre>
+<p>我们在更新第一个区域的长度同时，会使用 <code>memmove</code> 将后面的所有区域向前移动一个下标。</p>
+<pre><code class="language-C">memmove(next, next + 1, (type-&gt;cnt - (i + 2)) * sizeof(*next));
+</code></pre>
+<p>然后将 <code>memblock_type</code> 中内存区域的数量减一：</p>
+<pre><code class="language-C">type-&gt;cnt--;
+</code></pre>
+<p>经过这些操作后我们就成功地将两个内存区域合并了：</p>
+<pre><code>0                                             0x2000
++------------------------------------------------+
+|                                                |
+|                                                |
+|                   region1                      |
+|                                                |
+|                                                |
++------------------------------------------------+
+</code></pre>
+<p>这就是 <code>memblock_add_range</code> 函数的工作原理和执行过程。</p>
+<p>同样还有一个 <code>memblock_reserve</code> 函数与 <code>memblock_add</code> 几乎完成同样的工作，只有一点不同： <code>memblock_reserve</code> 将 <code>memblock_type.reserved</code> 而不是 <code>memblock_type.memory</code> 储存到内存块中。</p>
+<p>当然这不是全部的 API。内存块不仅提供了添加 <code>memory</code> 和 <code>reserved</code> 内存区域，还提供了：</p>
+<ul>
+<li>memblock_remove - 从内存块中移除内存区域；</li>
+<li>memblock_find_in_range - 寻找给定范围内的未使用区域；</li>
+<li>memblock_free - 释放内存块中的内存区域；</li>
+<li>for_each_mem_range - 迭代遍历内存块区域。</li>
+</ul>
+<p>等等......</p>
+<h2 id="获取内存区域的相关信息">获取内存区域的相关信息</h2>
+<p>内存块还提供了获取 <code>memblock</code> 中已分配内存区域信息的 API。包括两部分：</p>
+<ul>
+<li>get_allocated_memblock_memory_regions_info - 获取有关内存区域的信息；</li>
+<li>get_allocated_memblock_reserved_regions_info - 获取有关保留区域的信息。</li>
+</ul>
+<p>这些函数的实现都很简单。以 <code>get_allocated_memblock_reserved_regions_info</code> 为例：</p>
+<pre><code class="language-C">phys_addr_t __init_memblock get_allocated_memblock_reserved_regions_info(
+					phys_addr_t *addr)
+{
+	if (memblock.reserved.regions == memblock_reserved_init_regions)
+		return 0;
+
+	*addr = __pa(memblock.reserved.regions);
+
+	return PAGE_ALIGN(sizeof(struct memblock_region) *
+			  memblock.reserved.max);
+}
+</code></pre>
+<p>这个函数首先会检查 <code>memblock</code> 是否包含保留内存区域。如果否，就直接返回 0 。否则函数将保留内存区域的物理地址写到传入的数组中，然后返回已分配数组的对齐后尺寸。注意函数使用 <code>PAGE_ALIGN</code> 这个宏实现对齐。实际上这个宏依赖于页的尺寸：</p>
+<pre><code class="language-C">#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+</code></pre>
+<p><code>get_allocated_memblock_memory_regions_info</code> 函数的实现是基本一样的。只有一处不同，<code>get_allocated_memblock_memory_regions_info</code> 使用 <code>memblock_type.memory</code> 而不是 <code>memblock_type.reserved</code> 。</p>
+<h2 id="内存块的相关除错技术">内存块的相关除错技术</h2>
+<p>在内存块的实现中有许多对 <code>memblock_dbg</code> 的调用。如果在内核命令行中传入 <code>memblock=debug</code> 选项，这个函数就会被调用。实际上 <code>memblock_dbg</code> 是 <code>printk</code> 的一个拓展宏：</p>
+<pre><code class="language-C">#define memblock_dbg(fmt, ...) \
+         if (memblock_debug) printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__)
+</code></pre>
+<p>比如你可以在 <code>memblock_reserve</code> 函数中看到对这个宏的调用：</p>
+<pre><code class="language-C">memblock_dbg("memblock_reserve: [%#016llx-%#016llx] flags %#02lx %pF\n",
+		     (unsigned long long)base,
+		     (unsigned long long)base + size - 1,
+		     flags, (void *)_RET_IP_);
+</code></pre>
+<p>然后你将看到类似下图的画面：</p>
+<p><a href="http://oi57.tinypic.com/1zoj589.jpg" data-uk-lightbox><img src="http://oi57.tinypic.com/1zoj589.jpg" alt="Memblock"></a></p>
+<p>内存块技术也支持 <a href="http://en.wikipedia.org/wiki/Debugfs">debugfs</a> 。如果你不是在 <code>X86</code> 架构下运行内核，你可以访问：</p>
+<ul>
+<li>/sys/kernel/debug/memblock/memory</li>
+<li>/sys/kernel/debug/memblock/reserved</li>
+<li>/sys/kernel/debug/memblock/physmem</li>
+</ul>
+<p>来获取 <code>memblock</code> 内容的核心转储信息。</p>
+<h2 id="结束语">结束语</h2>
+<p>讲解内核内存管理的第一部分到此结束，如果你有任何的问题或者建议，你可以直接发消息给我<a href="https://twitter.com/0xAX">twitter</a>，也可以给我发<a href="anotherworldofworld@gmail.com">邮件</a>或是直接创建一个 <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>。</p>
+<p><strong>英文不是我的母语。如果你发现我的英文描述有任何问题，请提交一个PR到<a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="相关连接">相关连接：</h2>
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/E820">e820</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Non-uniform_memory_access">numa</a></li>
+<li><a href="http://en.wikipedia.org/wiki/Debugfs">debugfs</a></li>
+<li><a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-3.html">对内核内存管理框架的初览</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/36/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/36/index.html">米斯特白帽培训讲义</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 99个">99</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/12/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/swift_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/12/index.html">Swift 官方教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/8.html">numbbbbb</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="swift">swift</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">51页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 18022个">18022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/127/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/127/index.html">aiohttp 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/68.html">HuberTRoy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">124页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 34个">34</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/135/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/135/index.html">微前端的那些事儿</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">55页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8118;var bookPageRelUrl ='MM/linux-mm-1.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

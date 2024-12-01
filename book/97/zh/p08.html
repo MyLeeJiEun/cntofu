@@ -1,0 +1,490 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>使用Deferred的诗歌下载客户端-Twisted与异步编程入门</title>
+<meta content='使用Deferred的诗歌下载客户端,Twisted与异步编程入门' name='keywords'>
+<meta content='使用Deferred的诗歌下载客户端,Twisted与异步编程入门' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/97/zh/p07.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">小插曲，Deferred</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/97/zh/p09.html">
+<span class="">第二个小插曲，defe..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/97/index.html">Twisted与异步编程入门</a>
+<a target="_blank" rel="nofollow" href="https://github.com/likebeta/twisted-intro-cn" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h3 id="客户端40">客户端4.0</h3>
+<p>我们已经对deferreds有些理解了，现在我们可以使用它重写我们的客户端。你可以在<a href="http://github.com/jdavisp3/twisted-intro/blob/master/twisted-client-4/get-poetry.py">twisted-client-4/get-poetry.py</a>中看到它的实现。</p>
+<p>这里的get_poetry已经再也不需要callback与errback参数了。相反，返回了一个用户可能根据需要添加callbacks和errbacks的新deferred。</p>
+<pre><code class="language-python">def get_poetry(host, port):
+    """
+    Download a poem from the given host and port. This function
+    returns a Deferred which will be fired with the complete text of
+    the poem or a Failure if the poem could not be downloaded.
+    """
+    d = defer.Deferred()
+    from twisted.internet import reactor
+    factory = PoetryClientFactory(d)
+    reactor.connectTCP(host, port, factory)
+    return d
+</code></pre>
+<p>这里的工厂使用一个deferred而不是callback/errback来初始化。一旦我们获取到poem或者没有连接到服务器，deferred就会以返回一首诗歌或一个failure的方式被激活。</p>
+<pre><code class="language-python">class PoetryClientFactory(ClientFactory):
+
+   protocol = PoetryProtocol
+
+   def __init__(self, deferred):
+       self.deferred = deferred
+
+   def poem_finished(self, poem):
+       if self.deferred is not None:
+           d, self.deferred = self.deferred, None
+           d.callback(poem)
+
+   def clientConnectionFailed(self, connector, reason):
+       if self.deferred is not None:
+           d, self.deferred = self.deferred, None
+           d.errback(reason)
+</code></pre>
+<p>注意我们在deferred被激活后是如何销毁其引用的。这种方式普便存在于Twisted的源代码中，这样做可以保证我们不会激活一个deferred两次。这也为Python的垃圾回收带来了方便。</p>
+<p>这里仍然不用去改变poetryProtocol。我们只需要更新poetry_main函数即可：</p>
+<pre><code class="language-python">def poetry_main():
+    addresses = parse_args()
+ 
+    from twisted.internet import reactor
+ 
+    poems = []
+    errors = []
+ 
+    def got_poem(poem):
+        poems.append(poem)
+ 
+    def poem_failed(err):
+        print &gt;&gt;sys.stderr, 'Poem failed:', err
+        errors.append(err)
+ 
+    def poem_done(_):
+        if len(poems) + len(errors) == len(addresses):
+            reactor.stop()
+ 
+    for address in addresses:
+        host, port = address
+        d = get_poetry(host, port)
+        d.addCallbacks(got_poem, poem_failed)
+        d.addBoth(poem_done)
+ 
+    reactor.run()
+ 
+    for poem in poems:
+        print poem
+</code></pre>
+<p>注意看我们是如何利用deferred的回调链特性，从先前的callback与errback回调中，重构出poem_done调用的。</p>
+<p>由于deferred在Twisted大量被使用，使用小写字母d来表示当前正在工作中的deferred已经成为惯例。</p>
+<h3 id="讨论">讨论</h3>
+<p>新版本的客户端与我们前面的同步版本的客户端一样，get_poetry得到的参数都是诗歌下载服务器的地址。同步版本返回的是诗歌内容，而异步版本返回的却是一个deferred。返回一个deferred是Twisted的APIs或用Twisted写的程序常见的，这样一来我们可以这样来理解deferred：</p>
+<blockquote>
+<p><strong>一个Deferred代表了一个"异步的结果"或者"结果还没有到来"</strong></p>
+</blockquote>
+<p>在图13中可以更加清晰地表达出两者之间的不同：</p>
+<div style="text-align: center">
+<a href="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p08_sync-async.png" data-uk-lightbox><img src="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p08_sync-async.png" title="同步 VS 异步" alt="同步 VS 异步"></a>
+</div>
+<div style="text-align: center">
+图13 同步 VS 异步
+</div>
+<p>异步函数返回一个deferred，对用户意味着：</p>
+<blockquote>
+<p><strong>我是一个异步函数，不管你想要什么，可能现在马上得不到，但当结果来到时，我会激活这个deferred的callback链并返回结果；或者当出错时，相应地激活errback链并返回出错信息。</strong></p>
+</blockquote>
+<p>当然，这个函数是不能随意激活这个deferred的，因为它已经返回了。但这个函数已经启动了一系列事件，这些事件最终将会激活这个deferred。</p>
+<p>因此，deferred是为适应异步模式的一种延迟函数返回的方式。函数返回一个deferred意味着其是异步的，代表着将来的结果，也是对将来能够返回结果的一种承诺。</p>
+<blockquote>
+<p><strong>同步函数也能返回一个deferred，因此严格来说，返回deferred只能说可能是异步的。我们会在将来的例子中会看到同步函数返回deferred。</strong></p>
+</blockquote>
+<p>由于deferred的行为已经很好的定义与理解，因此在实现自己的API时返回一个deferred更容易让其它的Twisted程序理解你的代码。如果没有deferred，可能每个人写的模块都使用不同的方式来处理回调，如果这样就增加了相互理解的工作量。</p>
+<blockquote>
+<p><strong>当你使用Deferred时，你仍然在使用回调，它们仍然由reactor来调用。</strong></p>
+</blockquote>
+<p>当首次学习Twisted时，经常犯的一个错误就是：会给deferred增加一些它本身不能实现的功能。尤其是：经常假设在deferred上添加一个函数就可以使其变成异步函数。这可能会让你产生这样的想法：在Twisted 中可以通过将os.system的函数添加到deferred的回调链中。</p>
+<p>我认为，这可能是没有弄清楚异步编程的原因才产生这样的想法。由于Twisted代码使用了大量的deferred但却很少会涉及到reactor，可能会认为deferred做了大部分工作。如果你是从开始阅读这个系列的，你就会知道事情远不是这样。虽然Twisted是由众多部分组合在一起来工作的，但实现异步的主要工作都是由reactor来完成的。Deferred是一个很好的抽象概念，但前面几个例子中的客户端我们却没有使用它，而reactor却都用到了。</p>
+<p>来看看我们第一个回调激活时的跟踪栈信息。运行<a href="http://github.com/jdavisp3/twisted-intro/blob/master/twisted-client-4/get-poetry-stack.py">twisted-client-4/get-poetry-stack.py</a>让其连接你打开的服务器：</p>
+<pre><code>  File "twisted-client-4/get-poetry-stack.py", line 129, in
+    poetry_main()
+  File "twisted-client-4/get-poetry-stack.py", line 122, in poetry_main
+    reactor.run()
+
+  ... # some more Twisted function calls
+
+    protocol.connectionLost(reason)
+  File "twisted-client-4/get-poetry-stack.py", line 59, in connectionLost
+    self.poemReceived(self.poem)
+  File "twisted-client-4/get-poetry-stack.py", line 62, in poemReceived
+    self.factory.poem_finished(poem)
+  File "twisted-client-4/get-poetry-stack.py", line 75, in poem_finished
+    d.callback(poem) # here's where we fire the deferred
+
+  ... # some more methods on Deferreds
+
+  File "twisted-client-4/get-poetry-stack.py", line 105, in got_poem
+    traceback.print_stack()
+</code></pre>
+<p>这很像版本2.0的跟踪栈，图14可以很好地说明具体的调用关系：</p>
+<div style="text-align: center">
+<a href="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p08_reactor-deferred-callback.png" data-uk-lightbox><img src="https://img.cntofu.com/book/twisted-intro-cn/zh/_static/p08_reactor-deferred-callback.png" title="deferred的回调" alt="deferred的回调"></a>
+</div>
+<div style="text-align: center">
+图14 deferred的回调
+</div>
+<p>这很类似于我们前面的Twisted客户端，虽然这张图的调用关系并不清晰而会让你摸不着头脑。但我们先不深入分析这张图。有一个细节并没有在这张图上反映出来：callback链直到第二个回调poem_done激活前才将控制权还给reactor。</p>
+<p>通过使用deferred，我们在由Twisted中的reactor启动的回调中加入了一些自己的东西，但我们并没有改变异步程序的基础架构。回忆下回调编程的特点：</p>
+<ol>
+<li>在一个时刻，只会有一个回调在运行</li>
+<li>当reactor运行时，那我们自己的代码则得不到运行</li>
+<li>反之亦然</li>
+<li>如果我们的回调函数发生阻塞，那么整个程序就跟着阻塞掉了</li>
+</ol>
+<p>在一个 deferred上追加一个回调并不会改变上面这些实事。尤其是，第4 条。因此当一个deferred激活时被阻塞，那么整个Twisted就会陷入阻塞中。因此我们会得到如下结论：</p>
+<blockquote>
+<p><strong>Deferred只是解决回调函数管理问题的一种解决方案，它并不替代回调方式，也不能将阻塞式的回调变成非阻塞式回调的。</strong></p>
+</blockquote>
+<p>我通过构建一个添加阻塞式回调的deferred来验证最后一点。验证代码文件为<a href="http://github.com/jdavisp3/twisted-intro/blob/master/twisted-deferred/defer-block.py">twisted-deferred/defer-block.py</a>。第二个callback通过使用time.sleep来达到阻塞的效果。如果你运行该代码来观察打印信息顺序时，你会发现deferred中阻塞回调仍然会是阻塞的。</p>
+<h3 id="总结">总结</h3>
+<p>函数通过返回一个Deferred，向使用者暗示"我是采用异步方式的"并且当结果到来时会使用一种特殊的机制（在此处添加你的callback与errback）来获得返回结果。Defered被广泛地运用在Twisted的每个角落，当你浏览Twisted源码时你就会不停地遇到它。</p>
+<p>4.0版本客户端是第一个使用Deferred的Twisted版的客户端，其使用方法为在其异步函数中返回一个deferred。可以使用一些Twisted的APIs来使客户端的实现更加清晰些，但我觉得它能够很好地体现出一个简单的Twisted程序是怎么写的了，至少对于客户端可以如此肯定。事实上，后面我们会重构我们的服务器端。</p>
+<p>但我们对Deferred的讲解还没有结束。使用如此少量的代码，Deferred就能提供如此之多的功能。我们将在第9部分探讨其更多的功能和功能背后的动机。</p>
+<h3 id="参考">参考</h3>
+<p>本部分原作参见: dave @ <a href="http://krondo.com/?p=1778">http://krondo.com/?p=1778</a></p>
+<p>本部分翻译内容参见杨晓伟的博客 <a href="http://blog.sina.com.cn/s/blog_704b6af70100q6oi.html">http://blog.sina.com.cn/s/blog_704b6af70100q6oi.html</a></p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/179/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/179/index.html">30秒学会常用Python代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/99.html">kriadmin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2716个">2716</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/165/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/165/index.html">Python学习知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/94.html">coco369</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">85页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 190个">190</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/21/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/120/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/127/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/127/index.html">aiohttp 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/68.html">HuberTRoy</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">124页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 34个">34</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/11/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gradle_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/11/index.html">Gradle实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/7.html">EZLippi</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gradle">gradle</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">37页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 299个">299</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/97/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p01.html" title="Twisted 理论基础" data-book-page-rel-url="zh/p01.html" data-book-page-id="9734">Twisted 理论基础</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p02.html" title="异步编程模式与Reactor初探" data-book-page-rel-url="zh/p02.html" data-book-page-id="9735">异步编程模式与Reactor初探</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p03.html" title="初识Twisted" data-book-page-rel-url="zh/p03.html" data-book-page-id="9736">初识Twisted</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p04.html" title="由twisted支持的客户端" data-book-page-rel-url="zh/p04.html" data-book-page-id="9737">由twisted支持的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p05.html" title="由Twisted扶持的客户端" data-book-page-rel-url="zh/p05.html" data-book-page-id="9738">由Twisted扶持的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p06.html" title="更加"抽象"的运用Twisted" data-book-page-rel-url="zh/p06.html" data-book-page-id="9739">更加"抽象"的运用Twisted</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p07.html" title="小插曲，Deferred" data-book-page-rel-url="zh/p07.html" data-book-page-id="9740">小插曲，Deferred</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p08.html" title="使用Deferred的诗歌下载客户端" data-book-page-rel-url="zh/p08.html" data-book-page-id="9741">使用Deferred的诗歌下载客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p09.html" title="第二个小插曲，deferred" data-book-page-rel-url="zh/p09.html" data-book-page-id="9742">第二个小插曲，deferred</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p10.html" title="增强defer功能的客户端" data-book-page-rel-url="zh/p10.html" data-book-page-id="9743">增强defer功能的客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p11.html" title="改进诗歌下载服务器" data-book-page-rel-url="zh/p11.html" data-book-page-id="9744">改进诗歌下载服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p12.html" title="改进诗歌下载服务器" data-book-page-rel-url="zh/p12.html" data-book-page-id="9745">改进诗歌下载服务器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p13.html" title="使用Deferred新功能实现新客户端" data-book-page-rel-url="zh/p13.html" data-book-page-id="9746">使用Deferred新功能实现新客户端</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p14.html" title="Deferred用于同步环境" data-book-page-rel-url="zh/p14.html" data-book-page-id="9747">Deferred用于同步环境</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p15.html" title="测试诗歌" data-book-page-rel-url="zh/p15.html" data-book-page-id="9748">测试诗歌</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p16.html" title="Twisted 进程守护" data-book-page-rel-url="zh/p16.html" data-book-page-id="9749">Twisted 进程守护</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p17.html" title="构造"回调"的另一种方法" data-book-page-rel-url="zh/p17.html" data-book-page-id="9750">构造"回调"的另一种方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p18.html" title="Deferreds 全貌" data-book-page-rel-url="zh/p18.html" data-book-page-id="9751">Deferreds 全貌</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p19.html" title="取消之前的意图" data-book-page-rel-url="zh/p19.html" data-book-page-id="9752">取消之前的意图</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p20.html" title="轮子内的轮子: Twisted和Erlang" data-book-page-rel-url="zh/p20.html" data-book-page-id="9753">轮子内的轮子: Twisted和Erlang</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p21.html" title="惰性不是迟缓: Twisted和Haskell" data-book-page-rel-url="zh/p21.html" data-book-page-id="9754">惰性不是迟缓: Twisted和Haskell</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/97/zh/p22.html" title="结束" data-book-page-rel-url="zh/p22.html" data-book-page-id="9755">结束</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =97;var bookPageId =9741;var bookPageRelUrl ='zh/p08.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,1120 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Gcc 编译的背后-C 语言编程透视</title>
+<meta content='Gcc 编译的背后,C 语言编程透视' name='keywords'>
+<meta content='Gcc 编译的背后,C 语言编程透视' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/43/zh/chapters/02-chapter1.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">把 Vim 打造成源代..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/43/zh/chapters/02-chapter3.markdown">
+<span class="">程序执行的一刹那</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/43/index.html">C 语言编程透视</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-c-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="gcc-编译的背后">Gcc 编译的背后</h1>
+<ul>
+<li><a href="#toc_27212_14734_1">前言</a></li>
+<li><a href="#toc_27212_14734_2">预处理</a></li>
+<li><a href="#toc_27212_14734_3">简述</a></li>
+<li><a href="#toc_27212_14734_4">打印出预处理之后的结果</a></li>
+<li><a href="#toc_27212_14734_5">在命令行定义宏</a></li>
+<li><a href="#toc_27212_14734_6">编译（翻译）</a></li>
+<li><a href="#toc_27212_14734_7">简述</a></li>
+<li><a href="#toc_27212_14734_8">语法检查</a></li>
+<li><a href="#toc_27212_14734_9">编译器优化</a></li>
+<li><a href="#toc_27212_14734_10">生成汇编语言文件</a></li>
+<li><a href="#toc_27212_14734_11">汇编</a></li>
+<li><a href="#toc_27212_14734_12">简述</a></li>
+<li><a href="#toc_27212_14734_13">生成目标代码</a></li>
+<li><a href="#toc_27212_14734_14">ELF 文件初次接触</a></li>
+<li><a href="#toc_27212_14734_15">ELF 文件的结构</a></li>
+<li><a href="#toc_27212_14734_16">三种不同类型 ELF 文件比较</a></li>
+<li><a href="#toc_27212_14734_17">ELF 主体：节区</a></li>
+<li><a href="#toc_27212_14734_18">汇编语言文件中的节区表述</a></li>
+<li><a href="#toc_27212_14734_19">链接</a></li>
+<li><a href="#toc_27212_14734_20">简述</a></li>
+<li><a href="#toc_27212_14734_21">可执行文件的段：节区重排</a></li>
+<li><a href="#toc_27212_14734_22">链接背后的故事</a></li>
+<li><a href="#toc_27212_14734_23">用 ld 完成链接过程</a></li>
+<li><a href="#toc_27212_14734_24">C++ 构造与析构：crtbegin.o 和 crtend.o</a></li>
+<li><a href="#toc_27212_14734_25">初始化与退出清理：crti.o 和 crtn.o</a></li>
+<li><a href="#toc_27212_14734_26">C 语言程序真正的入口</a></li>
+<li><a href="#toc_27212_14734_27">链接脚本初次接触</a></li>
+<li><a href="#toc_27212_14734_28">参考资料</a></li>
+</ul>
+<p><span id="toc_27212_14734_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>平时在 Linux 下写代码，直接用 <code>gcc -o out in.c</code> 就把代码编译好了，但是这背后到底做了什么呢？</p>
+<p>如果学习过《<a href="https://en.wikipedia.org/wiki/Compilers:_Principles,_Techniques,_and_Tools">编译原理</a>》则不难理解，一般高级语言程序编译的过程莫过于：预处理、编译、汇编、链接。</p>
+<p><code>gcc</code> 在后台实际上也经历了这几个过程，可以通过 <code>-v</code> 参数查看它的编译细节，如果想看某个具体的编译过程，则可以分别使用 <code>-E</code>，<code>-S</code>，<code>-c</code> 和 <code>-O</code>，对应的后台工具则分别为 <code>cpp</code>，<code>cc1</code>，<code>as</code>，<code>ld</code>。</p>
+<p>下面将逐步分析这几个过程以及相关的内容，诸如语法检查、代码调试、汇编语言等。</p>
+<p><span id="toc_27212_14734_2"></span></p>
+<h2 id="预处理">预处理</h2>
+<p><span id="toc_27212_14734_3"></span></p>
+<h3 id="简述">简述</h3>
+<p>预处理是 C 语言程序从源代码变成可执行程序的第一步，主要是 C 语言编译器对各种预处理命令进行处理，包括头文件的包含、宏定义的扩展、条件编译的选择等。</p>
+<p>以前没怎么“深入”预处理，脑子对这些东西总是很模糊，只记得在编译的基本过程（词法分析、语法分析）之前还需要对源代码中的宏定义、文件包含、条件编译等命令进行处理。这三类的指令很常见，主要有 <code>#define</code>，<code>#include</code>和 <code>#ifdef ... #endif</code>，要特别地注意它们的用法。</p>
+<p><code>#define</code> 除了可以独立使用以便灵活设置一些参数外，还常常和 <code>#ifdef ... #endif</code> 结合使用，以便灵活地控制代码块的编译与否，也可以用来避免同一个头文件的多次包含。关于 <code>#include</code> 貌似比较简单，通过 <code>man</code> 找到某个函数的头文件，复制进去，加上 <code>&lt;&gt;</code> 就好。这里虽然只关心一些技巧，不过预处理还是隐藏着很多潜在的陷阱（可参考《<a href="https://en.wikipedia.org/wiki/C_Traps_and_Pitfalls">C Traps &amp; Pitfalls</a>》）也是需要注意的。下面仅介绍和预处理相关的几个简单内容。</p>
+<p><span id="toc_27212_14734_4"></span></p>
+<h3 id="打印出预处理之后的结果">打印出预处理之后的结果</h3>
+<pre><code>$ gcc -E hello.c
+</code></pre>
+<p>这样就可以看到源代码中的各种预处理命令是如何被解释的，从而方便理解和查错。</p>
+<p>实际上 <code>gcc</code> 在这里调用了 <code>cpp</code>（虽然通过 <code>gcc -v</code> 仅看到 <code>cc1</code>)，<code>cpp</code> 即 The C Preprocessor，主要用来预处理宏定义、文件包含、条件编译等。下面介绍它的一个比较重要的选项 <code>-D</code>。</p>
+<p><span id="toc_27212_14734_5"></span></p>
+<h3 id="在命令行定义宏">在命令行定义宏</h3>
+<pre><code>$ gcc -Dmacro hello.c
+</code></pre>
+<p>这个等同于在文件的开头定义宏，即 <code>#define macro</code>，但是在命令行定义更灵活。例如，在源代码中有这些语句。</p>
+<pre><code>#ifdef DEBUG
+printf("this code is for debugging\n");
+#endif
+</code></pre>
+<p>如果编译时加上 <code>-DDEBUG</code> 选项，那么编译器就会把 <code>printf</code> 所在的行编译进目标代码，从而方便地跟踪该位置的某些程序状态。这样 <code>-DDEBUG</code> 就可以当作一个调试开关，编译时加上它就可以用来打印调试信息，发布时则可以通过去掉该编译选项把调试信息去掉。</p>
+<p><span id="toc_27212_14734_6"></span></p>
+<h2 id="编译翻译">编译（翻译）</h2>
+<p><span id="toc_27212_14734_7"></span></p>
+<h3 id="简述-1">简述</h3>
+<p>编译之前，C 语言编译器会进行词法分析、语法分析，接着会把源代码翻译成中间语言，即汇编语言。如果想看到这个中间结果，可以用 <code>gcc -S</code>。需要提到的是，诸如 Shell 等解释语言也会经历一个词法分析和语法分析的阶段，不过之后并不会进行“翻译”，而是“解释”，边解释边执行。</p>
+<p>把源代码翻译成汇编语言，实际上是编译的整个过程中的第一个阶段，之后的阶段和汇编语言的开发过程没有什么区别。这个阶段涉及到对源代码的词法分析、语法检查（通过 <code>-std</code> 指定遵循哪个标准），并根据优化（<code>-O</code>）要求进行翻译成汇编语言的动作。</p>
+<p><span id="toc_27212_14734_8"></span></p>
+<h3 id="语法检查">语法检查</h3>
+<p>如果仅仅希望进行语法检查，可以用 <code>gcc</code> 的 <code>-fsyntax-only</code> 选项；如果为了使代码有比较好的可移植性，避免使用 <code>gcc</code> 的一些扩展特性，可以结合 <code>-std</code> 和 <code>-pedantic</code>（或者 <code>-pedantic-erros</code> ）选项让源代码遵循某个 C 语言标准的语法。这里演示一个简单的例子：</p>
+<pre><code>$ cat hello.c
+#include &lt;stdio.h&gt;
+int main()
+{
+	printf("hello, world\n")
+	return 0;
+}
+$ gcc -fsyntax-only hello.c
+hello.c: In function ‘main’:
+hello.c:5: error: expected ‘;’ before ‘return’
+$ vim hello.c
+$ cat hello.c
+#include &lt;stdio.h&gt;
+int main()
+{
+        printf("hello, world\n");
+        int i;
+        return 0;
+}
+$ gcc -std=c89 -pedantic-errors hello.c    #默认情况下，gcc是允许在程序中间声明变量的，但是turboc就不支持
+hello.c: In function ‘main’:
+hello.c:5: error: ISO C90 forbids mixed declarations and code
+</code></pre>
+<p>语法错误是程序开发过程中难以避免的错误（人的大脑在很多情况下都容易开小差），不过编译器往往能够通过语法检查快速发现这些错误，并准确地告知语法错误的大概位置。因此，作为开发人员，要做的事情不是“恐慌”（不知所措），而是认真阅读编译器的提示，根据平时积累的经验（最好总结一份常见语法错误索引，很多资料都提供了常见语法错误列表，如《<a href="https://en.wikipedia.org/wiki/C_Traps_and_Pitfalls">C Traps &amp; Pitfalls</a>》和编辑器提供的语法检查功能（语法加亮、括号匹配提示等）快速定位语法出错的位置并进行修改。</p>
+<p><span id="toc_27212_14734_9"></span></p>
+<h3 id="编译器优化">编译器优化</h3>
+<p>语法检查之后就是翻译动作，<code>gcc</code> 提供了一个优化选项 <code>-O</code>，以便根据不同的运行平台和用户要求产生经过优化的汇编代码。例如，</p>
+<pre><code>$ gcc -o hello hello.c         # 采用默认选项，不优化
+$ gcc -O2 -o hello2 hello.c    # 优化等次是2
+$ gcc -Os -o hellos hello.c    # 优化目标代码的大小
+$ ls -S hello hello2 hellos    # 可以看到，hellos 比较小, hello2 比较大
+hello2  hello  hellos
+$ time ./hello
+hello, world
+
+real    0m0.001s
+user    0m0.000s
+sys     0m0.000s
+$ time ./hello2     # 可能是代码比较少的缘故，执行效率看上去不是很明显
+hello, world
+
+real    0m0.001s
+user    0m0.000s
+sys     0m0.000s
+
+$ time ./hellos     # 虽然目标代码小了，但是执行效率慢了些
+hello, world
+
+real    0m0.002s
+user    0m0.000s
+sys     0m0.000s
+</code></pre>
+<p>根据上面的简单演示，可以看出 <code>gcc</code> 有很多不同的优化选项，主要看用户的需求了，目标代码的大小和效率之间貌似存在一个“纠缠”，需要开发人员自己权衡。</p>
+<p><span id="toc_27212_14734_10"></span></p>
+<h3 id="生成汇编语言文件">生成汇编语言文件</h3>
+<p>下面通过 <code>-S</code> 选项来看看编译出来的中间结果：汇编语言，还是以之前那个 <code>hello.c</code> 为例。</p>
+<pre><code>$ gcc -S hello.c  # 默认输出是hello.s，可自己指定，输出到屏幕`-o -`，输出到其他文件`-o file`
+$ cat hello.s
+cat hello.s
+        .file   "hello.c"
+        .section        .rodata
+.LC0:
+        .string "hello, world"
+        .text
+.globl main
+        .type   main, @function
+main:
+        leal    4(%esp), %ecx
+        andl    $-16, %esp
+        pushl   -4(%ecx)
+        pushl   %ebp
+        movl    %esp, %ebp
+        pushl   %ecx
+        subl    $4, %esp
+        movl    $.LC0, (%esp)
+        call    puts
+        movl    $0, %eax
+        addl    $4, %esp
+        popl    %ecx
+        popl    %ebp
+        leal    -4(%ecx), %esp
+        ret
+        .size   main, .-main
+        .ident  "GCC: (GNU) 4.1.3 20070929 (prerelease) (Ubuntu 4.1.2-16ubuntu2)"
+        .section        .note.GNU-stack,"",@progbits
+</code></pre>
+<p>不知道看出来没？和课堂里学的 intel 的汇编语法不太一样，这里用的是 <code>AT&amp;T</code> 语法格式。如果想学习 Linux 下的汇编语言开发，下一节开始的所有章节基本上覆盖了 Linux 下汇编语言开发的一般过程，不过这里不介绍汇编语言语法。</p>
+<p>在学习后面的章节之前，建议自学旧金山大学的<a href="http://www.cs.usfca.edu/~cruse/cs630f06/">微机编程课程 CS 630</a>，该课深入介绍了 Linux/X86 平台下的 <code>AT&amp;T</code> 汇编语言开发。如果想在 <code>Qemu</code> 上做这个课程里的实验，可以阅读本文作者写的 <a href="http://www.tinylab.org/cs630-qemu/">CS630: Linux 下通过 Qemu 学习 X86 AT&amp;T 汇编语言</a>。</p>
+<p>需要补充的是，在写 C 语言代码时，如果能够对编译器比较熟悉（工作原理和一些细节）的话，可能会很有帮助。包括这里的优化选项（有些优化选项可能在汇编时采用）和可能的优化措施，例如字节对齐、条件分支语句裁减（删除一些明显分支）等。</p>
+<p><span id="toc_27212_14734_11"></span></p>
+<h2 id="汇编">汇编</h2>
+<p><span id="toc_27212_14734_12"></span></p>
+<h3 id="简述-2">简述</h3>
+<p>汇编实际上还是翻译过程，只不过把作为中间结果的汇编代码翻译成了机器代码，即目标代码，不过它还不可以运行。如果要产生这一中间结果，可用 <code>gcc -c</code>，当然，也可通过 <code>as</code> 命令处理汇编语言源文件来产生。</p>
+<p>汇编是把汇编语言翻译成目标代码的过程，如果有在 Windows 下学习过汇编语言开发，大家应该比较熟悉 <code>nasm</code> 汇编工具(支持 Intel 格式的汇编语言)，不过这里主要用 <code>as</code> 汇编工具来汇编 <code>AT&amp;T</code> 格式的汇编语言，因为 <code>gcc</code> 产生的中间代码就是 <code>AT&amp;T</code> 格式的。</p>
+<p><span id="toc_27212_14734_13"></span></p>
+<h3 id="生成目标代码">生成目标代码</h3>
+<p>下面来演示分别通过 <code>gcc -c</code> 选项和 <code>as</code> 来产生目标代码。</p>
+<pre><code>$ file hello.s
+hello.s: ASCII assembler program text
+$ gcc -c hello.s   #用gcc把汇编语言编译成目标代码
+$ file hello.o     #file命令用来查看文件类型，目标代码可重定位的(relocatable)，
+                   #需要通过ld进行进一步链接成可执行程序(executable)和共享库(shared)
+hello.o: ELF 32-bit LSB relocatable, Intel 80386, version 1 (SYSV), not stripped
+$ as -o hello.o hello.s        #用as把汇编语言编译成目标代码
+$ file hello.o
+hello.o: ELF 32-bit LSB relocatable, Intel 80386, version 1 (SYSV), not stripped
+</code></pre>
+<p><code>gcc</code> 和 <code>as</code> 默认产生的目标代码都是 ELF 格式的，因此这里主要讨论ELF格式的目标代码（如果有时间再回顾一下 <code>a.out</code> 和 <code>coff</code> 格式，当然也可以先了解一下，并结合 <code>objcopy</code> 来转换它们，比较异同)。</p>
+<p><span id="toc_27212_14734_14"></span></p>
+<h3 id="elf-文件初次接触">ELF 文件初次接触</h3>
+<p>目标代码不再是普通的文本格式，无法直接通过文本编辑器浏览，需要一些专门的工具。如果想了解更多目标代码的细节，区分 <code>relocatable</code>（可重定位）、<code>executable</code>（可执行）、<code>shared libarary</code>（共享库）的不同，我们得设法了解目标代码的组织方式和相关的阅读和分析工具。下面主要介绍这部分内容。</p>
+<blockquote>
+<p>BFD is a package which allows applications to use the same routines to operate on object files whatever the object file format. A new object file format can be supported simply by creating a new BFD back end and adding it to the library.</p>
+</blockquote>
+<p>binutils（GNU Binary Utilities）的很多工具都采用这个库来操作目标文件，这类工具有 <code>objdump</code>，<code>objcopy</code>，<code>nm</code>，<code>strip</code> 等（当然，我们也可以利用它。如果深入了解ELF格式，那么通过它来分析和编写 Virus 程序将会更加方便），不过另外一款非常优秀的分析工具 <code>readelf</code> 并不是基于这个库，所以也应该可以直接用 <code>elf.h</code> 头文件中定义的相关结构来操作 ELF 文件。</p>
+<p>下面将通过这些辅助工具（主要是 <code>readelf</code> 和 <code>objdump</code>），结合 ELF 手册来分析它们。将依次介绍 ELF 文件的结构和三种不同类型 ELF 文件的区别。</p>
+<p><span id="toc_27212_14734_15"></span></p>
+<h3 id="elf-文件的结构">ELF 文件的结构</h3>
+<pre><code>ELF Header(ELF文件头)
+Program Headers Table(程序头表，实际上叫段表好一些，用于描述可执行文件和可共享库)
+Section 1
+Section 2
+Section 3
+...
+Section Headers Table(节区头部表，用于链接可重定位文件成可执行文件或共享库)
+</code></pre>
+<p>对于可重定位文件，程序头是可选的，而对于可执行文件和共享库文件（动态链接库），节区表则是可选的。可以分别通过 <code>readelf</code> 文件的 <code>-h</code>，<code>-l</code> 和 <code>-S</code> 参数查看 ELF 文件头（ELF Header）、程序头部表（Program Headers Table，段表）和节区表（Section Headers Table）。</p>
+<p>文件头说明了文件的类型，大小，运行平台，节区数目等。</p>
+<p><span id="toc_27212_14734_16"></span></p>
+<h3 id="三种不同类型-elf-文件比较">三种不同类型 ELF 文件比较</h3>
+<p>先来通过文件头看看不同ELF的类型。为了说明问题，先来几段代码吧。</p>
+<pre><code>/* myprintf.c */
+#include &lt;stdio.h&gt;
+
+void myprintf(void)
+{
+	printf("hello, world!\n");
+}
+</code></pre>
+<pre><code>/* test.h -- myprintf function declaration */
+
+#ifndef _TEST_H_
+#define _TEST_H_
+
+void myprintf(void);
+
+#endif
+</code></pre>
+<pre><code>/* test.c */
+#include "test.h"
+
+int main()
+{
+	myprintf();
+	return 0;
+}
+</code></pre>
+<p>下面通过这几段代码来演示通过 <code>readelf -h</code> 参数查看 ELF 的不同类型。期间将演示如何创建动态链接库（即可共享文件）、静态链接库，并比较它们的异同。</p>
+<p>编译产生两个目标文件 <code>myprintf.o</code> 和 <code>test.o</code>，它们都是可重定位文件（REL）：</p>
+<pre><code>$ gcc -c myprintf.c test.c
+$ readelf -h test.o | grep Type
+  Type:                              REL (Relocatable file)
+$ readelf -h myprintf.o | grep Type
+  Type:                              REL (Relocatable file)
+</code></pre>
+<p>根据目标代码链接产生可执行文件，这里的文件类型是可执行的(EXEC)：</p>
+<pre><code>$ gcc -o test myprintf.o test.o
+$ readelf -h test | grep Type
+  Type:                              EXEC (Executable file)
+</code></pre>
+<p>用 <code>ar</code> 命令创建一个静态链接库，静态链接库也是可重定位文件（REL）：</p>
+<pre><code>$ ar rcsv libmyprintf.a myprintf.o
+$ readelf -h libmyprintf.a | grep Type
+  Type:                              REL (Relocatable file)
+</code></pre>
+<p>可见，静态链接库和可重定位文件类型一样，它们之间唯一不同是前者可以是多个可重定位文件的“集合”。</p>
+<p>静态链接库可直接链接（只需库名，不要前面的 <code>lib</code>），也可用 <code>-l</code> 参数，<code>-L</code> 指定库搜索路径。</p>
+<pre><code>$ gcc -o test test.o -lmyprintf -L./
+</code></pre>
+<p>编译产生动态链接库，并支持 <code>major</code> 和 <code>minor</code> 版本号，动态链接库类型为 <code>DYN</code>：</p>
+<pre><code>$ gcc -Wall myprintf.o -shared -Wl,-soname,libmyprintf.so.0 -o libmyprintf.so.0.0
+$ ln -sf libmyprintf.so.0.0 libmyprintf.so.0
+$ ln -sf libmyprintf.so.0 libmyprintf.so
+$ readelf -h libmyprintf.so | grep Type
+  Type:                              DYN (Shared object file)
+</code></pre>
+<p>动态链接库编译时和静态链接库类似：</p>
+<pre><code>$ gcc -o test test.o -lmyprintf -L./
+</code></pre>
+<p>但是执行时需要指定动态链接库的搜索路径，把 <code>LD_LIBRARY_PATH</code> 设为当前目录，指定 <code>test</code> 运行时的动态链接库搜索路径：</p>
+<pre><code>$ LD_LIBRARY_PATH=./ ./test
+$ gcc -static -o test test.o -lmyprintf -L./
+</code></pre>
+<p>在不指定 <code>-static</code> 时会优先使用动态链接库，指定时则阻止使用动态链接库，这时会把所有静态链接库文件加入到可执行文件中，使得执行文件很大，而且加载到内存以后会浪费内存空间，因此不建议这么做。</p>
+<p>经过上面的演示基本可以看出它们之间的不同：</p>
+<ul>
+<li>可重定位文件本身不可以运行，仅仅是作为可执行文件、静态链接库（也是可重定位文件）、动态链接库的 “组件”。</li>
+<li>静态链接库和动态链接库本身也不可以执行，作为可执行文件的“组件”，它们两者也不同，前者也是可重定位文件（只不过可能是多个可重定位文件的集合），并且在链接时加入到可执行文件中去。</li>
+<li>而动态链接库在链接时，库文件本身并没有添加到可执行文件中，只是在可执行文件中加入了该库的名字等信息，以便在可执行文件运行过程中引用库中的函数时由动态链接器去查找相关函数的地址，并调用它们。</li>
+</ul>
+<p>从这个意义上说，动态链接库本身也具有可重定位的特征，含有可重定位的信息。对于什么是重定位？如何进行静态符号和动态符号的重定位，我们将在链接部分和<a href="02-chapter4.markdown">《动态符号链接的细节》</a>一节介绍。</p>
+<p><span id="toc_27212_14734_17"></span></p>
+<h3 id="elf-主体节区">ELF 主体：节区</h3>
+<p>下面来看看 ELF 文件的主体内容：节区（Section)。</p>
+<p>ELF 文件具有很大的灵活性，它通过文件头组织整个文件的总体结构，通过节区表 (Section Headers Table）和程序头（Program Headers Table 或者叫段表）来分别描述可重定位文件和可执行文件。但不管是哪种类型，它们都需要它们的主体，即各种节区。</p>
+<p>在可重定位文件中，节区表描述的就是各种节区本身；而在可执行文件中，程序头描述的是由各个节区组成的段（Segment），以便程序运行时动态装载器知道如何对它们进行内存映像，从而方便程序加载和运行。</p>
+<p>下面先来看看一些常见的节区，而关于这些节区（Section）如何通过重定位构成不同的段（Segments），以及有哪些常规的段，我们将在链接部分进一步介绍。</p>
+<p>可以通过 <code>readelf -S</code> 查看 ELF 的节区。（建议一边操作一边看文档，以便加深对 ELF 文件结构的理解）先来看看可重定位文件的节区信息，通过节区表来查看：</p>
+<p>默认编译好 <code>myprintf.c</code>，将产生一个可重定位的文件 <code>myprintf.o</code>，这里通过 <code>myprintf.o</code> 的节区表查看节区信息。</p>
+<pre><code>$ gcc -c myprintf.c
+$ readelf -S myprintf.o
+There are 11 section headers, starting at offset 0xc0:
+
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        00000000 000034 000018 00  AX  0   0  4
+  [ 2] .rel.text         REL             00000000 000334 000010 08      9   1  4
+  [ 3] .data             PROGBITS        00000000 00004c 000000 00  WA  0   0  4
+  [ 4] .bss              NOBITS          00000000 00004c 000000 00  WA  0   0  4
+  [ 5] .rodata           PROGBITS        00000000 00004c 00000e 00   A  0   0  1
+  [ 6] .comment          PROGBITS        00000000 00005a 000012 00      0   0  1
+  [ 7] .note.GNU-stack   PROGBITS        00000000 00006c 000000 00      0   0  1
+  [ 8] .shstrtab         STRTAB          00000000 00006c 000051 00      0   0  1
+  [ 9] .symtab           SYMTAB          00000000 000278 0000a0 10     10   8  4
+  [10] .strtab           STRTAB          00000000 000318 00001a 00      0   0  1
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings)
+  I (info), L (link order), G (group), x (unknown)
+  O (extra OS processing required) o (OS specific), p (processor specific)
+</code></pre>
+<p>用 <code>objdump -d</code> 可看反编译结果，用 <code>-j</code> 选项可指定需要查看的节区：</p>
+<pre><code>$ objdump -d -j .text   myprintf.o
+myprintf.o:     file format elf32-i386
+
+Disassembly of section .text:
+
+00000000 &lt;myprintf&gt;:
+   0:   55                      push   %ebp
+   1:   89 e5                   mov    %esp,%ebp
+   3:   83 ec 08                sub    $0x8,%esp
+   6:   83 ec 0c                sub    $0xc,%esp
+   9:   68 00 00 00 00          push   $0x0
+   e:   e8 fc ff ff ff          call   f &lt;myprintf+0xf&gt;
+  13:   83 c4 10                add    $0x10,%esp
+  16:   c9                      leave
+  17:   c3                      ret
+</code></pre>
+<p>用 <code>-r</code> 选项可以看到有关重定位的信息，这里有两部分需要重定位：</p>
+<pre><code>$ readelf -r myprintf.o
+
+Relocation section '.rel.text' at offset 0x334 contains 2 entries:
+ Offset     Info    Type            Sym.Value  Sym. Name
+0000000a  00000501 R_386_32          00000000   .rodata
+0000000f  00000902 R_386_PC32        00000000   puts
+</code></pre>
+<p><code>.rodata</code> 节区包含只读数据，即我们要打印的 <code>hello, world!</code></p>
+<pre><code>$ readelf -x .rodata myprintf.o
+
+Hex dump of section '.rodata':
+  0x00000000 68656c6c 6f2c2077 6f726c64 2100     hello, world!.
+</code></pre>
+<p>没有找到 <code>.data</code> 节区, 它应该包含一些初始化的数据：</p>
+<pre><code>$ readelf -x .data myprintf.o
+
+Section '.data' has no data to dump.
+</code></pre>
+<p>也没有 <code>.bss</code> 节区，它应该包含一些未初始化的数据，程序默认初始为 0：</p>
+<pre><code>$ readelf -x .bss       myprintf.o
+
+Section '.bss' has no data to dump.
+</code></pre>
+<p><code>.comment</code> 是一些注释，可以看到是是 <code>Gcc</code> 的版本信息</p>
+<pre><code>$ readelf -x .comment myprintf.o
+
+Hex dump of section '.comment':
+  0x00000000 00474343 3a202847 4e552920 342e312e .GCC: (GNU) 4.1.
+  0x00000010 3200                                2.
+</code></pre>
+<p><code>.note.GNU-stack</code> 这个节区也没有内容：</p>
+<pre><code>$ readelf -x .note.GNU-stack myprintf.o
+
+Section '.note.GNU-stack' has no data to dump.
+</code></pre>
+<p><code>.shstrtab</code> 包括所有节区的名字：</p>
+<pre><code>$ readelf -x .shstrtab myprintf.o
+
+Hex dump of section '.shstrtab':
+  0x00000000 002e7379 6d746162 002e7374 72746162 ..symtab..strtab
+  0x00000010 002e7368 73747274 6162002e 72656c2e ..shstrtab..rel.
+  0x00000020 74657874 002e6461 7461002e 62737300 text..data..bss.
+  0x00000030 2e726f64 61746100 2e636f6d 6d656e74 .rodata..comment
+  0x00000040 002e6e6f 74652e47 4e552d73 7461636b ..note.GNU-stack
+  0x00000050 00                                  .
+</code></pre>
+<p>符号表 <code>.symtab</code> 包括所有用到的相关符号信息，如函数名、变量名，可用 <code>readelf</code> 查看：</p>
+<pre><code>$ readelf -symtab myprintf.o
+
+Symbol table '.symtab' contains 10 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND
+     1: 00000000     0 FILE    LOCAL  DEFAULT  ABS myprintf.c
+     2: 00000000     0 SECTION LOCAL  DEFAULT    1
+     3: 00000000     0 SECTION LOCAL  DEFAULT    3
+     4: 00000000     0 SECTION LOCAL  DEFAULT    4
+     5: 00000000     0 SECTION LOCAL  DEFAULT    5
+     6: 00000000     0 SECTION LOCAL  DEFAULT    7
+     7: 00000000     0 SECTION LOCAL  DEFAULT    6
+     8: 00000000    24 FUNC    GLOBAL DEFAULT    1 myprintf
+     9: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND puts
+</code></pre>
+<p>字符串表 <code>.strtab</code> 包含用到的字符串，包括文件名、函数名、变量名等：</p>
+<pre><code>$ readelf -x .strtab myprintf.o
+
+Hex dump of section '.strtab':
+  0x00000000 006d7970 72696e74 662e6300 6d797072 .myprintf.c.mypr
+  0x00000010 696e7466 00707574 7300              intf.puts.
+</code></pre>
+<p>从上表可以看出，对于可重定位文件，会包含这些基本节区 <code>.text</code>, <code>.rel.text</code>, <code>.data</code>, <code>.bss</code>, <code>.rodata</code>, <code>.comment</code>, <code>.note.GNU-stack</code>, <code>.shstrtab</code>, <code>.symtab</code> 和 <code>.strtab</code>。</p>
+<p><span id="toc_27212_14734_18"></span></p>
+<h3 id="汇编语言文件中的节区表述">汇编语言文件中的节区表述</h3>
+<p>为了进一步理解这些节区和源代码的关系，这里来看一看 <code>myprintf.c</code> 产生的汇编代码。</p>
+<pre><code>$ gcc -S myprintf.c
+$ cat myprintf.s
+        .file   "myprintf.c"
+        .section        .rodata
+.LC0:
+        .string "hello, world!"
+        .text
+.globl myprintf
+        .type   myprintf, @function
+myprintf:
+        pushl   %ebp
+        movl    %esp, %ebp
+        subl    $8, %esp
+        subl    $12, %esp
+        pushl   $.LC0
+        call    puts
+        addl    $16, %esp
+        leave
+        ret
+        .size   myprintf, .-myprintf
+        .ident  "GCC: (GNU) 4.1.2"
+        .section        .note.GNU-stack,"",@progbits
+</code></pre>
+<p>是不是可以从中看出可重定位文件中的那些节区和汇编语言代码之间的关系？在上面的可重定位文件，可以看到有一个可重定位的节区，即 <code>.rel.text</code>，它标记了两个需要重定位的项，<code>.rodata</code> 和 <code>puts</code>。这个节区将告诉编译器这两个信息在链接或者动态链接的过程中需要重定位， 具体如何重定位？将根据重定位项的类型，比如上面的 <code>R_386_32</code> 和 <code>R_386_PC32</code>。</p>
+<p>到这里，对可重定位文件应该有了一个基本的了解，下面将介绍什么是可重定位，可重定位文件到底是如何被链接生成可执行文件和动态链接库的，这个过程除了进行一些符号的重定位外，还进行了哪些工作呢？</p>
+<p><span id="toc_27212_14734_19"></span></p>
+<h2 id="链接">链接</h2>
+<p><span id="toc_27212_14734_20"></span></p>
+<h3 id="简述-3">简述</h3>
+<p>重定位是将符号引用与符号定义进行链接的过程。因此链接是处理可重定位文件，把它们的各种符号引用和符号定义转换为可执行文件中的合适信息（一般是虚拟内存地址）的过程。</p>
+<p>链接又分为静态链接和动态链接，前者是程序开发阶段程序员用 <code>ld</code>（<code>gcc</code> 实际上在后台调用了 <code>ld</code>）静态链接器手动链接的过程，而动态链接则是程序运行期间系统调用动态链接器（<code>ld-linux.so</code>）自动链接的过程。</p>
+<p>比如，如果链接到可执行文件中的是静态链接库 <code>libmyprintf.a</code>，那么 <code>.rodata</code> 节区在链接后需要被重定位到一个绝对的虚拟内存地址，以便程序运行时能够正确访问该节区中的字符串信息。而对于 <code>puts</code> 函数，因为它是动态链接库 <code>libc.so</code> 中定义的函数，所以会在程序运行时通过动态符号链接找出 <code>puts</code> 函数在内存中的地址，以便程序调用该函数。在这里主要讨论静态链接过程，动态链接过程见<a href="02-chapter4.markdown">《动态符号链接的细节》</a>。</p>
+<p>静态链接过程主要是把可重定位文件依次读入，分析各个文件的文件头，进而依次读入各个文件的节区，并计算各个节区的虚拟内存位置，对一些需要重定位的符号进行处理，设定它们的虚拟内存地址等，并最终产生一个可执行文件或者是动态链接库。这个链接过程是通过 <code>ld</code> 来完成的，<code>ld</code> 在链接时使用了一个链接脚本（<code>linker script</code>），该链接脚本处理链接的具体细节。</p>
+<p>由于静态符号链接过程非常复杂，特别是计算符号地址的过程，考虑到时间关系，相关细节请参考 ELF 手册。这里主要介绍可重定位文件中的节区（节区表描述的）和可执行文件中段（程序头描述的）的对应关系以及 <code>gcc</code> 编译时采用的一些默认链接选项。</p>
+<p><span id="toc_27212_14734_21"></span></p>
+<h3 id="可执行文件的段节区重排">可执行文件的段：节区重排</h3>
+<p>下面先来看看可执行文件的节区信息，通过程序头（段表）来查看，为了比较，先把 <code>test.o</code> 的节区表也列出：</p>
+<pre><code>$ readelf -S test.o
+There are 10 section headers, starting at offset 0xb4:
+
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        00000000 000034 000024 00  AX  0   0  4
+  [ 2] .rel.text         REL             00000000 0002ec 000008 08      8   1  4
+  [ 3] .data             PROGBITS        00000000 000058 000000 00  WA  0   0  4
+  [ 4] .bss              NOBITS          00000000 000058 000000 00  WA  0   0  4
+  [ 5] .comment          PROGBITS        00000000 000058 000012 00      0   0  1
+  [ 6] .note.GNU-stack   PROGBITS        00000000 00006a 000000 00      0   0  1
+  [ 7] .shstrtab         STRTAB          00000000 00006a 000049 00      0   0  1
+  [ 8] .symtab           SYMTAB          00000000 000244 000090 10      9   7  4
+  [ 9] .strtab           STRTAB          00000000 0002d4 000016 00      0   0  1
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings)
+  I (info), L (link order), G (group), x (unknown)
+  O (extra OS processing required) o (OS specific), p (processor specific)
+$ gcc -o test test.o myprintf.o
+$ readelf -l test
+
+Elf file type is EXEC (Executable file)
+Entry point 0x80482b0
+There are 7 program headers, starting at offset 52
+
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  PHDR           0x000034 0x08048034 0x08048034 0x000e0 0x000e0 R E 0x4
+  INTERP         0x000114 0x08048114 0x08048114 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+  LOAD           0x000000 0x08048000 0x08048000 0x0047c 0x0047c R E 0x1000
+  LOAD           0x00047c 0x0804947c 0x0804947c 0x00104 0x00108 RW  0x1000
+  DYNAMIC        0x000490 0x08049490 0x08049490 0x000c8 0x000c8 RW  0x4
+  NOTE           0x000128 0x08048128 0x08048128 0x00020 0x00020 R   0x4
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00
+   01     .interp
+   02     .interp .note.ABI-tag .hash .dynsym .dynstr .gnu.version .gnu.version_r
+          .rel.dyn .rel.plt .init .plt .text .fini .rodata .eh_frame
+   03     .ctors .dtors .jcr .dynamic .got .got.plt .data .bss
+   04     .dynamic
+   05     .note.ABI-tag
+   06
+</code></pre>
+<p>可发现，<code>test</code> 和 <code>test.o</code>，<code>myprintf.o</code> 相比，多了很多节区，如 <code>.interp</code> 和 <code>.init</code> 等。另外，上表也给出了可执行文件的如下几个段（Segment）：</p>
+<ul>
+<li><code>PHDR</code>: 给出了程序表自身的大小和位置，不能出现一次以上。</li>
+<li><code>INTERP</code>: 因为程序中调用了 <code>puts</code>（在动态链接库中定义），使用了动态链接库，因此需要动态装载器／链接器（<code>ld-linux.so</code>）</li>
+<li><code>LOAD</code>: 包括程序的指令，<code>.text</code> 等节区都映射在该段，只读（R）</li>
+<li><code>LOAD</code>: 包括程序的数据，<code>.data</code>,<code>.bss</code> 等节区都映射在该段，可读写（RW）</li>
+<li><code>DYNAMIC</code>: 动态链接相关的信息，比如包含有引用的动态链接库名字等信息</li>
+<li><code>NOTE</code>: 给出一些附加信息的位置和大小</li>
+<li><code>GNU_STACK</code>: 这里为空，应该是和GNU相关的一些信息</li>
+</ul>
+<p>这里的段可能包括之前的一个或者多个节区，也就是说经过链接之后原来的节区被重排了，并映射到了不同的段，这些段将告诉系统应该如何把它加载到内存中。</p>
+<p><span id="toc_27212_14734_22"></span></p>
+<h3 id="链接背后的故事">链接背后的故事</h3>
+<p>从上表中，通过比较可执行文件 <code>test</code> 中拥有的节区和可重定位文件（<code>test.o</code> 和 <code>myprintf.o</code>）中拥有的节区后发现，链接之后多了一些之前没有的节区，这些新的节区来自哪里？它们的作用是什么呢？先来通过 <code>gcc -v</code> 看看它的后台链接过程。</p>
+<p>把可重定位文件链接成可执行文件：</p>
+<pre><code>$ gcc -v -o test test.o myprintf.o
+Reading specs from /usr/lib/gcc/i486-slackware-linux/4.1.2/specs
+Target: i486-slackware-linux
+Configured with: ../gcc-4.1.2/configure --prefix=/usr --enable-shared
+--enable-languages=ada,c,c++,fortran,java,objc --enable-threads=posix
+--enable-__cxa_atexit --disable-checking --with-gnu-ld --verbose
+--with-arch=i486 --target=i486-slackware-linux --host=i486-slackware-linux
+Thread model: posix
+gcc version 4.1.2
+ /usr/libexec/gcc/i486-slackware-linux/4.1.2/collect2 --eh-frame-hdr -m
+elf_i386 -dynamic-linker /lib/ld-linux.so.2 -o test
+/usr/lib/gcc/i486-slackware-linux/4.1.2/../../../crt1.o
+/usr/lib/gcc/i486-slackware-linux/4.1.2/../../../crti.o
+/usr/lib/gcc/i486-slackware-linux/4.1.2/crtbegin.o
+-L/usr/lib/gcc/i486-slackware-linux/4.1.2
+-L/usr/lib/gcc/i486-slackware-linux/4.1.2
+-L/usr/lib/gcc/i486-slackware-linux/4.1.2/../../../../i486-slackware-linux/lib
+-L/usr/lib/gcc/i486-slackware-linux/4.1.2/../../.. test.o myprintf.o -lgcc
+--as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed
+/usr/lib/gcc/i486-slackware-linux/4.1.2/crtend.o
+/usr/lib/gcc/i486-slackware-linux/4.1.2/../../../crtn.o
+</code></pre>
+<p>从上述演示看出，<code>gcc</code> 在链接了我们自己的目标文件 <code>test.o</code> 和 <code>myprintf.o</code> 之外，还链接了 <code>crt1.o</code>，<code>crtbegin.o</code> 等额外的目标文件，难道那些新的节区就来自这些文件？</p>
+<p><span id="toc_27212_14734_23"></span></p>
+<h3 id="用-ld-完成链接过程">用 ld 完成链接过程</h3>
+<p>另外 <code>gcc</code> 在进行了相关配置（<code>./configure</code>）后，调用了 <code>collect2</code>，却并没有调用 <code>ld</code>，通过查找 <code>gcc</code> 文档中和 <code>collect2</code> 相关的部分发现 <code>collect2</code> 在后台实际上还是去寻找 <code>ld</code> 命令的。为了理解 <code>gcc</code> 默认链接的后台细节，这里直接把 <code>collect2</code> 替换成 <code>ld</code>，并把一些路径换成绝对路径或者简化，得到如下的 <code>ld</code> 命令以及执行的效果。</p>
+<pre><code>$ ld --eh-frame-hdr \
+-m elf_i386 \
+-dynamic-linker /lib/ld-linux.so.2 \
+-o test \
+/usr/lib/crt1.o /usr/lib/crti.o /usr/lib/gcc/i486-slackware-linux/4.1.2/crtbegin.o \
+test.o myprintf.o \
+-L/usr/lib/gcc/i486-slackware-linux/4.1.2 -L/usr/i486-slackware-linux/lib -L/usr/lib/ \
+-lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed \
+/usr/lib/gcc/i486-slackware-linux/4.1.2/crtend.o /usr/lib/crtn.o
+$ ./test
+hello, world!
+</code></pre>
+<p>不出所料，它完美地运行了。下面通过 <code>ld</code> 的手册（<code>man ld</code>）来分析一下这几个参数：</p>
+<ul>
+<li> <p><code>--eh-frame-hdr</code></p> <p>要求创建一个 <code>.eh_frame_hdr</code> 节区(貌似目标文件test中并没有这个节区，所以不关心它)。</p> </li>
+<li> <p><code>-m elf_i386</code></p> <p>这里指定不同平台上的链接脚本，可以通过 <code>--verbose</code> 命令查看脚本的具体内容，如 <code>ld -m elf_i386 --verbose</code>，它实际上被存放在一个文件中（<code>/usr/lib/ldscripts</code> 目录下），我们可以去修改这个脚本，具体如何做？请参考 <code>ld</code> 的手册。在后面我们将简要提到链接脚本中是如何预定义变量的，以及这些预定义变量如何在我们的程序中使用。需要提到的是，如果不是交叉编译，那么无须指定该选项。</p> </li>
+<li> <p>-dynamic-linker /lib/ld-linux.so.2</p> <p>指定动态装载器/链接器，即程序中的 <code>INTERP</code> 段中的内容。动态装载器/链接器负责链接有可共享库的可执行文件的装载和动态符号链接。</p> </li>
+<li> <p>-o test</p> <p>指定输出文件，即可执行文件名的名字</p> </li>
+<li> <p>/usr/lib/crt1.o /usr/lib/crti.o /usr/lib/gcc/i486-slackware-linux/4.1.2/crtbegin.o</p> <p>链接到 <code>test</code> 文件开头的一些内容，这里实际上就包含了 <code>.init</code> 等节区。<code>.init</code> 节区包含一些可执行代码，在 <code>main</code> 函数之前被调用，以便进行一些初始化操作，在 C++ 中完成构造函数功能。</p> </li>
+<li> <p>test.o myprintf.o</p> <p>链接我们自己的可重定位文件</p> </li>
+<li> <p><code>-L/usr/lib/gcc/i486-slackware-linux/4.1.2 -L/usr/i486-slackware-linux/lib -L/usr/lib/ \ -lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed</code></p> <p>链接 <code>libgcc</code> 库和 <code>libc</code> 库，后者定义有我们需要的 <code>puts</code> 函数</p> </li>
+<li> <p>/usr/lib/gcc/i486-slackware-linux/4.1.2/crtend.o /usr/lib/crtn.o</p> <p>链接到 <code>test</code> 文件末尾的一些内容，这里实际上包含了 <code>.fini</code> 等节区。<code>.fini</code> 节区包含了一些可执行代码，在程序退出时被执行，作一些清理工作，在 C++ 中完成析构造函数功能。我们往往可以通过 <code>atexit</code> 来注册那些需要在程序退出时才执行的函数。</p> </li>
+</ul>
+<p><span id="toc_27212_14734_24"></span></p>
+<h3 id="c构造与析构crtbegino和crtendo">C++构造与析构：crtbegin.o和crtend.o</h3>
+<p>对于 <code>crtbegin.o</code> 和 <code>crtend.o</code> 这两个文件，貌似完全是用来支持 C++ 的构造和析构工作的，所以可以不链接到我们的可执行文件中，链接时把它们去掉看看，</p>
+<pre><code>$ ld -m elf_i386 -dynamic-linker /lib/ld-linux.so.2 -o test \
+  /usr/lib/crt1.o /usr/lib/crti.o test.o myprintf.o \
+  -L/usr/lib -lc /usr/lib/crtn.o    #后面发现不用链接libgcc，也不用--eh-frame-hdr参数
+$ readelf -l test
+
+Elf file type is EXEC (Executable file)
+Entry point 0x80482b0
+There are 7 program headers, starting at offset 52
+
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  PHDR           0x000034 0x08048034 0x08048034 0x000e0 0x000e0 R E 0x4
+  INTERP         0x000114 0x08048114 0x08048114 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+  LOAD           0x000000 0x08048000 0x08048000 0x003ea 0x003ea R E 0x1000
+  LOAD           0x0003ec 0x080493ec 0x080493ec 0x000e8 0x000e8 RW  0x1000
+  DYNAMIC        0x0003ec 0x080493ec 0x080493ec 0x000c8 0x000c8 RW  0x4
+  NOTE           0x000128 0x08048128 0x08048128 0x00020 0x00020 R   0x4
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00
+   01     .interp
+   02     .interp .note.ABI-tag .hash .dynsym .dynstr .gnu.version .gnu.version_r
+          .rel.dyn .rel.plt .init .plt .text .fini .rodata
+   03     .dynamic .got .got.plt .data
+   04     .dynamic
+   05     .note.ABI-tag
+   06
+$ ./test
+hello, world!
+</code></pre>
+<p>完全可以工作，而且发现 <code>.ctors</code>（保存着程序中全局构造函数的指针数组）, <code>.dtors</code>（保存着程序中全局析构函数的指针数组）,<code>.jcr</code>（未知）,<code>.eh_frame</code> 节区都没有了，所以 <code>crtbegin.o</code> 和 <code>crtend.o</code> 应该包含了这些节区。</p>
+<p><span id="toc_27212_14734_25"></span></p>
+<h3 id="初始化与退出清理crtio-和-crtno">初始化与退出清理：crti.o 和 crtn.o</h3>
+<p>而对于另外两个文件 <code>crti.o</code> 和 <code>crtn.o</code>，通过 <code>readelf -S</code> 查看后发现它们都有 <code>.init</code> 和 <code>.fini</code> 节区，如果我们不需要让程序进行一些初始化和清理工作呢？是不是就可以不链接这个两个文件？试试看。</p>
+<pre><code>$ ld  -m elf_i386 -dynamic-linker /lib/ld-linux.so.2 -o test \
+      /usr/lib/crt1.o test.o myprintf.o -L/usr/lib/ -lc
+/usr/lib/libc_nonshared.a(elf-init.oS): In function `__libc_csu_init':
+(.text+0x25): undefined reference to `_init'
+</code></pre>
+<p>貌似不行，竟然有人调用了 <code>__libc_csu_init</code> 函数，而这个函数引用了 <code>_init</code>。这两个符号都在哪里呢？</p>
+<pre><code>$ readelf -s /usr/lib/crt1.o | grep __libc_csu_init
+    18: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND __libc_csu_init
+$ readelf -s /usr/lib/crti.o | grep _init
+    17: 00000000     0 FUNC    GLOBAL DEFAULT    5 _init
+</code></pre>
+<p>竟然是 <code>crt1.o</code> 调用了 <code>__libc_csu_init</code> 函数，而该函数却引用了我们没有链接的 <code>crti.o</code> 文件中定义的 <code>_init</code> 符号。这样的话不链接 <code>crti.o</code> 和 <code>crtn.o</code> 文件就不成了罗？不对吧，要不干脆不用 <code>crt1.o</code> 算了，看看 <code>gcc</code> 额外链接进去的最后一个文件 <code>crt1.o</code> 到底干了个啥子？</p>
+<pre><code>$ ld  -m elf_i386 -dynamic-linker /lib/ld-linux.so.2 -o \
+      test test.o myprintf.o -L/usr/lib/ -lc
+ld: warning: cannot find entry symbol _start; defaulting to 00000000080481a4
+</code></pre>
+<p>这样却说没有找到入口符号 <code>_start</code>，难道 <code>crt1.o</code> 中定义了这个符号？不过它给默认设置了一个地址，只是个警告，说明 <code>test</code> 已经生成，不管怎样先运行看看再说。</p>
+<pre><code>$ ./test
+hello, world!
+Segmentation fault
+</code></pre>
+<p>貌似程序运行完了，不过结束时冒出个段错误？可能是程序结束时有问题，用 <code>gdb</code> 调试看看：</p>
+<pre><code>$ gcc -g -c test.c myprintf.c #产生目标代码, 非交叉编译，不指定-m也可链接，所以下面可去掉-m
+$ ld -dynamic-linker /lib/ld-linux.so.2 -o test \
+     test.o myprintf.o -L/usr/lib -lc
+ld: warning: cannot find entry symbol _start; defaulting to 00000000080481d8
+$ ./test
+hello, world!
+Segmentation fault
+$ gdb -q ./test
+(gdb) l
+1       #include "test.h"
+2
+3       int main()
+4       {
+5               myprintf();
+6               return 0;
+7       }
+(gdb) break 7      #在程序的末尾设置一个断点
+Breakpoint 1 at 0x80481bf: file test.c, line 7.
+(gdb) r            #程序都快结束了都没问题，怎么会到最后出个问题呢？
+Starting program: /mnt/hda8/Temp/c/program/test
+hello, world!
+
+Breakpoint 1, main () at test.c:7
+7       }
+(gdb) n        #单步执行看看，怎么下面一条指令是0x00000001，肯定是程序退出以后出了问题
+0x00000001 in ?? ()
+(gdb) n        #诶，当然找不到边了，都跑到0x00000001了
+Cannot find bounds of current function
+(gdb) c
+Continuing.
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000001 in ?? ()
+</code></pre>
+<p>原来是这么回事，估计是 <code>return 0</code> 返回之后出问题了，看看它的汇编去。</p>
+<pre><code>$ gcc -S test.c #产生汇编代码
+$ cat test.s
+...
+        call    myprintf
+        movl    $0, %eax
+        addl    $4, %esp
+        popl    %ecx
+        popl    %ebp
+        leal    -4(%ecx), %esp
+        ret
+...
+</code></pre>
+<p>后面就这么几条指令，难不成 <code>ret</code> 返回有问题，不让它 <code>ret</code> 返回，把 <code>return</code> 改成 <code>_exit</code> 直接进入内核退出。</p>
+<pre><code>$ vim test.c
+$ cat test.c    #就把return语句修改成_exit了。
+#include "test.h"
+#include &lt;unistd.h&gt; /* _exit */
+
+int main()
+{
+	myprintf();
+	_exit(0);
+}
+$ gcc -g -c test.c myprintf.c
+$ ld -dynamic-linker /lib/ld-linux.so.2 -o test test.o myprintf.o -L/usr/lib -lc
+ld: warning: cannot find entry symbol _start; defaulting to 00000000080481d8
+$ ./test    #竟然好了，再看看汇编有什么不同
+hello, world!
+$ gcc -S test.c
+$ cat test.s    #貌似就把ret指令替换成了_exit函数调用，直接进入内核，让内核处理了，那为什么ret有问题呢？
+...
+        call    myprintf
+        subl    $12, %esp
+        pushl   $0
+        call    _exit
+...
+$ gdb -q ./test    #把代码改回去（改成return 0;），再调试看看调用main函数返回时的下一条指令地址eip
+(gdb) l
+warning: Source file is more recent than executable.
+1       #include "test.h"
+2
+3       int main()
+4       {
+5               myprintf();
+6               return 0;
+7       }
+(gdb) break 5
+Breakpoint 1 at 0x80481b5: file test.c, line 5.
+(gdb) break 7
+Breakpoint 2 at 0x80481bc: file test.c, line 7.
+(gdb) r
+Starting program: /mnt/hda8/Temp/c/program/test
+
+Breakpoint 1, main () at test.c:5
+5               myprintf();
+(gdb) x/8x $esp
+0xbf929510:     0xbf92953c      0x080481a4      0x00000000      0xb7eea84f
+0xbf929520:     0xbf92953c      0xbf929534      0x00000000      0x00000001
+</code></pre>
+<p>发现 <code>0x00000001</code> 刚好是之前调试时看到的程序返回后的位置，即 <code>eip</code>，说明程序在初始化时，这个 <code>eip</code> 就是错误的。为什么呢？因为根本没有链接进初始化的代码，而是在编译器自己给我们，初始化了程序入口即 <code>00000000080481d8，也就是说，没有人调用</code>main<code>，</code>main<code>不知道返回哪里去，所以，我们直接让</code>main<code>结束时进入内核调用</code>_exit` 而退出则不会有问题。</p>
+<p>通过上面的演示和解释发现只要把return语句修改为_exit语句，程序即使不链接任何额外的目标代码都可以正常运行（原因是不链接那些额外的文件时相当于没有进行初始化操作，如果在程序的最后执行ret汇编指令，程序将无法获得正确的eip，从而无法进行后续的动作）。但是为什么会有“找不到_start符号”的警告呢？通过<code>readelf -s</code>查看crt1.o发现里头有这个符号，并且crt1.o引用了main这个符号，是不是意味着会从<code>_start</code>进入main呢？是不是程序入口是<code>_start</code>，而并非main呢？</p>
+<p><span id="toc_27212_14734_26"></span></p>
+<h3 id="c-语言程序真正的入口">C 语言程序真正的入口</h3>
+<p>先来看看刚才提到的链接器的默认链接脚本（<code>ld -m elf_386 --verbose</code>），它告诉我们程序的入口（entry）是 <code>_start</code>，而一个可执行文件必须有一个入口地址才能运行，所以这就是说明了为什么 <code>ld</code> 一定要提示我们 “_start找不到”，找不到以后就给默认设置了一个地址。</p>
+<pre><code>$ ld --verbose  | grep ^ENTRY    #非交叉编译，可不用-m参数；ld默认找_start入口，并不是main哦！
+ENTRY(_start)
+</code></pre>
+<p>原来是这样，程序的入口（entry）竟然不是 <code>main</code> 函数，而是 <code>_start</code>。那干脆把汇编里头的 <code>main</code> 给改掉算了，看行不行？</p>
+<p>先生成汇编 <code>test.s</code>：</p>
+<pre><code>$ cat test.c
+#include "test.h"
+#include &lt;unistd.h&gt;     /* _exit */
+
+int main()
+{
+	myprintf();
+	_exit(0);
+}
+$ gcc -S test.c
+</code></pre>
+<p>然后把汇编中的 <code>main</code> 改为 <code>_start</code>，即改程序入口为 <code>_start</code>：</p>
+<pre><code>$ sed -i -e "s#main#_start#g" test.s
+$ gcc -c test.s myprintf.c
+</code></pre>
+<p>重新链接，发现果然没问题了：</p>
+<pre><code>$ ld -dynamic-linker /lib/ld-linux.so.2 -o test test.o myprintf.o -L/usr/lib/ -lc
+$ ./test
+hello, world!
+</code></pre>
+<p><code>_start</code> 竟然是真正的程序入口，那在有 <code>main</code> 的情况下呢？为什么在 <code>_start</code> 之后能够找到 <code>main</code> 呢？这个看看 alert7 大叔的<a href="http://www.xfocus.net/articles/200109/269.html">Before main 分析</a>吧，这里不再深入介绍。</p>
+<p>总之呢，通过修改程序的 <code>return</code> 语句为 <code>_exit(0)</code> 和修改程序的入口为 <code>_start</code>，我们的代码不链接 <code>gcc</code> 默认链接的那些额外的文件同样可以工作得很好。并且打破了一个学习 C 语言以来的常识：<code>main</code> 函数作为程序的主函数，是程序的入口，实际上则不然。</p>
+<p><span id="toc_27212_14734_27"></span></p>
+<h3 id="链接脚本初次接触">链接脚本初次接触</h3>
+<p>再补充一点内容，在 <code>ld</code> 的链接脚本中，有一个特别的关键字 <code>PROVIDE</code>，由这个关键字定义的符号是 <code>ld</code> 的预定义字符，我们可以在 C 语言函数中扩展它们后直接使用。这些特别的符号可以通过下面的方法获取，</p>
+<pre><code>$ ld --verbose | grep PROVIDE | grep -v HIDDEN
+  PROVIDE (__executable_start = 0x08048000); . = 0x08048000 + SIZEOF_HEADERS;
+  PROVIDE (__etext = .);
+  PROVIDE (_etext = .);
+  PROVIDE (etext = .);
+  _edata = .; PROVIDE (edata = .);
+  _end = .; PROVIDE (end = .);
+</code></pre>
+<p>这里面有几个我们比较关心的，第一个是程序的入口地址 <code>__executable_start</code>，另外三个是 <code>etext</code>，<code>edata</code>，<code>end</code>，分别对应程序的代码段（text）、初始化数据（data）和未初始化的数据（bss）（可参考<code>man etext</code>），如何引用这些变量呢？看看这个例子。</p>
+<pre><code>/* predefinevalue.c */
+#include &lt;stdio.h&gt;
+
+extern int __executable_start, etext, edata, end;
+
+int main(void)
+{
+	printf ("program entry: 0x%x \n", &amp;__executable_start);
+	printf ("etext address(text segment): 0x%x \n", &amp;etext);
+	printf ("edata address(initilized data): 0x%x \n", &amp;edata);
+	printf ("end address(uninitilized data): 0x%x \n", &amp;end);
+
+	return 0;
+}
+</code></pre>
+<p>到这里，程序链接过程的一些细节都介绍得差不多了。在<a href="02-chapter4.markdown">《动态符号链接的细节》</a>中将主要介绍 ELF 文件的动态符号链接过程。</p>
+<p><span id="toc_27212_14734_28"></span></p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-assembly/index.html">Linux 汇编语言开发指南</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/hardware/ppc/assembly/index.html">PowerPC 汇编</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-powasm1.html">用于 Power 体系结构的汇编语言</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/sdk/assemble/inline/index.html">Linux 中 x86 的内联汇编</a></li>
+<li>Linux Assembly HOWTO</li>
+<li>Linux Assembly Language Programming</li>
+<li>Guide to Assembly Language Programming in Linux</li>
+<li><a href="http://www.luv.asn.au/overheads/compile.html">An beginners guide to compiling programs under Linux</a></li>
+<li><a href="http://gcc.gnu.org/onlinedocs/gcc-4.2.2/gcc/">gcc manual</a></li>
+<li><a href="http://efrw01.frascati.enea.it/Software/Unix/IstrFTU/cern-cnl-2001-003-25-link.html">A Quick Tour of Compiling, Linking, Loading, and Handling Libraries on Unix</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/aix/library/au-unixtools.html">Unix 目标文件初探</a></li>
+<li><a href="http://www.xfocus.net/articles/200109/269.html">Before main()分析</a></li>
+<li><a href="http://www.linuxforums.org/forum/linux-kernel/51790-process-viewing-its-own-proc-pid-map-information.html">A Process Viewing Its Own /proc/
+<pid>
+/map Information
+</pid></a></li>
+<li>UNIX 环境高级编程</li>
+<li>Linux Kernel Primer</li>
+<li><a href="http://www.linuxforums.org/misc/understanding_elf_using_readelf_and_objdump.html">Understanding ELF using readelf and objdump</a></li>
+<li><a href="http://netwinder.osuosl.org/users/p/patb/public_html/elf_relocs.html">Study of ELF loading and relocs</a></li>
+<li>ELF file format and ABI
+<ul>
+<li><a href="http://refspecs.linuxbase.org/elf/elf.pdf">[1]</a></li>
+<li><a href="http://www.muppetlabs.com/~breadbox/software/ELF.txt">[2]</a></li>
+</ul> </li>
+<li>TN05.ELF.Format.Summary.pdf</li>
+<li><a href="http://www.xfocus.net/articles/200105/174.html">ELF文件格式(中文)</a></li>
+<li>关于 Gcc 方面的论文，请查看历年的会议论文集
+<ul>
+<li><a href="http://www.gccsummit.org/2005/2005-GCC-Summit-Proceedings.pdf">2005</a></li>
+<li><a href="http://www.gccsummit.org/2006/2006-GCC-Summit-Proceedings.pdf">2006</a></li>
+</ul> </li>
+<li><a href="http://www.faqs.org/docs/Linux-HOWTO/GCC-HOWTO.html">The Linux GCC HOW TO</a></li>
+<li><a href="http://linux.jinr.ru/usoft/WWW/www_debian.org/Documentation/elf/elf.html">ELF: From The Programmer's Perspective</a></li>
+<li><a href="http://www.xxlinux.com/linux/article/development/soft/20070424/8267.html">C/C++ 程序编译步骤详解</a></li>
+<li><a href="http://c-faq-chn.sourceforge.net/ccfaq/index.html">C 语言常见问题集</a></li>
+<li><a href="http://elfhack.whitecell.org/mydocs/use_bfd.txt">使用 BFD 操作 ELF</a></li>
+<li><a href="http://sourceware.org/binutils/docs/bfd/index.html">bfd document</a></li>
+<li><a href="http://blog.chinaunix.net/u/19881/showart_215242.html">UNIX/LINUX 平台可执行文件格式分析</a></li>
+<li><a href="http://www.tinylab.org/linux-assembly-language-quick-start/">Linux 汇编语言快速上手：4大架构一块学</a></li>
+<li>GNU binutils 小结</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/102/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/102/index.html">C 语言进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">32页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/146/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/146/index.html">http2讲解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/78.html">bagder</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1463个">1463</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/126/index.html">
+<img class="uk-book-cover" src="/static/icons/48/html5_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/126/index.html">前端晚自修</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/67.html">if2er</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">22页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/3/index.html">
+<img class="uk-book-cover" src="/static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/3/index.html">深入解析Go</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/3.html">tiancaiamao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">41页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1018个">1018</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/43/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2868">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2869">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2870">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter1.markdown" title="把 Vim 打造成源代码编辑器" data-book-page-rel-url="zh/chapters/02-chapter1.markdown" data-book-page-id="2871">把 Vim 打造成源代码编辑器</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter2.markdown" title="Gcc 编译的背后" data-book-page-rel-url="zh/chapters/02-chapter2.markdown" data-book-page-id="2872">Gcc 编译的背后</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter3.markdown" title="程序执行的一刹那" data-book-page-rel-url="zh/chapters/02-chapter3.markdown" data-book-page-id="2873">程序执行的一刹那</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter4.markdown" title="动态符号链接的细节" data-book-page-rel-url="zh/chapters/02-chapter4.markdown" data-book-page-id="2874">动态符号链接的细节</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter5.markdown" title="缓冲区溢出与注入分析" data-book-page-rel-url="zh/chapters/02-chapter5.markdown" data-book-page-id="2875">缓冲区溢出与注入分析</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter6.markdown" title="进程的内存映像" data-book-page-rel-url="zh/chapters/02-chapter6.markdown" data-book-page-id="2876">进程的内存映像</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter7.markdown" title="进程和进程的基本操作" data-book-page-rel-url="zh/chapters/02-chapter7.markdown" data-book-page-id="2877">进程和进程的基本操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter8.markdown" title="打造史上最小可执行ELF文件(45字节)" data-book-page-rel-url="zh/chapters/02-chapter8.markdown" data-book-page-id="2878">打造史上最小可执行ELF文件(45字节)</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter9.markdown" title="代码测试、调试与优化" data-book-page-rel-url="zh/chapters/02-chapter9.markdown" data-book-page-id="2879">代码测试、调试与优化</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =43;var bookPageId =2872;var bookPageRelUrl ='zh/chapters/02-chapter2.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

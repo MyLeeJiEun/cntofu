@@ -1,0 +1,1971 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>打造史上最小可执行ELF文件(45字节)-C 语言编程透视</title>
+<meta content='打造史上最小可执行ELF文件(45字节),C 语言编程透视' name='keywords'>
+<meta content='打造史上最小可执行ELF文件(45字节),C 语言编程透视' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/43/zh/chapters/02-chapter7.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">进程和进程的基本操作</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/43/zh/chapters/02-chapter9.markdown">
+<span class="">代码测试、调试与优化</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/43/index.html">C 语言编程透视</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-c-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="打造史上最小可执行-elf-文件45-字节可打印字符串">打造史上最小可执行 ELF 文件（45 字节，可打印字符串）</h1>
+<ul>
+<li><a href="#toc_3928_6176_1">前言</a></li>
+<li><a href="#toc_3928_6176_2">可执行文件格式的选取</a></li>
+<li><a href="#toc_3928_6176_3">链接优化</a></li>
+<li><a href="#toc_3928_6176_4">可执行文件“减肥”实例（从6442到708字节）</a></li>
+<li><a href="#toc_3928_6176_5">系统默认编译</a></li>
+<li><a href="#toc_3928_6176_6">不采用默认编译</a></li>
+<li><a href="#toc_3928_6176_7">删除对程序运行没有影响的节区</a></li>
+<li><a href="#toc_3928_6176_8">删除可执行文件的节区表</a></li>
+<li><a href="#toc_3928_6176_9">用汇编语言来重写 Hello World（76字节）</a></li>
+<li><a href="#toc_3928_6176_10">采用默认编译</a></li>
+<li><a href="#toc_3928_6176_11">删除掉汇编代码中无关紧要内容</a></li>
+<li><a href="#toc_3928_6176_12">不默认编译并删除掉无关节区和节区表</a></li>
+<li><a href="#toc_3928_6176_13">用系统调用取代库函数</a></li>
+<li><a href="#toc_3928_6176_14">把字符串作为参数输入</a></li>
+<li><a href="#toc_3928_6176_15">寄存器赋值重用</a></li>
+<li><a href="#toc_3928_6176_16">通过文件名传递参数</a></li>
+<li><a href="#toc_3928_6176_17">删除非必要指令</a></li>
+<li><a href="#toc_3928_6176_18">合并代码段、程序头和文件头（52字节）</a></li>
+<li><a href="#toc_3928_6176_19">把代码段移入文件头</a></li>
+<li><a href="#toc_3928_6176_20">把程序头移入文件头</a></li>
+<li><a href="#toc_3928_6176_21">在非连续的空间插入代码</a></li>
+<li><a href="#toc_3928_6176_22">把程序头完全合入文件头</a></li>
+<li><a href="#toc_3928_6176_23">汇编语言极限精简之道（45字节）</a></li>
+<li><a href="#toc_3928_6176_24">小结</a></li>
+<li><a href="#toc_3928_6176_25">参考资料</a></li>
+</ul>
+<p><span id="toc_3928_6176_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>本文从减少可执行文件大小的角度分析了 <code>ELF</code> 文件，期间通过经典的 <code>Hello World</code> 实例逐步演示如何通过各种常用工具来分析 <code>ELF</code> 文件，并逐步精简代码。</p>
+<p>为了能够尽量减少可执行文件的大小，我们必须了解可执行文件的格式，以及链接生成可执行文件时的后台细节（即最终到底有哪些内容被链接到了目标代码中）。通过选择合适的可执行文件格式并剔除对可执行文件的最终运行没有影响的内容，就可以实现目标代码的裁减。因此，通过探索减少可执行文件大小的方法，就相当于实践性地去探索了可执行文件的格式以及链接过程的细节。</p>
+<p>当然，算法的优化和编程语言的选择可能对目标文件的大小有很大的影响，在本文最后我们会跟参考资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a> 的作者那样去探求一个打印 <code>Hello World</code> 的可执行文件能够小到什么样的地步。</p>
+<p><span id="toc_3928_6176_2"></span></p>
+<h2 id="可执行文件格式的选取">可执行文件格式的选取</h2>
+<p>可执行文件格式的选择要满足的一个基本条件是：目标系统支持该可执行文件格式，资料 <a href="http://blog.chinaunix.net/u/19881/showart_215242.html">[2]</a> 分析和比较了 <code>UNIX</code> 平台下的三种可执行文件格式，这三种格式实际上代表着可执行文件的一个发展过程：</p>
+<ul>
+<li> <p>a.out 文件格式非常紧凑，只包含了程序运行所必须的信息（文本、数据、 <code>BSS</code>），而且每个 <code>section</code> 的顺序是固定的。</p> </li>
+<li> <p>coff 文件格式虽然引入了一个节区表以支持更多节区信息，从而提高了可扩展性，但是这种文件格式的重定位在链接时就已经完成，因此不支持动态链接（不过扩展的 <code>coff</code> 支持）。</p> </li>
+<li> <p>elf 文件格式不仅动态链接，而且有很好的扩展性。它可以描述可重定位文件、可执行文件和可共享文件（动态链接库）三类文件。</p> </li>
+</ul>
+<p>下面来看看 <code>ELF</code> 文件的结构图：</p>
+<pre><code>文件头部(ELF Header)
+程序头部表(Program Header Table)
+节区1(Section1)
+节区2(Section2)
+节区3(Section3)
+...
+节区头部(Section Header Table)
+</code></pre>
+<p>无论是文件头部、程序头部表、节区头部表还是各个节区，都是通过特定的结构体 <code>(struct)描述的，这些结构在</code>elf.h<code>文件中定义。文件头部用于描述整个文件的类型、大小、运行平台、程序入口、程序头部表和节区头部表等信息。例如，我们可以通过文件头部查看该</code>ELF` 文件的类型。</p>
+<pre><code>$ cat hello.c   #典型的hello, world程序
+#include &lt;stdio.h&gt;
+
+int main(void)
+{
+	printf("hello, world!\n");
+	return 0;
+}
+$ gcc -c hello.c   #编译，产生可重定向的目标代码
+$ readelf -h hello.o | grep Type   #通过readelf查看文件头部找出该类型
+  Type:                              REL (Relocatable file)
+$ gcc -o hello hello.o   #生成可执行文件
+$ readelf -h hello | grep Type
+  Type:                              EXEC (Executable file)
+$ gcc -fpic -shared -Wl,-soname,libhello.so.0 -o libhello.so.0.0 hello.o  #生成共享库
+$ readelf -h libhello.so.0.0 | grep Type
+  Type:                              DYN (Shared object file)
+</code></pre>
+<p>那节区头部表（将简称节区表）和程序头部表有什么用呢？实际上前者只对可重定向文件有用，而后者只对可执行文件和可共享文件有用。</p>
+<p>节区表是用来描述各节区的，包括各节区的名字、大小、类型、虚拟内存中的位置、相对文件头的位置等，这样所有节区都通过节区表给描述了，这样连接器就可以根据文件头部表和节区表的描述信息对各种输入的可重定位文件进行合适的链接，包括节区的合并与重组、符号的重定位（确认符号在虚拟内存中的地址）等，把各个可重定向输入文件链接成一个可执行文件（或者是可共享文件）。如果可执行文件中使用了动态连接库，那么将包含一些用于动态符号链接的节区。我们可以通过 <code>readelf -S</code> （或 <code>objdump -h</code>）查看节区表信息。</p>
+<pre><code>$ readelf -S hello  #可执行文件、可共享库、可重定位文件默认都生成有节区表
+...
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .interp           PROGBITS        08048114 000114 000013 00   A  0   0  1
+  [ 2] .note.ABI-tag     NOTE            08048128 000128 000020 00   A  0   0  4
+  [ 3] .hash             HASH            08048148 000148 000028 04   A  5   0  4
+...
+    [ 7] .gnu.version      VERSYM          0804822a 00022a 00000a 02   A  5   0  2
+...
+  [11] .init             PROGBITS        08048274 000274 000030 00  AX  0   0  4
+...
+  [13] .text             PROGBITS        080482f0 0002f0 000148 00  AX  0   0 16
+  [14] .fini             PROGBITS        08048438 000438 00001c 00  AX  0   0  4
+...
+</code></pre>
+<p>三种类型文件的节区（各个常见节区的作用请参考资料 <a href="http://refspecs.linuxbase.org/elf/elf.pdf">[11]</a>)可能不一样，但是有几个节区，例如 <code>.text</code>，<code>.data</code>，<code>.bss</code> 是必须的，特别是 <code>.text</code>，因为这个节区包含了代码。如果一个程序使用了动态链接库（引用了动态连接库中的某个函数），那么需要 <code>.interp</code> 节区以便告知系统使用什么动态连接器程序来进行动态符号链接，进行某些符号地址的重定位。通常，<code>.rel.text</code> 节区只有可重定向文件有，用于链接时对代码区进行重定向，而 <code>.hash</code>，<code>.plt</code>，<code>.got</code> 等节区则只有可执行文件（或可共享库）有，这些节区对程序的运行特别重要。还有一些节区，可能仅仅是用于注释，比如 <code>.comment</code>，这些对程序的运行似乎没有影响，是可有可无的，不过有些节区虽然对程序的运行没有用处，但是却可以用来辅助对程序进行调试或者对程序运行效率有影响。</p>
+<p>虽然三类文件都必须包含某些节区，但是节区表对可重定位文件来说才是必须的，而程序的执行却不需要节区表，只需要程序头部表以便知道如何加载和执行文件。不过如果需要对可执行文件或者动态连接库进行调试，那么节区表却是必要的，否则调试器将不知道如何工作。下面来介绍程序头部表，它可通过 <code>readelf -l</code>（或 <code>objdump -p</code>）查看。</p>
+<pre><code>$ readelf -l hello.o #对于可重定向文件，gcc没有产生程序头部，因为它对可重定向文件没用
+
+There are no program headers in this file.
+$  readelf -l hello  #而可执行文件和可共享文件都有程序头部
+...
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  PHDR           0x000034 0x08048034 0x08048034 0x000e0 0x000e0 R E 0x4
+  INTERP         0x000114 0x08048114 0x08048114 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+  LOAD           0x000000 0x08048000 0x08048000 0x00470 0x00470 R E 0x1000
+  LOAD           0x000470 0x08049470 0x08049470 0x0010c 0x00110 RW  0x1000
+  DYNAMIC        0x000484 0x08049484 0x08049484 0x000d0 0x000d0 RW  0x4
+  NOTE           0x000128 0x08048128 0x08048128 0x00020 0x00020 R   0x4
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00
+   01     .interp
+   02     .interp .note.ABI-tag .hash .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rel.dyn .rel.plt .init .plt .text .fini .rodata .eh_frame
+   03     .ctors .dtors .jcr .dynamic .got .got.plt .data .bss
+   04     .dynamic
+   05     .note.ABI-tag
+   06
+$ readelf -l libhello.so.0.0  #节区和上面类似，这里省略
+</code></pre>
+<p>从上面可看出程序头部表描述了一些段（<code>Segment</code>），这些段对应着一个或者多个节区，上面的 <code>readelf -l</code> 很好地显示了各个段与节区的映射。这些段描述了段的名字、类型、大小、第一个字节在文件中的位置、将占用的虚拟内存大小、在虚拟内存中的位置等。这样系统程序解释器将知道如何把可执行文件加载到内存中以及进行动态链接等动作。</p>
+<p>该可执行文件包含 7 个段，<code>PHDR</code> 指程序头部，<code>INTERP</code> 正好对应 <code>.interp</code> 节区，两个 <code>LOAD</code> 段包含程序的代码和数据部分，分别包含有 <code>.text</code> 和 <code>.data</code>，<code>.bss</code> 节区，<code>DYNAMIC</code> 段包含 <code>.daynamic</code>，这个节区可能包含动态连接库的搜索路径、可重定位表的地址等信息，它们用于动态连接器。 <code>NOTE</code> 和 <code>GNU_STACK</code> 段貌似作用不大，只是保存了一些辅助信息。因此，对于一个不使用动态连接库的程序来说，可能只包含 <code>LOAD</code> 段，如果一个程序没有数据，那么只有一个 <code>LOAD</code> 段就可以了。</p>
+<p>总结一下，Linux 虽然支持很多种可执行文件格式，但是目前 <code>ELF</code> 较通用，所以选择 <code>ELF</code> 作为我们的讨论对象。通过上面对 <code>ELF</code> 文件分析发现一个可执行的文件可能包含一些对它的运行没用的信息，比如节区表、一些用于调试、注释的节区。如果能够删除这些信息就可以减少可执行文件的大小，而且不会影响可执行文件的正常运行。</p>
+<p><span id="toc_3928_6176_3"></span></p>
+<h2 id="链接优化">链接优化</h2>
+<p>从上面的讨论中已经接触了动态连接库。 <code>ELF</code> 中引入动态连接库后极大地方便了公共函数的共享，节约了磁盘和内存空间，因为不再需要把那些公共函数的代码链接到可执行文件，这将减少了可执行文件的大小。</p>
+<p>与此同时，静态链接可能会引入一些对代码的运行可能并非必须的内容。你可以从<a href="02-chapter2.markdown">《GCC 编译的背后（第二部分：汇编和链接）》</a> 了解到 <code>GCC</code> 链接的细节。从那篇 Blog 中似乎可以得出这样的结论：仅仅从是否影响一个 C 语言程序运行的角度上说，<code>GCC</code> 默认链接到可执行文件的几个可重定位文件 （<code>crt1.o</code>，<code>rti.o</code>，<code>crtbegin.o</code>，<code>crtend.o</code>，<code>crtn.o</code>）并不是必须的，不过值得注意的是，如果没有链接那些文件但在程序末尾使用了 <code>return</code> 语句，<code>main</code> 函数将无法返回，因此需要替换为 <code>_exit</code> 调用；另外，既然程序在进入 <code>main</code> 之前有一个入口，那么 <code>main</code> 入口就不是必须的。因此，如果不采用默认链接也可以减少可执行文件的大小。</p>
+<p><span id="toc_3928_6176_4"></span></p>
+<h2 id="可执行文件减肥实例从6442到708字节">可执行文件“减肥”实例（从6442到708字节）</h2>
+<p>这里主要是根据上面两点来介绍如何减少一个可执行文件的大小。以 <code>Hello World</code> 为例。</p>
+<p>首先来看看默认编译产生的 <code>Hello World</code> 的可执行文件大小。</p>
+<p><span id="toc_3928_6176_5"></span></p>
+<h3 id="系统默认编译">系统默认编译</h3>
+<p>代码同上，下面是一组演示，</p>
+<pre><code>$ uname -r   #先查看内核版本和gcc版本，以便和你的结果比较
+2.6.22-14-generic
+$ gcc --version
+gcc (GCC) 4.1.3 20070929 (prerelease) (Ubuntu 4.1.2-16ubuntu2)
+...
+$ gcc -o hello hello.c   #默认编译
+$ wc -c hello   #产生一个大小为6442字节的可执行文件
+6442 hello
+</code></pre>
+<p><span id="toc_3928_6176_6"></span></p>
+<h3 id="不采用默认编译">不采用默认编译</h3>
+<p>可以考虑编辑时就把 <code>return 0</code> 替换成 <code>_exit(0)</code> 并包含定义该函数的 <code>unistd.h</code> 头文件。下面是从<a href="02-chapter2.markdown">《GCC 编译的背后（第二部分：汇编和链接）》</a>总结出的 <code>Makefile</code> 文件。</p>
+<pre><code>#file: Makefile
+#functin: for not linking a program as the gcc do by default
+#author: falcon&lt;zhangjinw@gmail.com&gt;
+#update: 2008-02-23
+
+MAIN = hello
+SOURCE =
+OBJS = hello.o
+TARGET = hello
+CC = gcc-3.4 -m32
+LD = ld -m elf_i386
+
+CFLAGSs += -S
+CFLAGSc += -c
+LDFLAGS += -dynamic-linker /lib/ld-linux.so.2 -L /usr/lib/ -L /lib -lc
+RM = rm -f
+SEDc = sed -i -e '/\#include[ "&lt;]*unistd.h[ "&gt;]*/d;' \
+	-i -e '1i \#include &lt;unistd.h&gt;' \
+	-i -e 's/return 0;/_exit(0);/'
+SEDs = sed -i -e 's/main/_start/g'
+
+all: $(TARGET)
+
+$(TARGET):
+	@$(SEDc) $(MAIN).c
+	@$(CC) $(CFLAGSs) $(MAIN).c
+	@$(SEDs) $(MAIN).s
+	@$(CC) $(CFLAGSc) $(MAIN).s $(SOURCE)
+	@$(LD) $(LDFLAGS) -o $@ $(OBJS)
+clean:
+	@$(RM) $(MAIN).s $(OBJS) $(TARGET)
+</code></pre>
+<p>把上面的代码复制到一个Makefile文件中，并利用它来编译hello.c。</p>
+<pre><code>$ make   #编译
+$ ./hello   #这个也是可以正常工作的
+Hello World
+$ wc -c hello   #但是大小减少了4382个字节，减少了将近 70%
+2060 hello
+$ echo "6442-2060" | bc
+4382
+$ echo "(6442-2060)/6442" | bc -l
+.68022353306426575597
+</code></pre>
+<p>对于一个比较小的程序，能够减少将近 70% “没用的”代码。</p>
+<p><span id="toc_3928_6176_7"></span></p>
+<h3 id="删除对程序运行没有影响的节区">删除对程序运行没有影响的节区</h3>
+<p>使用上述 <code>Makefile</code> 来编译程序，不链接那些对程序运行没有多大影响的文件，实际上也相当于删除了一些“没用”的节区，可以通过下列演示看出这个实质。</p>
+<pre><code>$ make clean
+$ make
+$ readelf -l hello | grep "0[0-9]\ \ "
+   00
+   01     .interp
+   02     .interp .hash .dynsym .dynstr .gnu.version .gnu.version_r .rel.plt .plt .text .rodata
+   03     .dynamic .got.plt
+   04     .dynamic
+   05
+$ make clean
+$ gcc -o hello hello.c
+$ readelf -l hello | grep "0[0-9]\ \ "
+   00
+   01     .interp
+   02     .interp .note.ABI-tag .hash .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r
+	  .rel.dyn .rel.plt .init .plt .text .fini .rodata .eh_frame
+   03     .ctors .dtors .jcr .dynamic .got .got.plt .data .bss
+   04     .dynamic
+   05     .note.ABI-tag
+   06
+</code></pre>
+<p>通过比较发现使用自定义的 <code>Makefile</code> 文件，少了这么多节区： <code>.bss .ctors .data .dtors .eh_frame .fini .gnu.hash .got .init .jcr .note.ABI-tag .rel.dyn</code> 。 再看看还有哪些节区可以删除呢？通过之前的分析发现有些节区是必须的，那 <code>.hash?.gnu.version?</code> 呢，通过 <code>strip -R</code>（或 <code>objcop -R</code>）删除这些节区试试。</p>
+<pre><code>$ wc -c hello   #查看大小，以便比较
+2060
+$ time ./hello    #我们比较一下一些节区对执行时间可能存在的影响
+Hello World
+
+real    0m0.001s
+user    0m0.000s
+sys     0m0.000s
+$ strip -R .hash hello   #删除.hash节区
+$ wc -c hello
+1448 hello
+$ echo "2060-1448" | bc   #减少了612字节
+612
+$ time ./hello           #发现执行时间长了一些（实际上也可能是进程调度的问题）
+Hello World
+
+real    0m0.006s
+user    0m0.000s
+sys     0m0.000s
+$ strip -R .gnu.version hello   #删除.gnu.version还是可以工作
+$ wc -c hello
+1396 hello
+$ echo "1448-1396" | bc      #又减少了52字节
+52
+$ time ./hello
+Hello World
+
+real    0m0.130s
+user    0m0.004s
+sys     0m0.000s
+$ strip -R .gnu.version_r hello   #删除.gnu.version_r就不工作了
+$ time ./hello
+./hello: error while loading shared libraries: ./hello: unsupported version 0 of Verneed record
+</code></pre>
+<p>通过删除各个节区可以查看哪些节区对程序来说是必须的，不过有些节区虽然并不影响程序的运行却可能会影响程序的执行效率，这个可以上面的运行时间看出个大概。 通过删除两个“没用”的节区，我们又减少了 <code>52+612</code>，即 664 字节。</p>
+<p><span id="toc_3928_6176_8"></span></p>
+<h3 id="删除可执行文件的节区表">删除可执行文件的节区表</h3>
+<p>用普通的工具没有办法删除节区表，但是参考资料<a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a>的作者已经写了这样一个工具。你可以从<a href="http://www.muppetlabs.com/~breadbox/software/elfkickers.html">这里</a>下载到那个工具，它是该作者写的一序列工具 <code>ELFkickers</code> 中的一个。</p>
+<p>下载并编译（<strong>注</strong>：1.0 之前的版本才支持 32 位和正常编译，新版本在代码中明确限定了数据结构为 <code>Elf64</code>）：</p>
+<pre><code>$ git clone https://github.com/BR903/ELFkickers
+$ cd ELFkickers/sstrip/
+$ git checkout f0622afa    # 检出 1.0 版
+$ make
+</code></pre>
+<p>然后复制到 <code>/usr/bin</code> 下，下面用它来删除节区表。</p>
+<pre><code>$ sstrip hello      #删除ELF可执行文件的节区表
+$ ./hello           #还是可以正常运行，说明节区表对可执行文件的运行没有任何影响
+Hello World
+$ wc -c hello       #大小只剩下708个字节了
+708 hello
+$ echo "1396-708" | bc  #又减少了688个字节。
+688
+</code></pre>
+<p>通过删除节区表又把可执行文件减少了 688 字节。现在回头看看相对于 <code>gcc</code> 默认产生的可执行文件，通过删除一些节区和节区表到底减少了多少字节？减幅达到了多少？</p>
+<pre><code>$ echo "6442-708" | bc   #
+5734
+$ echo "(6442-708)/6442" | bc -l
+.89009624340266997826
+</code></pre>
+<p>减少了 5734 多字节，减幅将近 <code>90%</code>，这说明：对于一个简短的 <code>hello.c</code> 程序而言，<code>gcc</code> 引入了将近 <code>90%</code> 的对程序运行没有影响的数据。虽然通过删除节区和节区表，使得最终的文件只有 708 字节，但是打印一个 <code>Hello World</code> 真的需要这么多字节么？事实上未必，因为：</p>
+<ul>
+<li>打印一段 <code>Hello World</code> 字符串，我们无须调用 <code>printf</code>，也就无须包含动态连接库，因此 <code>.interp</code>，<code>.dynamic</code> 等节区又可以去掉。为什么？我们可以直接使用系统调用 `(sys_write)来打印字符串。</li>
+<li>另外，我们无须把 <code>Hello World</code> 字符串存放到可执行文件中？而是让用户把它当作参数输入。</li>
+</ul>
+<p>下面，继续进行可执行文件的“减肥”。</p>
+<p><span id="toc_3928_6176_9"></span></p>
+<h2 id="用汇编语言来重写hello-world76字节">用汇编语言来重写"Hello World"（76字节）</h2>
+<p><span id="toc_3928_6176_10"></span></p>
+<h3 id="采用默认编译">采用默认编译</h3>
+<p>先来看看 <code>gcc</code> 默认产生的汇编代码情况。通过 <code>gcc</code> 的 <code>-S</code> 选项可得到汇编代码。</p>
+<pre><code>$ cat hello.c  #这个是使用_exit和printf函数的版本
+#include &lt;stdio.h&gt;      /* printf */
+#include &lt;unistd.h&gt;     /* _exit */
+
+int main()
+{
+	printf("Hello World\n");
+	_exit(0);
+}
+$ gcc -S hello.c    #生成汇编
+$ cat hello.s       #这里是汇编代码
+	.file   "hello.c"
+	.section        .rodata
+.LC0:
+	.string "Hello World"
+	.text
+.globl main
+	.type   main, @function
+main:
+	leal    4(%esp), %ecx
+	andl    $-16, %esp
+	pushl   -4(%ecx)
+	pushl   %ebp
+	movl    %esp, %ebp
+	pushl   %ecx
+	subl    $4, %esp
+	movl    $.LC0, (%esp)
+	call    puts
+	movl    $0, (%esp)
+	call    _exit
+	.size   main, .-main
+	.ident  "GCC: (GNU) 4.1.3 20070929 (prerelease) (Ubuntu 4.1.2-16ubuntu2)"
+	.section        .note.GNU-stack,"",@progbits
+$ gcc -o hello hello.s   #看看默认产生的代码大小
+$ wc -c hello
+6523 hello
+</code></pre>
+<p><span id="toc_3928_6176_11"></span></p>
+<h3 id="删除掉汇编代码中无关紧要内容">删除掉汇编代码中无关紧要内容</h3>
+<p>现在对汇编代码 <code>hello.s</code> 进行简单的处理得到，</p>
+<pre><code>.LC0:
+	.string "Hello World"
+	.text
+.globl main
+	.type   main, @function
+main:
+	leal    4(%esp), %ecx
+	andl    $-16, %esp
+	pushl   -4(%ecx)
+	pushl   %ebp
+	movl    %esp, %ebp
+	pushl   %ecx
+	subl    $4, %esp
+	movl    $.LC0, (%esp)
+	call    puts
+	movl    $0, (%esp)
+	call    _exit
+</code></pre>
+<p>再编译看看，</p>
+<pre><code>$ gcc -o hello.o hello.s
+$ wc -c hello
+6443 hello
+$ echo "6523-6443" | bc   #仅仅减少了80个字节
+80
+</code></pre>
+<p><span id="toc_3928_6176_12"></span></p>
+<h3 id="不默认编译并删除掉无关节区和节区表">不默认编译并删除掉无关节区和节区表</h3>
+<p>如果不采用默认编译呢并且删除掉对程序运行没有影响的节区和节区表呢？</p>
+<pre><code>$ sed -i -e "s/main/_start/g" hello.s   #因为没有初始化，所以得直接进入代码，替换main为_start
+$ as --32 -o  hello.o hello.s
+$ ld -melf_i386 -o hello hello.o --dynamic-linker /lib/ld-linux.so.2 -L /usr/lib -lc
+$ ./hello
+hello world!
+$ wc -c hello
+1812 hello
+$ echo "6443-1812" | bc -l   #和之前的实验类似，也减少了4k左右
+4631
+$ readelf -l hello | grep "\ [0-9][0-9]\ "
+   00
+   01     .interp
+   02     .interp .hash .dynsym .dynstr .gnu.version .gnu.version_r .rel.plt .plt .text
+   03     .dynamic .got.plt
+   04     .dynamic
+$ strip -R .hash hello
+$ strip -R .gnu.version hello
+$ wc -c hello
+1200 hello
+$ sstrip hello
+$ wc -c hello  #这个结果比之前的708（在删除所有垃圾信息以后）个字节少了708-676，即32个字节
+676 hello
+$ ./hello
+Hello World
+</code></pre>
+<p>容易发现这 32 字节可能跟节区 <code>.rodata</code> 有关系，因为刚才在链接完以后查看节区信息时，并没有 <code>.rodata</code> 节区。</p>
+<p><span id="toc_3928_6176_13"></span></p>
+<h3 id="用系统调用取代库函数">用系统调用取代库函数</h3>
+<p>前面提到，实际上还可以不用动态连接库中的 <code>printf</code> 函数，也不用直接调用 <code>_exit</code>，而是在汇编里头使用系统调用，这样就可以去掉和动态连接库关联的内容。如果想了解如何在汇编中使用系统调用，请参考资料 <a href="http://www.ibm.com/developerworks/cn/linux/l-assembly/index.html">[9]</a>。使用系统调用重写以后得到如下代码，</p>
+<pre><code>.LC0:
+	.string "Hello World\xa\x0"
+	.text
+.global _start
+_start:
+	xorl   %eax, %eax
+	movb   $4, %al                  #eax = 4, sys_write(fd, addr, len)
+	xorl   %ebx, %ebx
+	incl   %ebx                     #ebx = 1, standard output
+	movl   $.LC0, %ecx              #ecx = $.LC0, the address of string
+	xorl   %edx, %edx
+	movb   $13, %dl                 #edx = 13, the length of .string
+	int    $0x80
+	xorl   %eax, %eax
+	movl   %eax, %ebx               #ebx = 0
+	incl   %eax                     #eax = 1, sys_exit
+	int    $0x80
+</code></pre>
+<p>现在编译就不再需要动态链接器 <code>ld-linux.so</code> 了，也不再需要链接任何库。</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o
+$ readelf -l hello
+
+Elf file type is EXEC (Executable file)
+Entry point 0x8048062
+There are 1 program headers, starting at offset 52
+
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  LOAD           0x000000 0x08048000 0x08048000 0x0007b 0x0007b R E 0x1000
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .text
+$ sstrip hello
+$ ./hello           #完全可以正常工作
+Hello World
+$ wc -c hello
+123 hello
+$ echo "676-123" | bc   #相对于之前，已经只需要123个字节了，又减少了553个字节
+553
+</code></pre>
+<p>可以看到效果很明显，只剩下一个 <code>LOAD</code> 段，它对应 <code>.text</code> 节区。</p>
+<p><span id="toc_3928_6176_14"></span></p>
+<h3 id="把字符串作为参数输入">把字符串作为参数输入</h3>
+<p>不过是否还有办法呢？把 <code>Hello World</code> 作为参数输入，而不是硬编码在文件中。所以如果处理参数的代码少于 <code>Hello World</code> 字符串的长度，那么就可以达到减少目标文件大小的目的。</p>
+<p>先来看一个能够打印程序参数的汇编语言程序，它来自参考资料<a href="http://www.ibm.com/developerworks/cn/linux/l-assembly/index.html">[9]</a>。</p>
+<pre><code>.text
+.globl _start
+
+_start:
+	popl    %ecx            # argc
+vnext:
+	popl    %ecx            # argv
+	test    %ecx, %ecx      # 空指针表明结束
+	jz      exit
+	movl    %ecx, %ebx
+	xorl    %edx, %edx
+strlen:
+	movb    (%ebx), %al
+	inc     %edx
+	inc     %ebx
+	test    %al, %al
+	jnz     strlen
+	movb    $10, -1(%ebx)
+	movl    $4, %eax        # 系统调用号(sys_write)
+	movl    $1, %ebx        # 文件描述符(stdout)
+	int     $0x80
+	jmp     vnext
+exit:
+	movl    $1,%eax         # 系统调用号(sys_exit)
+	xorl    %ebx, %ebx      # 退出代码
+	int     $0x80
+	ret
+</code></pre>
+<p>编译看看效果，</p>
+<pre><code>$ as --32 -o args.o args.s
+$ ld -melf_i386 -o args args.o
+$ ./args "Hello World"  #能够打印输入的字符串，不错
+./args
+Hello World
+$ sstrip args
+$ wc -c args           #处理以后只剩下130字节
+130 args
+</code></pre>
+<p>可以看到，这个程序可以接收用户输入的参数并打印出来，不过得到的可执行文件为 130 字节，比之前的 123 个字节还多了 7 个字节，看看还有改进么？分析上面的代码后，发现，原来的代码有些地方可能进行优化，优化后得到如下代码。</p>
+<pre><code>.global _start
+_start:
+	popl %ecx        #弹出argc
+vnext:
+	popl %ecx        #弹出argv[0]的地址
+	test %ecx, %ecx  #空指针表明结束
+	jz exit
+	movl %ecx, %ebx  #复制字符串地址到ebx寄存器
+	xorl %edx, %edx  #把字符串长度清零
+strlen:                         #求输入字符串的长度
+	movb (%ebx), %al        #复制字符到al，以便判断是否为字符串结束符\0
+	inc %edx                #edx存放每个当前字符串的长度
+	inc %ebx                #ebx存放每个当前字符的地址
+	test %al, %al           #判断字符串是否结束，即是否遇到\0
+	jnz strlen
+	movb $10, -1(%ebx)      #在字符串末尾插入一个换行符\0xa
+	xorl %eax, %eax
+	movb $4, %al            #eax = 4, sys_write(fd, addr, len)
+	xorl %ebx, %ebx
+	incl %ebx               #ebx = 1, standard output
+	int $0x80
+	jmp vnext
+exit:
+	xorl %eax, %eax
+	movl %eax, %ebx                 #ebx = 0
+	incl %eax               #eax = 1, sys_exit
+	int $0x80
+</code></pre>
+<p>再测试（记得先重新汇编、链接并删除没用的节区和节区表）。</p>
+<pre><code>$ wc -c hello
+124 hello
+</code></pre>
+<p>现在只有 124 个字节，不过还是比 123 个字节多一个，还有什么优化的办法么？</p>
+<p>先来看看目前 <code>hello</code> 的功能，感觉不太符合要求，因为只需要打印 <code>Hello World</code>，所以不必处理所有的参数，仅仅需要接收并打印一个参数就可以。这样的话，把 <code>jmp vnext</code>（2 字节）这个循环去掉，然后在第一个 <code>pop %ecx</code> 语句之前加一个 <code>pop %ecx</code>（1 字节）语句就可以。</p>
+<pre><code>.global _start
+_start:
+	popl %ecx
+	popl %ecx        #弹出argc[0]的地址
+	popl %ecx        #弹出argv[1]的地址
+	test %ecx, %ecx
+	jz exit
+	movl %ecx, %ebx
+	xorl %edx, %edx
+strlen:
+	movb (%ebx), %al
+	inc %edx
+	inc %ebx
+	test %al, %al
+	jnz strlen
+	movb $10, -1(%ebx)
+	xorl %eax, %eax
+	movb $4, %al
+	xorl %ebx, %ebx
+	incl %ebx
+	int $0x80
+exit:
+	xorl %eax, %eax
+	movl %eax, %ebx
+	incl %eax
+	int $0x80
+</code></pre>
+<p>现在刚好 123 字节，和原来那个代码大小一样，不过仔细分析，还是有减少代码的余地：因为在这个代码中，用了一段额外的代码计算字符串的长度，实际上如果仅仅需要打印 <code>Hello World</code>，那么字符串的长度是固定的，即 12 。所以这段代码可去掉，与此同时测试字符串是否为空也就没有必要（不过可能影响代码健壮性！），当然，为了能够在打印字符串后就换行，在串的末尾需要加一个回车（<code>$10</code>）并且设置字符串的长度为 <code>12+1</code>，即 13，</p>
+<pre><code>.global _start
+_start:
+	popl %ecx
+	popl %ecx
+	popl %ecx
+	movb $10,12(%ecx) #在Hello World的结尾加一个换行符
+	xorl %edx, %edx
+	movb $13, %dl
+	xorl %eax, %eax
+	movb $4, %al
+	xorl %ebx, %ebx
+	incl %ebx
+	int $0x80
+	xorl %eax, %eax
+	movl %eax, %ebx
+	incl %eax
+	int $0x80
+</code></pre>
+<p>再看看效果，</p>
+<pre><code>$ wc -c hello
+111 hello
+</code></pre>
+<p><span id="toc_3928_6176_15"></span></p>
+<h3 id="寄存器赋值重用">寄存器赋值重用</h3>
+<p>现在只剩下 111 字节，比刚才少了 12 字节。貌似到了极限？还有措施么？</p>
+<p>还有，仔细分析发现：系统调用 <code>sys_exit</code> 和 <code>sys_write</code> 都用到了 <code>eax</code> 和 <code>ebx</code> 寄存器，它们之间刚好有那么一点巧合：</p>
+<ul>
+<li>sys_exit 调用时，<code>eax</code> 需要设置为 1，<code>ebx</code> 需要设置为 0 。</li>
+<li>sys_write 调用时，<code>ebx</code> 刚好是 1 。</li>
+</ul>
+<p>因此，如果在 <code>sys_exit</code> 调用之前，先把 <code>ebx</code> 复制到 <code>eax</code> 中，再对 <code>ebx</code> 减一，则可减少两个字节。</p>
+<p>不过，因为标准输入、标准输出和标准错误都指向终端，如果往标准输入写入一些东西，它还是会输出到标准输出上，所以在上述代码中如果在 <code>sys_write</code> 之前 <code>ebx</code> 设置为 0，那么也可正常往屏幕上打印 <code>Hello World</code>，这样的话，<code>sys_exit</code> 调用前就没必要修改 <code>ebx</code>，而仅需把 <code>eax</code> 设置为 1，这样就可减少 3 个字节。</p>
+<pre><code>.global _start
+_start:
+	popl %ecx
+	popl %ecx
+	popl %ecx
+	movb $10,12(%ecx)
+	xorl %edx, %edx
+	movb $13, %dl
+	xorl %eax, %eax
+	movb $4, %al
+	xorl %ebx, %ebx
+	int $0x80
+	xorl %eax, %eax
+	incl %eax
+	int $0x80
+</code></pre>
+<p>看看效果，</p>
+<pre><code>$ wc -c hello
+108 hello
+</code></pre>
+<p>现在看一下纯粹的指令还有多少？</p>
+<pre><code>$ readelf -h hello | grep Size
+  Size of this header:               52 (bytes)
+  Size of program headers:           32 (bytes)
+  Size of section headers:           0 (bytes)
+$  echo "108-52-32" | bc
+24
+</code></pre>
+<p><span id="toc_3928_6176_16"></span></p>
+<h3 id="通过文件名传递参数">通过文件名传递参数</h3>
+<p>对于标准的 <code>main</code> 函数的两个参数，文件名实际上作为第二个参数（数组）的第一个元素传入，如果仅仅是为了打印一个字符串，那么可以打印文件名本身。例如，要打印 <code>Hello World</code>，可以把文件名命名为 <code>Hello World</code> 即可。</p>
+<p>这样地话，代码中就可以删除掉一条 <code>popl</code> 指令，减少 1 个字节，变成 107 个字节。</p>
+<pre><code>.global _start
+_start:
+	popl %ecx
+	popl %ecx
+	movb $10,12(%ecx)
+	xorl %edx, %edx
+	movb $13, %dl
+	xorl %eax, %eax
+	movb $4, %al
+	xorl %ebx, %ebx
+	int $0x80
+	xorl %eax, %eax
+	incl %eax
+	int $0x80
+</code></pre>
+<p>看看效果，</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o
+$ sstrip hello
+$ wc -c hello
+107
+$ mv hello "Hello World"
+$ export PATH=./:$PATH
+$ Hello\ World
+Hello World
+</code></pre>
+<p><span id="toc_3928_6176_17"></span></p>
+<h3 id="删除非必要指令">删除非必要指令</h3>
+<p>在测试中发现，<code>edx</code>，<code>eax</code>，<code>ebx</code> 的高位即使不初始化，也常为 0，如果不考虑健壮性（仅这里实验用，实际使用中必须考虑健壮性），几条 <code>xorl</code> 指令可以移除掉。</p>
+<p>另外，如果只是为了演示打印字符串，完全可以不用打印换行符，这样下来，代码可以综合优化成如下几条指令：</p>
+<pre><code>.global _start
+_start:
+	popl %ecx	# argc
+	popl %ecx	# argv[0]
+	movb $5, %dl	# 设置字符串长度
+	movb $4, %al	# eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx
+	int $0x80
+	movb $1, %al
+	int $0x80
+</code></pre>
+<p>看看效果：</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o
+$ sstrip hello
+$ wc -c hello
+96
+</code></pre>
+<p><span id="toc_3928_6176_18"></span></p>
+<h2 id="合并代码段程序头和文件头52字节">合并代码段、程序头和文件头（52字节）</h2>
+<p><span id="toc_3928_6176_19"></span></p>
+<h3 id="把代码段移入文件头">把代码段移入文件头</h3>
+<p>纯粹的指令只有 <code>96-84=12</code> 个字节了，还有办法再减少目标文件的大小么？如果看了参考资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a>，看样子你又要蠢蠢欲动了：这 12 个字节是否可以插入到文件头部或程序头部？如果可以那是否意味着还可减少可执行文件的大小呢？现在来比较一下这三部分的十六进制内容。</p>
+<pre><code>$ hexdump -C hello -n 52     #文件头(52bytes)
+00000000  7f 45 4c 46 01 01 01 00  00 00 00 00 00 00 00 00  |.ELF............|
+00000010  02 00 03 00 01 00 00 00  54 80 04 08 34 00 00 00  |........T...4...|
+00000020  00 00 00 00 00 00 00 00  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00                                       |....|
+00000034
+$ hexdump -C hello -s 52 -n 32    #程序头(32bytes)
+00000034  01 00 00 00 00 00 00 00  00 80 04 08 00 80 04 08  |................|
+00000044  6c 00 00 00 6c 00 00 00  05 00 00 00 00 10 00 00  |l...l...........|
+00000054
+$ hexdump -C hello -s 84          #实际代码部分(12bytes)
+00000054  59 59 b2 05 b0 04 cd 80  b0 01 cd 80              |YY..........|
+00000060
+</code></pre>
+<p>从上面结果发现 <code>ELF</code> 文件头部和程序头部还有好些空洞（0），是否可以把指令字节分散放入到那些空洞里或者是直接覆盖掉那些系统并不关心的内容？抑或是把代码压缩以后放入可执行文件中，并在其中实现一个解压缩算法？还可以是通过一些代码覆盖率测试工具（<code>gcov</code>，<code>prof</code>）对你的代码进行优化？</p>
+<p>在继续介绍之前，先来看一个 <code>dd</code> 工具，可以用来直接“编辑” <code>ELF</code> 文件，例如，</p>
+<p>直接往指定位置写入 <code>0xff</code> ：</p>
+<pre><code>$ hexdump -C hello -n 16	# 写入前，elf文件前16个字节
+00000000  7f 45 4c 46 01 01 01 00  00 00 00 00 00 00 00 00  |.ELF............|
+00000010
+$ echo -ne "\xff" | dd of=hello bs=1 count=1 seek=15 conv=notrunc	# 把最后一个字节0覆盖掉
+1+0 records in
+1+0 records out
+1 byte (1 B) copied, 3.7349e-05 s, 26.8 kB/s
+$ hexdump -C hello -n 16	# 写入后果然被覆盖
+00000000  7f 45 4c 46 01 01 01 00  00 00 00 00 00 00 00 ff  |.ELF............|
+00000010
+</code></pre>
+<ul>
+<li><code>seek=15</code> 表示指定写入位置为第 15 个（从第 0 个开始）</li>
+<li><code>conv=notrunc</code> 选项表示要保留写入位置之后的内容，默认情况下会截断。</li>
+<li><code>bs=1</code> 表示一次读/写 1 个</li>
+<li><code>count=1</code> 表示总共写 1 次</li>
+</ul>
+<p>覆盖多个连续的值：</p>
+<p>把第 12，13，14，15 连续 4 个字节全部赋值为 <code>0xff</code> 。</p>
+<pre><code>$ echo -ne "\xff\xff\xff\xff" | dd of=hello bs=1 count=4 seek=12 conv=notrunc
+$ hexdump -C hello -n 16
+00000000  7f 45 4c 46 01 01 01 00  00 00 00 00 ff ff ff ff  |.ELF............|
+00000010
+</code></pre>
+<p>下面，通过往文件头指定位置写入 <code>0xff</code> 确认哪些部分对于可执行文件的执行是否有影响？这里是逐步测试后发现依然能够执行的情况：</p>
+<pre><code>$ hexdump -C hello
+00000000  7f 45 4c 46 ff ff ff ff  ff ff ff ff ff ff ff ff  |.ELF............|
+00000010  02 00 03 00 ff ff ff ff  54 80 04 08 34 00 00 00  |........T...4...|
+00000020  ff ff ff ff ff ff ff ff  34 00 20 00 01 00 ff ff  |........4. .....|
+00000030  ff ff ff ff 01 00 00 00  00 00 00 00 00 80 04 08  |................|
+00000040  00 80 04 08 60 00 00 00  60 00 00 00 05 00 00 00  |....`...`.......|
+00000050  00 10 00 00 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |....YY..........|
+00000060
+</code></pre>
+<p>可以发现，文件头部分，有 30 个字节即使被篡改后，该可执行文件依然可以正常执行。这意味着，这 30 字节是可以写入其他代码指令字节的。而我们的实际代码指令只剩下 12 个，完全可以直接移到前 12 个 <code>0xff</code> 的位置，即从第 4 个到第 15 个。</p>
+<p>而代码部分的起始位置，通过 <code>readelf -h</code> 命令可以看到：</p>
+<pre><code>$ readelf -h hello | grep "Entry"
+  Entry point address:               0x8048054
+</code></pre>
+<p>上面地址的最后两位 <code>0x54=84</code> 就是代码在文件中的偏移，也就是刚好从程序头之后开始的，也就是用文件头（52）+程序头（32）个字节开始的 12 字节覆盖到第 4 个字节开始的 12 字节内容即可。</p>
+<p>上面的 <code>dd</code> 命令从 <code>echo</code> 命令获得输入，下面需要通过可执行文件本身获得输入，先把代码部分移过去：</p>
+<pre><code>$ dd if=hello of=hello bs=1 skip=84 count=12 seek=4 conv=notrunc
+12+0 records in
+12+0 records out
+12 bytes (12 B) copied, 4.9552e-05 s, 242 kB/s
+$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 01 00 00 00  54 80 04 08 34 00 00 00  |........T...4...|
+00000020  00 00 00 00 00 00 00 00  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00 01 00 00 00  00 00 00 00 00 80 04 08  |................|
+00000040  00 80 04 08 60 00 00 00  60 00 00 00 05 00 00 00  |....`...`.......|
+00000050  00 10 00 00 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |....YY..........|
+00000060
+</code></pre>
+<p>接着把代码部分截掉：</p>
+<pre><code>$ dd if=hello of=hello bs=1 count=1 skip=84 seek=84
+0+0 records in
+0+0 records out
+0 bytes (0 B) copied, 1.702e-05 s, 0.0 kB/s
+$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 01 00 00 00  54 80 04 08 34 00 00 00  |........T...4...|
+00000020  00 00 00 00 00 00 00 00  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00 01 00 00 00  00 00 00 00 00 80 04 08  |................|
+00000040  00 80 04 08 60 00 00 00  60 00 00 00 05 00 00 00  |....`...`.......|
+00000050  00 10 00 00                                       |....|
+00000054
+</code></pre>
+<p>这个时候还不能执行，因为代码在文件中的位置被移动了，相应地，文件头中的 <code>Entry point address</code>，即文件入口地址也需要被修改为 <code>0x8048004</code> 。</p>
+<p>即需要把 <code>0x54</code> 所在的第 24 个字节修改为 <code>0x04</code> ：</p>
+<pre><code>$ echo -ne "\x04" | dd of=hello bs=1 count=1 seek=24 conv=notrunc
+1+0 records in
+1+0 records out
+1 byte (1 B) copied, 3.7044e-05 s, 27.0 kB/s
+$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 01 00 00 00  04 80 04 08 34 00 00 00  |............4...|
+00000020  84 00 00 00 00 00 00 00  34 00 20 00 01 00 28 00  |........4. ...(.|
+00000030  05 00 02 00 01 00 00 00  00 00 00 00 00 80 04 08  |................|
+00000040  00 80 04 08 60 00 00 00  60 00 00 00 05 00 00 00  |....`...`.......|
+00000050  00 10 00 00
+</code></pre>
+<p>修改后就可以执行了。</p>
+<p><span id="toc_3928_6176_20"></span></p>
+<h3 id="把程序头移入文件头">把程序头移入文件头</h3>
+<p>程序头部分经过测试发现基本上都不能修改并且需要是连续的，程序头有 32 个字节，而文件头中连续的 <code>0xff</code> 可以被篡改的只有从第 46 个开始的 6 个了，另外，程序头刚好是 <code>01 00</code> 开头，而第 44，45 个刚好为 <code>01 00</code>，这样地话，这两个字节文件头可以跟程序头共享，这样地话，程序头就可以往文件头里头移动 8 个字节了。</p>
+<pre><code>$ dd if=hello of=hello bs=1 skip=52 seek=44 count=32 conv=notrunc
+</code></pre>
+<p>再把最后 8 个没用的字节删除掉，保留 <code>84-8=76</code> 个字节：</p>
+<pre><code>$ dd if=hello of=hello bs=1 skip=76 seek=76
+$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 01 00 00 00  04 80 04 08 34 00 00 00  |............4...|
+00000020  84 00 00 00 00 00 00 00  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00 00 80 04 08  00 80 04 08 60 00 00 00  |............`...|
+00000040  60 00 00 00 05 00 00 00  00 10 00 00              |`...........|
+0000004c
+</code></pre>
+<p>另外，还需要把文件头中程序头的位置信息改为 44，即第 28 个字节，原来是 <code>0x34</code>，即 52 的位置。</p>
+<pre><code>$ echo "obase=16;ibase=10;44" | bc	# 先把44转换是16进制的0x2C
+2C
+$ echo -ne "\x2C" | dd of=hello bs=1 count=1 seek=28 conv=notrunc	# 修改文件头
+1+0 records in
+1+0 records out
+1 byte (1 B) copied, 3.871e-05 s, 25.8 kB/s
+$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 01 00 00 00  04 80 04 08 2c 00 00 00  |............,...|
+00000020  84 00 00 00 00 00 00 00  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00 00 80 04 08  00 80 04 08 60 00 00 00  |............`...|
+00000040  60 00 00 00 05 00 00 00  00 10 00 00              |`...........|
+0000004c
+</code></pre>
+<p>修改后即可执行了，目前只剩下 76 个字节：</p>
+<pre><code>$ wc -c hello
+76
+</code></pre>
+<p><span id="toc_3928_6176_21"></span></p>
+<h3 id="在非连续的空间插入代码">在非连续的空间插入代码</h3>
+<p>另外，还有 12 个字节可以放代码，见 <code>0xff</code> 的地方：</p>
+<pre><code>$ hexdump -C hello
+00000000  7f 45 4c 46 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |.ELFYY..........|
+00000010  02 00 03 00 ff ff ff ff  04 80 04 08 2c 00 00 00  |............,...|
+00000020  ff ff ff ff ff ff ff ff  34 00 20 00 01 00 00 00  |........4. .....|
+00000030  00 00 00 00 00 80 04 08  00 80 04 08 60 00 00 00  |............`...|
+00000040  60 00 00 00 05 00 00 00  00 10 00 00              |`...........|
+0000004c
+</code></pre>
+<p>不过因为空间不是连续的，需要用到跳转指令作为跳板利用不同的空间。</p>
+<p>例如，如果要利用后面的 <code>0xff</code> 的空间，可以把第 14，15 位置的 <code>cd 80</code> 指令替换为一条跳转指令，比如跳转到第 20 个字节的位置，从跳转指令之后的 16 到 20 刚好 4 个字节。</p>
+<p>然后可以参考 <a href="http://sparksandflames.com/files/x86InstructionChart.html">X86 指令编码表</a>（也可以写成汇编生成可执行文件后用 <code>hexdump</code> 查看），可以把 <code>jmp</code> 指令编码为： <code>0xeb 0x04</code> 。</p>
+<pre><code>$ echo -ne "\xeb\x04" | dd of=hello bs=1 count=2 seek=14 conv=notrunc
+</code></pre>
+<p>然后把原来位置的 <code>cd 80</code> 移动到第 20 个字节开始的位置：</p>
+<pre><code>$ echo -ne "\xcd\x80" | dd of=hello bs=1 count=2 seek=20 conv=notrunc
+</code></pre>
+<p>依然可以执行，类似地可以利用更多非连续的空间。</p>
+<p><span id="toc_3928_6176_22"></span></p>
+<h3 id="把程序头完全合入文件头">把程序头完全合入文件头</h3>
+<p>在阅读参考资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a>后，发现有更多深层次的探讨，通过分析 Linux 系统对 <code>ELF</code> 文件头部和程序头部的解析，可以更进一步合并程序头和文件头。</p>
+<p>该资料能够把最简的 <code>ELF</code> 文件（简单返回一个数值）压缩到 45 个字节，真地是非常极端的努力，思路可以充分借鉴。在充分理解原文的基础上，我们进行更细致地梳理。</p>
+<p>首先对 <code>ELF</code> 文件头部和程序头部做更彻底的理解，并具体到每一个字节的含义以及在 Linux 系统下的实际解析情况。</p>
+<p>先来看看 <code>readelf -a</code> 的结果：</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o
+$ sstrip hello
+$ readelf -a hello
+ELF Header:
+  Magic:   7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00
+  Class:                             ELF32
+  Data:                              2's complement, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              EXEC (Executable file)
+  Machine:                           Intel 80386
+  Version:                           0x1
+  Entry point address:               0x8048054
+  Start of program headers:          52 (bytes into file)
+  Start of section headers:          0 (bytes into file)
+  Flags:                             0x0
+  Size of this header:               52 (bytes)
+  Size of program headers:           32 (bytes)
+  Number of program headers:         1
+  Size of section headers:           0 (bytes)
+  Number of section headers:         0
+  Section header string table index: 0
+
+There are no sections in this file.
+
+There are no sections to group in this file.
+
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  LOAD           0x000000 0x08048000 0x08048000 0x00060 0x00060 R E 0x1000
+</code></pre>
+<p>然后结合 <code>/usr/include/linux/elf.h</code> 分别做详细注解。</p>
+<p>首先是 52 字节的 <code>Elf</code> 文件头的结构体 <code>elf32_hdr</code>：</p>
+<table>
+<thead>
+<tr>
+<th>变量类型</th>
+<th>变量名</th>
+<th>字节</th>
+<th>说明</th>
+<th>类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>unsigned char</td>
+<td>e_ident[EI_NIDENT]</td>
+<td>16</td>
+<td>.ELF 前四个标识文件类型</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_type</td>
+<td>2</td>
+<td>指定为可执行文件</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_machine</td>
+<td>2</td>
+<td>指示目标机类型，例如：Intel 386</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>e_version</td>
+<td>4</td>
+<td>当前只有一个版本存在，被忽略了</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Addr</td>
+<td>e_entry</td>
+<td>4</td>
+<td>代码入口=加载地址(p_vaddr+.text偏移)</td>
+<td><strong>可调整</strong></td>
+</tr>
+<tr>
+<td>Elf32_Off</td>
+<td>e_phoff</td>
+<td>4</td>
+<td>程序头 Phdr 的偏移地址，用于加载代码</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Off</td>
+<td>e_shoff</td>
+<td>4</td>
+<td>所有节区相关信息对文件执行无效</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>e_flags</td>
+<td>4</td>
+<td>Intel 架构未使用</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_ehsize</td>
+<td>2</td>
+<td>文件头大小，Linux 没做校验</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_phentsize</td>
+<td>2</td>
+<td>程序头入口大小，新内核有用</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_phnum</td>
+<td>2</td>
+<td>程序头入口个数</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_shentsize</td>
+<td>2</td>
+<td>所有节区相关信息对文件执行无效</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_shnum</td>
+<td>2</td>
+<td>所有节区相关信息对文件执行无效</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Half</td>
+<td>e_shstrndx</td>
+<td>2</td>
+<td>所有节区相关信息对文件执行无效</td>
+<td><del>可篡改</del></td>
+</tr>
+</tbody>
+</table>
+<p>其次是 32 字节的程序头（Phdr）的结构体 <code>elf32_phdr</code>：</p>
+<table>
+<thead>
+<tr>
+<th>变量类型</th>
+<th>变量名</th>
+<th>字节</th>
+<th>说明</th>
+<th>类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Elf32_Word</td>
+<td>p_type</td>
+<td>4</td>
+<td>标记为可加载段</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Off</td>
+<td>p_offset</td>
+<td>4</td>
+<td>相对程序头的偏移地址</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>Elf32_Addr</td>
+<td>p_vaddr</td>
+<td>4</td>
+<td>加载地址, 0x0~0x80000000，页对齐</td>
+<td><strong>可调整</strong></td>
+</tr>
+<tr>
+<td>Elf32_Addr</td>
+<td>p_paddr</td>
+<td>4</td>
+<td>物理地址，暂时没用</td>
+<td><del>可篡改</del></td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>p_filesz</td>
+<td>4</td>
+<td>加载的文件大小，&gt;=real size</td>
+<td><strong>可调整</strong></td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>p_memsz</td>
+<td>4</td>
+<td>加载所需内存大小，&gt;= p_filesz</td>
+<td><strong>可调整</strong></td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>p_flags</td>
+<td>4</td>
+<td>权限:read(4),exec(1), 其中一个暗指另外一个</td>
+<td><strong>可调整</strong></td>
+</tr>
+<tr>
+<td>Elf32_Word</td>
+<td>p_align</td>
+<td>4</td>
+<td>PIC(共享库需要)，对执行文件无效</td>
+<td><del>可篡改</del></td>
+</tr>
+</tbody>
+</table>
+<p>接着，咱们把 Elf 中的文件头和程序头部分<strong>可调整</strong>和<del>可篡改</del>的字节（52 + 32 = 84个）全部用特别的字体标记出来。</p>
+<pre><code>$ hexdump -C hello -n 84
+</code></pre>
+<blockquote>
+<p>00000000 7f 45 4c 46 <del>01 01 01 00 00 00 00 00 00 00 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 <del>01 00 00 00</del> <strong>54 80 04 08 34</strong> 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <del>84 00 00 00 00 00 00 00</del> 34 00 20 00 01 00 <del>28 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000030 <del>05 00 02 00</del>|01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong></p>
+</blockquote>
+<blockquote>
+<p>00000040 <del>00 80 04 08</del> <strong>60 00 00 00 60 00 00 00 05 00 00 00</strong></p>
+</blockquote>
+<blockquote>
+<p>00000050 <del>00 10 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000054</p>
+</blockquote>
+<p>上述 <code>|</code> 线之前为文件头，之后为程序头，之前的 <code>000000xx</code> 为偏移地址。</p>
+<p>如果要把程序头彻底合并进文件头。从上述信息综合来看，文件头有 4 处必须保留，结合资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a>，经过对比发现，如果把第 4 行开始的程序头往上平移 3 行，也就是：</p>
+<blockquote>
+<p>00000000 ========= <del>01 01 01 00 00 00 00 00 00 00 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 <del>01 00 00 00</del> <strong>54 80 04 08 34</strong> 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <del>84 00 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000030 ========= 01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong></p>
+</blockquote>
+<blockquote>
+<p>00000040 <del>00 80 04 08</del> <strong>60 00 00 00 60 00 00 00 05 00 00 00</strong></p>
+</blockquote>
+<blockquote>
+<p>00000050 <del>00 10 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000054</p>
+</blockquote>
+<p>把可直接合并的先合并进去，效果如下：</p>
+<p>（文件头）</p>
+<blockquote>
+<p>00000000 ========= 01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong> (^^ p_vaddr)</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 <del>60 00 00 00</del> <strong>54 80 04 08 34</strong> 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 =================== e_entry e_phoff</p>
+</blockquote>
+<p>（程序头）</p>
+<blockquote>
+<p>00000030 ========= 01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong> (^^ p_vaddr)</p>
+</blockquote>
+<blockquote>
+<p>00000040 02 00 03 00 <strong>60 00 00 00 60 00 00 00 05 00 00 00</strong></p>
+</blockquote>
+<blockquote>
+<p>00000050 ========= p_filesz p_memsz ^^p_flags</p>
+</blockquote>
+<blockquote>
+<p>00000054</p>
+</blockquote>
+<p>接着需要设法处理好可调整的 6 处，可以逐个解决，从易到难。</p>
+<ul>
+<li>首先，合并 <code>e_phoff</code> 与 <code>p_flags</code></li>
+</ul>
+<p>在合并程序头以后，程序头的偏移地址需要修改为 4，即文件的第 4 个字节开始，也就是说 <code>e_phoff</code> 需要修改为 04。</p>
+<p>而恰好，<code>p_flags</code> 的 <code>read(4)</code> 和 <code>exec(1)</code> 可以只选其一，所以，只保留 <code>read(4)</code> 即可，刚好也为 04。</p>
+<p>合并后效果如下：</p>
+<p>（文件头）</p>
+<blockquote>
+<p>00000000 ========= 01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong> (^^ p_vaddr)</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 <del>60 00 00 00</del> <strong>54 80 04 08</strong> 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 =================== ^^ e_entry</p>
+</blockquote>
+<p>（程序头）</p>
+<blockquote>
+<p>00000030 ========= 01 00 00 00 00 00 00 00 <strong>00 80 04 08</strong> (^^ p_vaddr)</p>
+</blockquote>
+<blockquote>
+<p>00000040 02 00 03 00 <strong>60 00 00 00 60 00 00 00</strong> 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000050 ========= p_filesz p_memsz</p>
+</blockquote>
+<blockquote>
+<p>00000054</p>
+</blockquote>
+<ul>
+<li>接下来，合并 <code>e_entry</code>，<code>p_filesz</code>, <code>p_memsz</code> 和 <code>p_vaddr</code></li>
+</ul>
+<p>从早前的分析情况来看，这 4 个变量基本都依赖 <code>p_vaddr</code>，也就是程序的加载地址，大体的依赖关系如下：</p>
+<pre><code>e_entry = p_vaddr + text offset = p_vaddr + 84 = p_vaddr + 0x54
+
+p_memsz = e_entry
+
+p_memsz &gt;= p_filesz，可以简单取 p_filesz = p_memsz
+
+p_vaddr = page alignment
+</code></pre>
+<p>所以，首先需要确定 <code>p_vaddr</code>，通过测试，发现<code>p_vaddr</code> 最低必须有 64k，也就是 0x00010000，对应到 <code>hexdump</code> 的 <code>little endian</code> 导出结果，则为 <code>00 00 01 00</code>。</p>
+<p>需要注意的是，为了尽量少了分配内存，我们选择了一个最小的<code>p_vaddr</code>，如果申请的内存太大，系统将无法分配。</p>
+<p>接着，计算出另外 3 个变量：</p>
+<pre><code>e_entry = 0x00010000 + 0x54 = 0x00010054 即 54 00 01 00
+p_memsz = 54 00 01 00
+p_filesz = 54 00 01 00
+</code></pre>
+<p>完全合并后，修改如下：</p>
+<p>（文件头）</p>
+<blockquote>
+<p>00000000 ========= 01 00 00 00 00 00 00 00 00 00 01 00</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 54 00 01 00 54 00 01 00 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 ========</p>
+</blockquote>
+<p>好了，直接把内容烧入：</p>
+<pre><code>$ echo -ne "\x01\x00\x00\x00\x00\x00\x00\x00" \
+	   "\x00\x00\x01\x00\x02\x00\x03\x00" \
+	   "\x54\x00\x01\x00\x54\x00\x01\x00\x04" |\
+	   tr -d ' ' |\
+    dd of=hello bs=1 count=25 seek=4 conv=notrunc
+</code></pre>
+<p>截掉代码（52 + 32 + 12 = 96）之后的所有内容，查看效果如下：</p>
+<pre><code>$ dd if=hello of=hello bs=1 count=1 skip=96 seek=96
+$ hexdump -C hello -n 96
+00000000  7f 45 4c 46 01 00 00 00  00 00 00 00 00 00 01 00  |.ELF............|
+00000010  02 00 03 00 54 00 01 00  54 00 01 00 04 00 00 00  |....T...T.......|
+00000020  84 00 00 00 00 00 00 00  34 00 20 00 01 00 28 00  |........4. ...(.|
+00000030  05 00 02 00 01 00 00 00  00 00 00 00 00 80 04 08  |................|
+00000040  00 80 04 08 60 00 00 00  60 00 00 00 05 00 00 00  |....`...`.......|
+00000050  00 10 00 00 59 59 b2 05  b0 04 cd 80 b0 01 cd 80  |....YY..........|
+00000060
+</code></pre>
+<p>最后的工作是查看文件头中剩下的<del>可篡改</del>的内容，并把<strong>代码部分</strong>合并进去，程序头已经合入，不再显示。</p>
+<blockquote>
+<p>00000000 7f 45 4c 46 01 00 00 00 00 00 00 00 00 00 01 00</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 54 00 01 00 54 00 01 00 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <del>84 00 00 00 00 00 00 00</del> 34 00 20 00 01 00 <del>28 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000030 <del>05 00 02 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000040</p>
+</blockquote>
+<blockquote>
+<p>00000050 ============= <strong>59 59 b2 05 b0 04 cd 80 b0 01 cd 80</strong></p>
+</blockquote>
+<blockquote>
+<p>00000060</p>
+</blockquote>
+<p>我们的指令有 12 字节，<del>可篡改</del>的部分有 14 个字节，理论上一定放得下，不过因为把程序头搬进去以后，这 14 个字节并不是连续，刚好可以用上我们之前的跳转指令处理办法来解决。</p>
+<p>并且，加入 2 个字节的跳转指令，刚好是 14 个字节，恰好把代码也完全包含进了文件头。</p>
+<p>在预留好<strong>跳转指令</strong>位置的前提下，我们把代码部分先合并进去：</p>
+<blockquote>
+<p>00000000 7f 45 4c 46 01 00 00 00 00 00 00 00 00 00 01 00</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 54 00 01 00 54 00 01 00 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <strong>59 59 b2 05 b0 04</strong> <del>00 00</del> 34 00 20 00 01 00 <strong>cd 80</strong></p>
+</blockquote>
+<blockquote>
+<p>00000030 <strong>b0 01 cd 80</strong></p>
+</blockquote>
+<p>接下来设计跳转指令，跳转指令需要从所在位置跳到第一个 <strong>cd 80</strong> 所在的位置，相距 6 个字节，根据 <code>jmp</code> 短跳转的编码规范，可以设计为 <code>0xeb 0x06</code>，填完后效果如下：</p>
+<blockquote>
+<p>00000000 7f 45 4c 46 01 00 00 00 00 00 00 00 00 00 01 00</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 54 00 01 00 54 00 01 00 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <strong>59 59 b2 05 b0 04 eb 06</strong> 34 00 20 00 01 00 <strong>cd 80</strong></p>
+</blockquote>
+<blockquote>
+<p>00000030 <strong>b0 01 cd 80</strong></p>
+</blockquote>
+<p>用 <code>dd</code> 命令写入，分两段写入：</p>
+<pre><code>$ echo -ne "\x59\x59\xb2\x05\xb0\x04\xeb\x06" | \
+    dd of=hello bs=1 count=8 seek=32 conv=notrunc
+
+$ echo -ne "\xcd\x80\xb0\x01\xcd\x80" | \
+    dd of=hello bs=1 count=6 seek=46 conv=notrunc
+</code></pre>
+<p>代码合入以后，需要修改文件头中的代码的偏移地址，即 <code>e_entry</code>，也就是要把原来的偏移 84 (0x54) 修改为现在的偏移，即 0x20。</p>
+<pre><code>$ echo -ne "\x20" | dd of=hello bs=1 count=1 seek=24 conv=notrunc
+</code></pre>
+<p>修改完以后恰好把合并进的程序头 <code>p_memsz</code>，也就是分配给文件的内存改小了，<code>p_filesz</code>也得相应改小。</p>
+<pre><code>$ echo -ne "\x20" | dd of=hello bs=1 count=1 seek=20 conv=notrunc
+</code></pre>
+<p>程序头和代码都已经合入，最后，把 52 字节之后的内容全部删掉：</p>
+<pre><code>$ dd if=hello of=hello bs=1 count=1 skip=52 seek=52
+$ hexdump -C hello
+00000000  7f 45 4c 46 01 00 00 00  00 00 00 00 00 00 01 00  |.ELF............|
+00000010  02 00 03 00 20 00 01 00  20 00 01 00 04 00 00 00  |....T...T.......|
+00000020  59 59 b2 05 b0 04 eb 06  34 00 20 00 01 00 cd 80  |YY......4. .....|
+00000030  b0 01 cd 80
+$ export PATH=./:$PATH
+$ hello
+hello
+</code></pre>
+<p><strong>代码</strong>和<del>程序头</del>部分合并进文件头的汇总情况：</p>
+<blockquote>
+<p>00000000 7f 45 4c 46 <del>01 00 00 00 00 00 00 00 00 00 01 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000010 <del>02 00 03 00 20 00 01 00 20 00 01 00 04 00 00 00</del></p>
+</blockquote>
+<blockquote>
+<p>00000020 <strong><del>59 59 b2 05</del> b0 04 eb 06</strong> 34 00 20 00 01 00 <strong>cd 80</strong></p>
+</blockquote>
+<blockquote>
+<p>00000030 <strong>b0 01 cd 80</strong></p>
+</blockquote>
+<p>最后，我们的成绩是：</p>
+<pre><code>$ wc -c hello
+52
+</code></pre>
+<p>史上最小的可打印 <code>Hello World</code>（注：要完全打印得把代码中的5该为13，并且把文件名该为该字符串） 的 <code>Elf</code> 文件是 52 个字节。打破了资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a> 作者创造的纪录：</p>
+<pre><code>$ cd ELFkickers/tiny/
+$ wc -c hello
+59 hello
+</code></pre>
+<p>需要特别提到的是，该作者创造的最小可执行 Elf 是 45 个字节。</p>
+<p>但是由于那个程序只能返回一个数值，代码更简短，刚好可以直接嵌入到文件头中间，而文件末尾的 7 个 <code>0</code> 字节由于 Linux 加载时会自动填充，所以可以删掉，所以最终的文件大小是 52 - 7 即 45 个字节。</p>
+<p>其大体可实现如下：</p>
+<pre><code>.global _start
+_start:
+	mov $42, %bl   # 设置返回值为 42
+	xor %eax, %eax # eax = 0
+	inc %eax       # eax = eax+1, 设置系统调用号, sys_exit()
+	int $0x80
+</code></pre>
+<p>保存为 ret.s，编译和执行效果如下：</p>
+<pre><code>$ as --32 -o ret.o ret.s
+$ ld -melf_i386 -o ret ret.o
+$ ./ret
+42
+</code></pre>
+<p>代码字节数可这么查看：</p>
+<pre><code>$ ld -melf_i386 --oformat=binary -o ret.bin ret.o
+$ hexdump -C ret.bin
+0000000  b3 2a 31 c0 40 cd 80
+0000007
+</code></pre>
+<p>这里只有 7 条指令，刚好可以嵌入，而最后的 6 个字节因为<del>可篡改</del>为 0，并且内核可自动填充 0，所以干脆可以连续删掉最后 7 个字节的 0：</p>
+<blockquote>
+<p>00000000 7f 45 4c 46 01 00 00 00 00 00 00 00 00 00 01 00</p>
+</blockquote>
+<blockquote>
+<p>00000010 02 00 03 00 54 00 01 00 54 00 01 00 04 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000020 <strong>b3 2a 31 c0 40 cd 80</strong> 00 34 00 20 00 01 00 00 00</p>
+</blockquote>
+<blockquote>
+<p>00000030 00 00 00 00</p>
+</blockquote>
+<p>可以直接用已经合并好程序头的 <code>hello</code> 来做实验，这里一并截掉最后的 7 个 0 字节：</p>
+<pre><code>$ cp hello ret
+$ echo -ne "\xb3\x2a\x31\xc0\x40\xcd\x80" |\
+    dd of=ret bs=1 count=8 seek=32 conv=notrunc
+$ dd if=ret of=hello bs=1 count=1 skip=45 seek=45
+$ hexdump -C hello
+00000000  7f 45 4c 46 01 00 00 00  00 00 00 00 00 00 01 00  |.ELF............|
+00000010  02 00 03 00 20 00 01 00  20 00 01 00 04 00 00 00  |.... ... .......|
+00000020  b3 2a 31 c0 40 cd 80 06  34 00 20 00 01           |.*1.@...4. ..|
+0000002d
+$ wc -c ret
+45 ret
+$ ./ret
+$ echo $?
+42
+</code></pre>
+<p>如果想快速构建该 <code>Elf</code> 文件，可以直接使用下述 Shell 代码：</p>
+<pre><code>#!/bin/bash
+#
+# generate_ret_elf.sh -- Generate a 45 bytes Elf file
+#
+# $ bash generate_ret_elf.sh
+# $ chmod a+x ret.elf
+# $ ./ret.elf
+# $ echo $?
+# 42
+#
+
+ret="\x7f\x45\x4c\x46\x01\x00\x00\x00"
+ret=${ret}"\x00\x00\x00\x00\x00\x00\x01\x00"
+ret=${ret}"\x02\x00\x03\x00\x20\x00\x01\x00"
+ret=${ret}"\x20\x00\x01\x00\x04\x00\x00\x00"
+ret=${ret}"\xb3\x2a\x31\xc0\x40\xcd\x80\x06"
+ret=${ret}"\x34\x00\x20\x00\x01"
+
+echo -ne $ret &gt; ret.elf
+</code></pre>
+<p>又或者是直接参照资料 <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">[1]</a> 的 <code>tiny.asm</code> 就行了，其代码如下：</p>
+<pre><code>; ret.asm
+
+  BITS 32
+
+	        org     0x00010000
+
+	        db      0x7F, "ELF"             ; e_ident
+	        dd      1                                       ; p_type
+	        dd      0                                       ; p_offset
+	        dd      $$                                      ; p_vaddr
+	        dw      2                       ; e_type        ; p_paddr
+	        dw      3                       ; e_machine
+	        dd      _start                  ; e_version     ; p_filesz
+	        dd      _start                  ; e_entry       ; p_memsz
+	        dd      4                       ; e_phoff       ; p_flags
+  _start:
+	        mov     bl, 42                  ; e_shoff       ; p_align
+	        xor     eax, eax
+	        inc     eax                     ; e_flags
+	        int     0x80
+	        db      0
+	        dw      0x34                    ; e_ehsize
+	        dw      0x20                    ; e_phentsize
+	        db      1                       ; e_phnum
+	                                        ; e_shentsize
+	                                        ; e_shnum
+	                                        ; e_shstrndx
+
+  filesize      equ     $ - $$
+</code></pre>
+<p>编译和运行效果如下：</p>
+<pre><code>$ nasm -f bin -o ret ret.asm
+$ chmod +x ret
+$ ./ret ; echo $?
+42
+$ wc -c ret
+45 ret
+</code></pre>
+<p>下面也给一下本文精简后的 <code>hello</code> 的 <code>nasm</code> 版本：</p>
+<pre><code>; hello.asm
+
+  BITS 32
+
+	        org     0x00010000
+
+	        db      0x7F, "ELF"             ; e_ident
+	        dd      1                                       ; p_type
+	        dd      0                                       ; p_offset
+	        dd      $$                                      ; p_vaddr
+	        dw      2                       ; e_type        ; p_paddr
+	        dw      3                       ; e_machine
+	        dd      _start                  ; e_version     ; p_filesz
+	        dd      _start                  ; e_entry       ; p_memsz
+	        dd      4                       ; e_phoff       ; p_flags
+  _start:
+	        pop     ecx     ; argc          ; e_shoff       ; p_align
+	        pop     ecx     ; argv[0]
+	        mov     dl, 5   ; str len       ; e_flags
+	        mov     al, 4   ; sys_write(fd, addr, len) : ebx, ecx, edx
+	        jmp     _next   ; jump to next part of the code
+	        dw      0x34                      ; e_ehsize
+	        dw      0x20                      ; e_phentsize
+	        dw      1                         ; e_phnum
+  _next:        int     0x80    ; syscall         ; e_shentsize
+	        mov     al, 1   ; eax=1,sys_exit  ; e_shnum
+	        int     0x80    ; syscall         ; e_shstrndx
+
+  filesize      equ     $ - $$
+</code></pre>
+<p>编译和用法如下：</p>
+<pre><code>$ nasm -f bin -o hello hello.asm
+$ chmod a+x hello
+$ export PATH=./:$PATH
+$ hello
+hello
+$ wc -c hello
+52
+</code></pre>
+<p>经过一番努力，<code>AT&amp;T</code> 的完整 binary 版本如下：</p>
+<pre><code># hello.s
+#
+# as --32 -o hello.o hello.s
+# ld -melf_i386 --oformat=binary -o hello hello.o
+#
+
+	.file "hello.s"
+	.global _start, _load
+	.equ   LOAD_ADDR, 0x00010000   # Page aligned load addr, here 64k
+	.equ   E_ENTRY, LOAD_ADDR + (_start - _load)
+	.equ   P_MEM_SZ, E_ENTRY
+	.equ   P_FILE_SZ, P_MEM_SZ
+
+_load:
+	.byte  0x7F
+	.ascii "ELF"                  # e_ident, Magic Number
+	.long  1                                      # p_type, loadable seg
+	.long  0                                      # p_offset
+	.long  LOAD_ADDR                              # p_vaddr
+	.word  2                      # e_type, exec  # p_paddr
+	.word  3                      # e_machine, Intel 386 target
+	.long  P_FILE_SZ              # e_version     # p_filesz
+	.long  E_ENTRY                # e_entry       # p_memsz
+	.long  4                      # e_phoff       # p_flags, read(exec)
+	.text
+_start:
+	popl   %ecx    # argc         # e_shoff       # p_align
+	popl   %ecx    # argv[0]
+	mov    $5, %dl # str len      # e_flags
+	mov    $4, %al # sys_write(fd, addr, len) : ebx, ecx, edx
+	jmp    next    # jump to next part of the code
+	.word  0x34                   # e_ehsize = 52
+	.word  0x20                   # e_phentsize = 32
+	.word  1                      # e_phnum = 1
+	.text
+_next:  int    $0x80   # syscall        # e_shentsize
+	mov    $1, %al # eax=1,sys_exit # e_shnum
+	int    $0x80   # syscall        # e_shstrndx
+</code></pre>
+<p>编译和运行效果如下：</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 --oformat=binary -o hello hello.o
+$ export PATH=./:$PATH
+$ hello
+hello
+$ wc -c hello
+52 hello
+</code></pre>
+<p><strong>注</strong>：编译时务必要加 <code>--oformat=binary</code> 参数，以便直接基于源文件构建一个二进制的 <code>Elf</code> 文件，否则会被 <code>ld</code> 默认编译，自动填充其他内容。</p>
+<p><span id="toc_3928_6176_23"></span></p>
+<h2 id="汇编语言极限精简之道45字节">汇编语言极限精简之道（45字节）</h2>
+<p>经过上述努力，我们已经完全把程序头和代码都融入了 52 字节的 <code>Elf</code> 文件头，还可以再进一步吗？</p>
+<p>基于资料一，如果再要努力，只能设法把 <code>Elf</code> 末尾的 7 个 0 字节删除，但是由于代码已经把 <code>Elf</code> 末尾的 7 字节 0 字符都填满了，所以要想在这一块努力，只能继续压缩代码。</p>
+<p>继续研究下代码先：</p>
+<pre><code>.global _start
+_start:
+	popl %ecx	# argc
+	popl %ecx	# argv[0]
+	movb $5, %dl	# 设置字符串长度
+	movb $4, %al	# eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx
+	int $0x80
+	movb $1, %al
+	int $0x80
+</code></pre>
+<p>查看对应的编码：</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o --oformat=binary
+$ hexdump -C hello
+00000000  59 59 b2 05 b0 04 cd 80  b0 01 cd 80              |YY..........|
+0000000c
+</code></pre>
+<p>每条指令对应的编码映射如下：</p>
+<table>
+<thead>
+<tr>
+<th>指令</th>
+<th>编码</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>popl %ecx</td>
+<td>59</td>
+<td>argc</td>
+</tr>
+<tr>
+<td>popl %ecx</td>
+<td>59</td>
+<td>argv[0]</td>
+</tr>
+<tr>
+<td>movb $5, %dl</td>
+<td>b2 05</td>
+<td>设置字符串长度</td>
+</tr>
+<tr>
+<td>movb $4, %al</td>
+<td>b0 04</td>
+<td>eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx</td>
+</tr>
+<tr>
+<td>int $0x80</td>
+<td>cd 80</td>
+<td>触发系统调用</td>
+</tr>
+<tr>
+<td>movb $1, %al</td>
+<td>b0 01</td>
+<td>eax = 1, sys_exit</td>
+</tr>
+<tr>
+<td>int $0x80</td>
+<td>cd 80</td>
+<td>触发系统调用</td>
+</tr>
+</tbody>
+</table>
+<p>可以观察到：</p>
+<ul>
+<li><code>popl</code> 的指令编码最简洁。</li>
+<li><code>int $0x80</code> 重复了两次，而且每条都占用了 2 字节</li>
+<li><code>movb</code> 每条都占用了 2 字节</li>
+<li><code>eax</code> 有两次赋值，每次占用了 2 字节</li>
+<li><code>popl %ecx</code> 取出的 argc 并未使用</li>
+</ul>
+<p>根据之前通过参数传递字符串的想法，咱们是否可以考虑通过参数来设置变量呢？</p>
+<p>理论上，传入多个参数，通过 <code>pop</code> 弹出来赋予 <code>eax</code>, <code>ecx</code> 即可，但是实际上，由于从参数栈里头 <code>pop</code> 出来的参数是参数的地址，并不是参数本身，所以该方法行不通。</p>
+<p>不过由于第一个参数取出的是数字，并且是参数个数，而且目前的那条 <code>popl %ecx</code> 取出的 <code>argc</code> 并没有使用，那么刚好可以用来设置 <code>eax</code>，替换后如下：</p>
+<pre><code>.global _start
+_start:
+	popl %eax    # eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx
+	popl %ecx    # argv[0], 字符串
+	movb $5, %dl # 设置字符串长度
+	int $0x80
+	movb $1, %al # eax = 1, sys_exit
+	int $0x80
+</code></pre>
+<p>这里需要传入 4 个参数，即让栈弹出的第一个值，也就是参数个数赋予 <code>eax</code>，也就是：<code>hello 5 4 1</code>。</p>
+<p>难道我们只能把该代码优化到 10 个字节？</p>
+<p>巧合地是，当偶然改成这样的情况下，该代码还能正常返回。</p>
+<pre><code>.global _start
+_start:
+	popl %eax	# eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx
+	popl %ecx	# argv[0], 字符串
+	movb $5, %dl	# 设置字符串长度
+	int $0x80
+	loop _start     # 触发系统退出
+</code></pre>
+<p><strong>注</strong>：上面我们使用了 <code>loop</code> 指令而不是 <code>jmp</code> 指令，因为 <code>jmp _start</code> 产生的代码更长，而 <code>loop _start</code> 指令只有两个字节。</p>
+<p>这里相当于删除了 <code>movb $1, %al</code>，最后我们获得了 8 个字节。但是这里为什么能够工作呢？</p>
+<p>经过分析 <code>arch/x86/ia32/ia32entry.S</code>，我们发现当系统调用号无效时（超过系统调用入口个数），内核为了健壮考虑，必须要处理这类异常，并通过 <code>ia32_badsys</code> 让系统调用正常返回。</p>
+<p>这个可以这样验证：</p>
+<pre><code>.global _start
+_start:
+	popl %eax    # argc, eax = 4, 设置系统调用号, sys_write(fd, addr, len) : ebx, ecx, edx
+	popl %ecx    # argv[0], 文件名
+	mov $5, %dl  # argv[1]，字符串长度
+	int $0x80
+	mov $0xffffffda, %eax  # 设置一个非法调用号用于退出
+	int $0x80
+</code></pre>
+<p>那最后的结果是，我们产生了一个可以正常打印字符串，大小只有 45 字节的 <code>Elf</code> 文件，最终的结果如下：</p>
+<pre><code># hello.s
+#
+# $ as --32 -o hello.o hello.s
+# $ ld -melf_i386 --oformat=binary -o hello hello.o
+# $ export PATH=./:$PATH
+# $ hello 0 0 0
+# hello
+#
+
+	.file "hello.s"
+	.global _start, _load
+	.equ   LOAD_ADDR, 0x00010000   # Page aligned load addr, here 64k
+	.equ   E_ENTRY, LOAD_ADDR + (_start - _load)
+	.equ   P_MEM_SZ, E_ENTRY
+	.equ   P_FILE_SZ, P_MEM_SZ
+
+_load:
+	.byte  0x7F
+	.ascii "ELF"              # e_ident, Magic Number
+	.long  1                                      # p_type, loadable seg
+	.long  0                                      # p_offset
+	.long  LOAD_ADDR                              # p_vaddr
+	.word  2                  # e_type, exec  # p_paddr
+	.word  3                  # e_machine, Intel 386 target
+	.long  P_FILE_SZ          # e_version     # p_filesz
+	.long  E_ENTRY            # e_entry       # p_memsz
+	.long  4                  # e_phoff       # p_flags, read(exec)
+	.text
+_start:
+	popl   %eax    # argc     # e_shoff       # p_align
+	               # 4 args, eax = 4, sys_write(fd, addr, len) : ebx, ecx, edx
+	               # set 2nd eax = random addr to trigger bad syscall for exit
+	popl   %ecx    # argv[0]
+	mov    $5, %dl # str len  # e_flags
+	int    $0x80
+	loop   _start  # loop to popup a random addr as a bad syscall number
+	.word  0x34               # e_ehsize = 52
+	.word  0x20               # e_phentsize = 32
+	.byte  1                  # e_phnum = 1, remove trailing 7 bytes with 0 value
+	                          # e_shentsize
+	                          # e_shnum
+	                          # e_shstrndx
+</code></pre>
+<p>效果如下：</p>
+<pre><code>$ as --32 -o hello.o hello.s
+$ ld -melf_i386 -o hello hello.o --oformat=binary
+$ export PATH=./:$PATH
+$ hello 0 0 0
+hello
+$ wc -c hello
+45 hello
+</code></pre>
+<p>到这里，我们获得了史上最小的可以打印字符串的 <code>Elf</code> 文件，是的，只有 45 个字节。</p>
+<p><span id="toc_3928_6176_24"></span></p>
+<h2 id="小结">小结</h2>
+<p>到这里，关于可执行文件的讨论暂且结束，最后来一段小小的总结，那就是我们设法去减少可执行文件大小的意义？</p>
+<p>实际上，通过这样一个讨论深入到了很多技术的细节，包括可执行文件的格式、目标代码链接的过程、 Linux 下汇编语言开发等。与此同时，可执行文件大小的减少本身对嵌入式系统非常有用，如果删除那些对程序运行没有影响的节区和节区表将减少目标系统的大小，适应嵌入式系统资源受限的需求。除此之外，动态连接库中的很多函数可能不会被使用到，因此也可以通过某种方式剔除 <a href="http://www.gexin.com.cn/UploadFile/document2008119102415.pdf">[8]</a>，<a href="http://sourceforge.net/projects/libraryopt">[10]</a> 。</p>
+<p>或许，你还会发现更多有趣的意义，欢迎给我发送邮件，一起讨论。</p>
+<p><span id="toc_3928_6176_25"></span></p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li><a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">A Whirlwind Tutorial on Creating Really Teensy ELF Executables for Linux</a></li>
+<li><a href="http://blog.chinaunix.net/u/19881/showart_215242.html">UNIX/LINUX 平台可执行文件格式分析</a></li>
+<li><a href="http://www.xxlinux.com/linux/article/development/soft/20070424/8267.html">C/C++ 程序编译步骤详解</a></li>
+<li><a href="http://www.faqs.org/docs/Linux-HOWTO/GCC-HOWTO.html">The Linux GCC HOW TO</a></li>
+<li><a href="http://linux.jinr.ru/usoft/WWW/www_debian.org/Documentation/elf/elf.html">ELF: From The Programmer's Perspective</a></li>
+<li><a href="http://www.linuxforums.org/misc/understanding_elf_using_readelf_and_objdump.html">Understanding ELF using readelf and objdump</a></li>
+<li><a href="http://www.ibm.com/developerworks/linux/library/l-shlibs.html">Dissecting shared libraries</a></li>
+<li><a href="http://www.gexin.com.cn/UploadFile/document2008119102415.pdf">嵌入式 Linux 小型化技术</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-assembly/index.html">Linux 汇编语言开发指南</a></li>
+<li><a href="http://sourceforge.net/projects/libraryopt">Library Optimizer</a></li>
+<li>ELF file format and ABI：<a href="http://refspecs.linuxbase.org/elf/elf.pdf">[1]</a>，<a href="http://www.muppetlabs.com/~breadbox/software/ELF.txt">[2]</a>，<a href="http://162.105.203.48/web/gaikuang/submission/TN05.ELF.Format.Summary.pdf">[3]</a>，<a href="http://www.xfocus.net/articles/200105/174.html">[4]</a></li>
+<li><a href="http://sparksandflames.com/files/x86InstructionChart.html">i386 指令编码表</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/102/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/102/index.html">C 语言进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">32页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/188/index.html">
+<img class="uk-book-cover" src="/static/icons/48/git_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/188/index.html">git基本概念，git flow，git提交规范，git插件以及常见问题解决</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/105.html">azl397985856</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/206/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/206/index.html">HTTP/2 标准(RFC 7540)中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/116.html">abbshr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 374个">374</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/33/index.html">
+<img class="uk-book-cover" src="/static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/33/index.html">Scapy 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 17个">17</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/185/index.html">
+<img class="uk-book-cover" src="/static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/185/index.html">技术面试必备基础知识、Leetcode 题解、后端面试、Java 面试、春招、秋招、操作系统、计算机网络、系统设计</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/104.html">CyC2018</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 63551个">63551</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/43/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2868">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2869">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2870">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter1.markdown" title="把 Vim 打造成源代码编辑器" data-book-page-rel-url="zh/chapters/02-chapter1.markdown" data-book-page-id="2871">把 Vim 打造成源代码编辑器</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter2.markdown" title="Gcc 编译的背后" data-book-page-rel-url="zh/chapters/02-chapter2.markdown" data-book-page-id="2872">Gcc 编译的背后</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter3.markdown" title="程序执行的一刹那" data-book-page-rel-url="zh/chapters/02-chapter3.markdown" data-book-page-id="2873">程序执行的一刹那</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter4.markdown" title="动态符号链接的细节" data-book-page-rel-url="zh/chapters/02-chapter4.markdown" data-book-page-id="2874">动态符号链接的细节</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter5.markdown" title="缓冲区溢出与注入分析" data-book-page-rel-url="zh/chapters/02-chapter5.markdown" data-book-page-id="2875">缓冲区溢出与注入分析</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter6.markdown" title="进程的内存映像" data-book-page-rel-url="zh/chapters/02-chapter6.markdown" data-book-page-id="2876">进程的内存映像</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter7.markdown" title="进程和进程的基本操作" data-book-page-rel-url="zh/chapters/02-chapter7.markdown" data-book-page-id="2877">进程和进程的基本操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter8.markdown" title="打造史上最小可执行ELF文件(45字节)" data-book-page-rel-url="zh/chapters/02-chapter8.markdown" data-book-page-id="2878">打造史上最小可执行ELF文件(45字节)</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter9.markdown" title="代码测试、调试与优化" data-book-page-rel-url="zh/chapters/02-chapter9.markdown" data-book-page-id="2879">代码测试、调试与优化</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =43;var bookPageId =2878;var bookPageRelUrl ='zh/chapters/02-chapter8.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

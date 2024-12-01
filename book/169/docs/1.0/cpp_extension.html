@@ -1,0 +1,1297 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Custom C++ and CUDA Extensions-PyTorch 1.0 中文文档 & 教程</title>
+<meta content='Custom C++   and CUDA Extensions,PyTorch 1.0 中文文档 & 教程' name='keywords'>
+<meta content='Custom C++   and CUDA Extensions,PyTorch 1.0 中文文档 & 教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../../book/169/docs/1.0/numpy_extensions_tutorial.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">用 numpy 和 s..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../../book/169/docs/1.0/torch_script_custom_ops.html">
+<span class="">Extending T..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../../book/169/index.html">PyTorch 1.0 中文文档 & 教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/apachecn/pytorch-doc-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="custom-c-and-cuda-extensions">Custom C++ and CUDA Extensions</h1>
+<p><strong>Author</strong>: <a href="https://www.goldsborough.me/">Peter Goldsborough</a></p>
+<p>PyTorch provides a plethora of operations related to neural networks, arbitrary tensor algebra, data wrangling and other purposes. However, you may still find yourself in need of a more customized operation. For example, you might want to use a novel activation function you found in a paper, or implement an operation you developed as part of your research.</p>
+<p>The easiest way of integrating such a custom operation in PyTorch is to write it in Python by extending <code>Function</code> and <code>Module</code> as outlined <a href="https://pytorch.org/docs/master/notes/extending.html">here</a>. This gives you the full power of automatic differentiation (spares you from writing derivative functions) as well as the usual expressiveness of Python. However, there may be times when your operation is better implemented in C++. For example, your code may need to be <em>really</em> fast because it is called very frequently in your model or is very expensive even for few calls. Another plausible reason is that it depends on or interacts with other C or C++ libraries. To address such cases, PyTorch provides a very easy way of writing custom <em>C++ extensions</em>.</p>
+<p>C++ extensions are a mechanism we have developed to allow users (you) to create PyTorch operators defined <em>out-of-source</em>, i.e. separate from the PyTorch backend. This approach is <em>different</em> from the way native PyTorch operations are implemented. C++ extensions are intended to spare you much of the boilerplate associated with integrating an operation with PyTorch’s backend while providing you with a high degree of flexibility for your PyTorch-based projects. Nevertheless, once you have defined your operation as a C++ extension, turning it into a native PyTorch function is largely a matter of code organization, which you can tackle after the fact if you decide to contribute your operation upstream.</p>
+<h2 id="motivation-and-example">Motivation and Example</h2>
+<p>The rest of this note will walk through a practical example of writing and using a C++ (and CUDA) extension. If you are being chased or someone will fire you if you don’t get that op done by the end of the day, you can skip this section and head straight to the implementation details in the next section.</p>
+<p>Let’s say you’ve come up with a new kind of recurrent unit that you found to have superior properties compared to the state of the art. This recurrent unit is similar to an LSTM, but differs in that it lacks a <em>forget gate</em> and uses an <em>Exponential Linear Unit</em> (ELU) as its internal activation function. Because this unit never forgets, we’ll call it <em>LLTM</em>, or <em>Long-Long-Term-Memory</em> unit.</p>
+<p>The two ways in which LLTMs differ from vanilla LSTMs are significant enough that we can’t configure PyTorch’s <code>LSTMCell</code> for our purposes, so we’ll have to create a custom cell. The first and easiest approach for this – and likely in all cases a good first step – is to implement our desired functionality in plain PyTorch with Python. For this, we need to subclass <code>torch.nn.Module</code> and implement the forward pass of the LLTM. This would look something like this:</p>
+<pre><code class="language-py">class LLTM(torch.nn.Module):
+    def __init__(self, input_features, state_size):
+        super(LLTM, self).__init__()
+        self.input_features = input_features
+        self.state_size = state_size
+        # 3 * state_size for input gate, output gate and candidate cell gate.
+        # input_features + state_size because we will multiply with [input, h].
+        self.weights = torch.nn.Parameter(
+            torch.empty(3 * state_size, input_features + state_size))
+        self.bias = torch.nn.Parameter(torch.empty(3 * state_size))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.state_size)
+        for weight in self.parameters():
+            weight.data.uniform_(-stdv, +stdv)
+
+    def forward(self, input, state):
+        old_h, old_cell = state
+        X = torch.cat([old_h, input], dim=1)
+
+        # Compute the input, output and candidate cell gates with one MM.
+        gate_weights = F.linear(X, self.weights, self.bias)
+        # Split the combined gate weight matrix into its components.
+        gates = gate_weights.chunk(3, dim=1)
+
+        input_gate = F.sigmoid(gates[0])
+        output_gate = F.sigmoid(gates[1])
+        # Here we use an ELU instead of the usual tanh.
+        candidate_cell = F.elu(gates[2])
+
+        # Compute the new cell state.
+        new_cell = old_cell + candidate_cell * input_gate
+        # Compute the new hidden state and output.
+        new_h = F.tanh(new_cell) * output_gate
+
+        return new_h, new_cell
+
+</code></pre>
+<p>which we could then use as expected:</p>
+<pre><code class="language-py">import torch
+
+X = torch.randn(batch_size, input_features)
+h = torch.randn(batch_size, state_size)
+C = torch.randn(batch_size, state_size)
+
+rnn = LLTM(input_features, state_size)
+
+new_h, new_C = rnn(X, (h, C))
+
+</code></pre>
+<p>Naturally, if at all possible and plausible, you should use this approach to extend PyTorch. Since PyTorch has highly optimized implementations of its operations for CPU <em>and</em> GPU, powered by libraries such as <a href="https://developer.nvidia.com/cudnn">NVIDIA cuDNN</a>, <a href="https://software.intel.com/en-us/mkl">Intel MKL</a> or <a href="https://github.com/Maratyszcza/NNPACK">NNPACK</a>, PyTorch code like above will often be fast enough. However, we can also see why, under certain circumstances, there is room for further performance improvements. The most obvious reason is that PyTorch has no knowledge of the <em>algorithm</em> you are implementing. It knows only of the individual operations you use to compose your algorithm. As such, PyTorch must execute your operations individually, one after the other. Since each individual call to the implementation (or <em>kernel</em>) of an operation, which may involve launch of a CUDA kernel, has a certain amount of overhead, this overhead may become significant across many function calls. Furthermore, the Python interpreter that is running our code can itself slow down our program.</p>
+<p>A definite method of speeding things up is therefore to rewrite parts in C++ (or CUDA) and <em>fuse</em> particular groups of operations. Fusing means combining the implementations of many functions into a single functions, which profits from fewer kernel launches as well as other optimizations we can perform with increased visibility of the global flow of data.</p>
+<p>Let’s see how we can use C++ extensions to implement a <em>fused</em> version of the LLTM. We’ll begin by writing it in plain C++, using the <a href="https://github.com/zdevito/ATen">ATen</a> library that powers much of PyTorch’s backend, and see how easily it lets us translate our Python code. We’ll then speed things up even more by moving parts of the model to CUDA kernel to benefit from the massive parallelism GPUs provide.</p>
+<h2 id="writing-a-c-extension">Writing a C++ Extension</h2>
+<p>C++ extensions come in two flavors: They can be built “ahead of time” with <code>setuptools</code>, or “just in time” via <code>torch.utils.cpp_extension.load()</code>. We’ll begin with the first approach and discuss the latter later.</p>
+<h3 id="building-with-setuptools">Building with <code>setuptools</code></h3>
+<p>For the “ahead of time” flavor, we build our C++ extension by writing a <code>setup.py</code> script that uses setuptools to compile our C++ code. For the LLTM, it looks as simple as this:</p>
+<pre><code class="language-py">from setuptools import setup
+from torch.utils.cpp_extension import CppExtension, BuildExtension
+
+setup(name='lltm',
+      ext_modules=[CppExtension('lltm', ['lltm.cpp'])],
+      cmdclass={'build_ext': BuildExtension})
+
+</code></pre>
+<p>In this code, <code>CppExtension</code> is a convenience wrapper around <code>setuptools.Extension</code> that passes the correct include paths and sets the language of the extension to C++. The equivalent vanilla <code>setuptools</code> code would simply be:</p>
+<pre><code class="language-py">setuptools.Extension(
+   name='lltm',
+   sources=['lltm.cpp'],
+   include_dirs=torch.utils.cpp_extension.include_paths(),
+   language='c++')
+
+</code></pre>
+<p><code>BuildExtension</code> performs a number of required configuration steps and checks and also manages mixed compilation in the case of mixed C++/CUDA extensions. And that’s all we really need to know about building C++ extensions for now! Let’s now take a look at the implementation of our C++ extension, which goes into <code>lltm.cpp</code>.</p>
+<h3 id="writing-the-c-op">Writing the C++ Op</h3>
+<p>Let’s start implementing the LLTM in C++! One function we’ll need for the backward pass is the derivative of the sigmoid. This is a small enough piece of code to discuss the overall environment that is available to us when writing C++ extensions:</p>
+<pre><code class="language-py">#include &lt;torch/torch.h&gt;
+
+#include &lt;iostream&gt;
+
+at::Tensor d_sigmoid(at::Tensor z) {
+  auto s = at::sigmoid(z);
+  return (1 - s) * s;
+}
+
+</code></pre>
+<p><code>&amp;lt;torch/torch.h&amp;gt;</code> is the one-stop header to include all the necessary PyTorch bits to write C++ extensions. It includes:</p>
+<ul>
+<li>The ATen library, which is our primary API for tensor computation,</li>
+<li><a href="https://github.com/pybind/pybind11">pybind11</a>, which is how we create Python bindings for our C++ code,</li>
+<li>Headers that manage the details of interaction between ATen and pybind11.</li>
+</ul>
+<p>The implementation of <code>d_sigmoid()</code> shows how to use the ATen API. PyTorch’s tensor and variable interface is generated automatically from the ATen library, so we can more or less translate our Python implementation 1:1 into C++. Our primary datatype for all computations will be <code>at::Tensor</code>. Its full API can be inspected <a href="https://pytorch.org/cppdocs/api/classat_1_1_tensor.html">here</a>. Notice also that we can include <code>&amp;lt;iostream&amp;gt;</code> or <em>any other C or C++ header</em> – we have the full power of C++11 at our disposal.</p>
+<h4 id="forward-pass">Forward Pass</h4>
+<p>Next we can port our entire forward pass to C++:</p>
+<pre><code class="language-py">#include &lt;vector&gt;
+
+std::vector&lt;at::Tensor&gt; lltm_forward(
+    at::Tensor input,
+    at::Tensor weights,
+    at::Tensor bias,
+    at::Tensor old_h,
+    at::Tensor old_cell) {
+  auto X = at::cat({old_h, input}, /*dim=*/1);
+
+  auto gate_weights = at::addmm(bias, X, weights.transpose(0, 1));
+  auto gates = gate_weights.chunk(3, /*dim=*/1);
+
+  auto input_gate = at::sigmoid(gates[0]);
+  auto output_gate = at::sigmoid(gates[1]);
+  auto candidate_cell = at::elu(gates[2], /*alpha=*/1.0);
+
+  auto new_cell = old_cell + candidate_cell * input_gate;
+  auto new_h = at::tanh(new_cell) * output_gate;
+
+  return {new_h,
+          new_cell,
+          input_gate,
+          output_gate,
+          candidate_cell,
+          X,
+          gate_weights};
+}
+
+</code></pre>
+<h4 id="backward-pass">Backward Pass</h4>
+<p>The C++ extension API currently does not provide a way of automatically generating a backwards function for us. As such, we have to also implement the backward pass of our LLTM, which computes the derivative of the loss with respect to each input of the forward pass. Ultimately, we will plop both the forward and backward function into a <code>torch.autograd.Function</code> to create a nice Python binding. The backward function is slightly more involved, so we’ll not dig deeper into the code (if you are interested, <a href="https://www.cs.toronto.edu/~graves/phd.pdf">Alex Graves’ thesis</a> is a good read for more information on this):</p>
+<pre><code class="language-py">// tanh'(z) = 1 - tanh^2(z)
+at::Tensor d_tanh(at::Tensor z) {
+  return 1 - z.tanh().pow(2);
+}
+
+// elu'(z) = relu'(z) + { alpha * exp(z) if (alpha * (exp(z) - 1)) &lt; 0, else 0}
+at::Tensor d_elu(at::Tensor z, at::Scalar alpha = 1.0) {
+  auto e = z.exp();
+  auto mask = (alpha * (e - 1)) &lt; 0;
+  return (z &gt; 0).type_as(z) + mask.type_as(z) * (alpha * e);
+}
+
+std::vector&lt;at::Tensor&gt; lltm_backward(
+    at::Tensor grad_h,
+    at::Tensor grad_cell,
+    at::Tensor new_cell,
+    at::Tensor input_gate,
+    at::Tensor output_gate,
+    at::Tensor candidate_cell,
+    at::Tensor X,
+    at::Tensor gate_weights,
+    at::Tensor weights) {
+  auto d_output_gate = at::tanh(new_cell) * grad_h;
+  auto d_tanh_new_cell = output_gate * grad_h;
+  auto d_new_cell = d_tanh(new_cell) * d_tanh_new_cell + grad_cell;
+
+  auto d_old_cell = d_new_cell;
+  auto d_candidate_cell = input_gate * d_new_cell;
+  auto d_input_gate = candidate_cell * d_new_cell;
+
+  auto gates = gate_weights.chunk(3, /*dim=*/1);
+  d_input_gate *= d_sigmoid(gates[0]);
+  d_output_gate *= d_sigmoid(gates[1]);
+  d_candidate_cell *= d_elu(gates[2]);
+
+  auto d_gates =
+      at::cat({d_input_gate, d_output_gate, d_candidate_cell}, /*dim=*/1);
+
+  auto d_weights = d_gates.t().mm(X);
+  auto d_bias = d_gates.sum(/*dim=*/0, /*keepdim=*/true);
+
+  auto d_X = d_gates.mm(weights);
+  const auto state_size = grad_h.size(1);
+  auto d_old_h = d_X.slice(/*dim=*/1, 0, state_size);
+  auto d_input = d_X.slice(/*dim=*/1, state_size);
+
+  return {d_old_h, d_input, d_weights, d_bias, d_old_cell};
+}
+
+</code></pre>
+<h3 id="binding-to-python">Binding to Python</h3>
+<p>Once you have your operation written in C++ and ATen, you can use pybind11 to bind your C++ functions or classes into Python in a very simple manner. Questions or issues you have about this part of PyTorch C++ extensions will largely be addressed by <a href="https://pybind11.readthedocs.io/en/master/">pybind11 documentation</a>.</p>
+<p>For our extensions, the necessary binding code spans only four lines:</p>
+<pre><code class="language-py">PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("forward", &amp;lltm_forward, "LLTM forward");
+  m.def("backward", &amp;lltm_backward, "LLTM backward");
+}
+
+</code></pre>
+<p>One bit to note here is the macro <code>TORCH_EXTENSION_NAME</code>. The torch extension build will define it as the name you give your extension in the <code>setup.py</code> script. In this case, the value of <code>TORCH_EXTENSION_NAME</code> would be “lltm”. This is to avoid having to maintain the name of the extension in two places (the build script and your C++ code), as a mismatch between the two can lead to nasty and hard to track issues.</p>
+<h3 id="using-your-extension">Using Your Extension</h3>
+<p>We are now set to import our extension in PyTorch. At this point, your directory structure could look something like this:</p>
+<pre><code class="language-py">pytorch/
+  lltm-extension/
+    lltm.cpp
+    setup.py
+
+</code></pre>
+<p>Now, run <code>python setup.py install</code> to build and install your extension. This should look something like this:</p>
+<pre><code class="language-py">running install
+running bdist_egg
+running egg_info
+writing lltm.egg-info/PKG-INFO
+writing dependency_links to lltm.egg-info/dependency_links.txt
+writing top-level names to lltm.egg-info/top_level.txt
+reading manifest file 'lltm.egg-info/SOURCES.txt'
+writing manifest file 'lltm.egg-info/SOURCES.txt'
+installing library code to build/bdist.linux-x86_64/egg
+running install_lib
+running build_ext
+building 'lltm' extension
+gcc -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I~/local/miniconda/lib/python3.6/site-packages/torch/lib/include -I~/local/miniconda/lib/python3.6/site-packages/torch/lib/include/TH -I~/local/miniconda/lib/python3.6/site-packages/torch/lib/include/THC -I~/local/miniconda/include/python3.6m -c lltm.cpp -o build/temp.linux-x86_64-3.6/lltm.o -DTORCH_EXTENSION_NAME=lltm -std=c++11
+cc1plus: warning: command line option ‘-Wstrict-prototypes’ is valid for C/ObjC but not for C++
+g++ -pthread -shared -B ~/local/miniconda/compiler_compat -L~/local/miniconda/lib -Wl,-rpath=~/local/miniconda/lib -Wl,--no-as-needed -Wl,--sysroot=/ build/temp.linux-x86_64-3.6/lltm.o -o build/lib.linux-x86_64-3.6/lltm.cpython-36m-x86_64-linux-gnu.so
+creating build/bdist.linux-x86_64/egg
+copying build/lib.linux-x86_64-3.6/lltm_cuda.cpython-36m-x86_64-linux-gnu.so -&gt; build/bdist.linux-x86_64/egg
+copying build/lib.linux-x86_64-3.6/lltm.cpython-36m-x86_64-linux-gnu.so -&gt; build/bdist.linux-x86_64/egg
+creating stub loader for lltm.cpython-36m-x86_64-linux-gnu.so
+byte-compiling build/bdist.linux-x86_64/egg/lltm.py to lltm.cpython-36.pyc
+creating build/bdist.linux-x86_64/egg/EGG-INFO
+copying lltm.egg-info/PKG-INFO -&gt; build/bdist.linux-x86_64/egg/EGG-INFO
+copying lltm.egg-info/SOURCES.txt -&gt; build/bdist.linux-x86_64/egg/EGG-INFO
+copying lltm.egg-info/dependency_links.txt -&gt; build/bdist.linux-x86_64/egg/EGG-INFO
+copying lltm.egg-info/top_level.txt -&gt; build/bdist.linux-x86_64/egg/EGG-INFO
+writing build/bdist.linux-x86_64/egg/EGG-INFO/native_libs.txt
+zip_safe flag not set; analyzing archive contents...
+__pycache__.lltm.cpython-36: module references __file__
+creating 'dist/lltm-0.0.0-py3.6-linux-x86_64.egg' and adding 'build/bdist.linux-x86_64/egg' to it
+removing 'build/bdist.linux-x86_64/egg' (and everything under it)
+Processing lltm-0.0.0-py3.6-linux-x86_64.egg
+removing '~/local/miniconda/lib/python3.6/site-packages/lltm-0.0.0-py3.6-linux-x86_64.egg' (and everything under it)
+creating ~/local/miniconda/lib/python3.6/site-packages/lltm-0.0.0-py3.6-linux-x86_64.egg
+Extracting lltm-0.0.0-py3.6-linux-x86_64.egg to ~/local/miniconda/lib/python3.6/site-packages
+lltm 0.0.0 is already the active version in easy-install.pth
+
+Installed ~/local/miniconda/lib/python3.6/site-packages/lltm-0.0.0-py3.6-linux-x86_64.egg
+Processing dependencies for lltm==0.0.0
+Finished processing dependencies for lltm==0.0.0
+
+</code></pre>
+<p>A small note on compilers: Due to ABI versioning issues, the compiler you use to build your C++ extension must be <em>ABI-compatible</em> with the compiler PyTorch was built with. In practice, this means that you must use GCC version 4.9 and above on Linux. For Ubuntu 16.04 and other more-recent Linux distributions, this should be the default compiler already. On MacOS, you must use clang (which does not have any ABI versioning issues). In the worst case, you can build PyTorch from source with your compiler and then build the extension with that same compiler.</p>
+<p>Once your extension is built, you can simply import it in Python, using the name you specified in your <code>setup.py</code> script. Just be sure to <code>import torch</code> first, as this will resolve some symbols that the dynamic linker must see:</p>
+<pre><code class="language-py">In [1]: import torch
+In [2]: import lltm
+In [3]: lltm.forward
+Out[3]: &lt;function lltm.PyCapsule.forward&gt;
+
+</code></pre>
+<p>If we call <code>help()</code> on the function or module, we can see that its signature matches our C++ code:</p>
+<pre><code class="language-py">In[4] help(lltm.forward)
+forward(...) method of builtins.PyCapsule instance
+    forward(arg0: at::Tensor, arg1: at::Tensor, arg2: at::Tensor, arg3: at::Tensor, arg4: at::Tensor) -&gt; List[at::Tensor]
+
+    LLTM forward
+
+</code></pre>
+<p>Since we are now able to call our C++ functions from Python, we can wrap them with <code>torch.autograd.Function</code> and <code>torch.nn.Module</code> to make them first class citizens of PyTorch:</p>
+<pre><code class="language-py">import math
+import torch
+
+# Our module!
+import lltm
+
+class LLTMFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weights, bias, old_h, old_cell):
+        outputs = lltm.forward(input, weights, bias, old_h, old_cell)
+        new_h, new_cell = outputs[:2]
+        variables = outputs[1:] + [weights]
+        ctx.save_for_backward(*variables)
+
+        return new_h, new_cell
+
+    @staticmethod
+    def backward(ctx, grad_h, grad_cell):
+        outputs = lltm.backward(
+            grad_h.contiguous(), grad_cell.contiguous(), *ctx.saved_variables)
+        d_old_h, d_input, d_weights, d_bias, d_old_cell = outputs
+        return d_input, d_weights, d_bias, d_old_h, d_old_cell
+
+class LLTM(torch.nn.Module):
+    def __init__(self, input_features, state_size):
+        super(LLTM, self).__init__()
+        self.input_features = input_features
+        self.state_size = state_size
+        self.weights = torch.nn.Parameter(
+            torch.empty(3 * state_size, input_features + state_size))
+        self.bias = torch.nn.Parameter(torch.empty(3 * state_size))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.state_size)
+        for weight in self.parameters():
+            weight.data.uniform_(-stdv, +stdv)
+
+    def forward(self, input, state):
+        return LLTMFunction.apply(input, self.weights, self.bias, *state)
+
+</code></pre>
+<h4 id="performance-comparison">Performance Comparison</h4>
+<p>Now that we are able to use and call our C++ code from PyTorch, we can run a small benchmark to see how much performance we gained from rewriting our op in C++. We’ll run the LLTM forwards and backwards a few times and measure the duration:</p>
+<pre><code class="language-py">import torch
+
+batch_size = 16
+input_features = 32
+state_size = 128
+
+X = torch.randn(batch_size, input_features)
+h = torch.randn(batch_size, state_size)
+C = torch.randn(batch_size, state_size)
+
+rnn = LLTM(input_features, state_size)
+
+forward = 0
+backward = 0
+for _ in range(100000):
+    start = time.time()
+    new_h, new_C = rnn(X, (h, C))
+    forward += time.time() - start
+
+    start = time.time()
+    (new_h.sum() + new_C.sum()).backward()
+    backward += time.time() - start
+
+print('Forward: {:.3f} us | Backward {:.3f} us'.format(forward * 1e6/1e5, backward * 1e6/1e5))
+
+</code></pre>
+<p>If we run this code with the original LLTM we wrote in pure Python at the start of this post, we get the following numbers (on my machine):</p>
+<pre><code class="language-py">Forward: 506.480 us | Backward 444.694 us
+
+</code></pre>
+<p>and with our new C++ version:</p>
+<pre><code class="language-py">Forward: 349.335 us | Backward 443.523 us
+
+</code></pre>
+<p>We can already see a significant speedup for the forward function (more than 30%). For the backward function a speedup is visible, albeit not major one. The backward pass I wrote above was not particularly optimized and could definitely be improved. Also, PyTorch’s automatic differentiation engine can automatically parallelize computation graphs, may use a more efficient flow of operations overall, and is also implemented in C++, so it’s expected to be fast. Nevertheless, this is a good start.</p>
+<h4 id="performance-on-gpu-devices">Performance on GPU Devices</h4>
+<p>A wonderful fact about PyTorch’s <em>ATen</em> backend is that it abstracts the computing device you are running on. This means the same code we wrote for CPU can <em>also</em> run on GPU, and individual operations will correspondingly dispatch to GPU-optimized implementations. For certain operations like matrix multiply (like <code>mm</code> or <code>admm</code>), this is a big win. Let’s take a look at how much performance we gain from running our C++ code with CUDA tensors. No changes to our implementation are required, we simply need to put our tensors in GPU memory from Python, with either adding <code>device=cuda_device</code> argument at creation time or using <code>.to(cuda_device)</code> after creation:</p>
+<pre><code class="language-py">import torch
+
+assert torch.cuda.is_available()
+cuda_device = torch.device("cuda")  # device object representing GPU
+
+batch_size = 16
+input_features = 32
+state_size = 128
+
+# Note the device=cuda_device arguments here
+X = torch.randn(batch_size, input_features, device=cuda_device)
+h = torch.randn(batch_size, state_size, device=cuda_device)
+C = torch.randn(batch_size, state_size, device=cuda_device)
+
+rnn = LLTM(input_features, state_size).to(cuda_device)
+
+forward = 0
+backward = 0
+for _ in range(100000):
+    start = time.time()
+    new_h, new_C = rnn(X, (h, C))
+    torch.cuda.synchronize()
+    forward += time.time() - start
+
+    start = time.time()
+    (new_h.sum() + new_C.sum()).backward()
+    torch.cuda.synchronize()
+    backward += time.time() - start
+
+print('Forward: {:.3f} us | Backward {:.3f} us'.format(forward * 1e6/1e5, backward * 1e6/1e5))
+
+</code></pre>
+<p>Once more comparing our plain PyTorch code with our C++ version, now both running on CUDA devices, we again see performance gains. For Python/PyTorch:</p>
+<pre><code class="language-py">Forward: 187.719 us | Backward 410.815 us
+
+</code></pre>
+<p>And C++/ATen:</p>
+<pre><code class="language-py">Forward: 149.802 us | Backward 393.458 us
+
+</code></pre>
+<p>That’s a great overall speedup compared to non-CUDA code. However, we can pull even more performance out of our C++ code by writing custom CUDA kernels, which we’ll dive into soon. Before that, let’s dicuss another way of building your C++ extensions.</p>
+<h3 id="jit-compiling-extensions">JIT Compiling Extensions</h3>
+<p>Previously, I mentioned there were two ways of building C++ extensions: using <code>setuptools</code> or just in time (JIT). Having covered the former, let’s elaborate on the latter. The JIT compilation mechanism provides you with a way of compiling and loading your extensions on the fly by calling a simple function in PyTorch’s API called <code>torch.utils.cpp_extension.load()</code>. For the LLTM, this would look as simple as this:</p>
+<pre><code class="language-py">from torch.utils.cpp_extension import load
+
+lltm = load(name="lltm", sources=["lltm.cpp"])
+
+</code></pre>
+<p>Here, we provide the function with the same information as for <code>setuptools</code>. In the background, this will do the following:</p>
+<ol>
+<li>Create a temporary directory <code>/tmp/torch_extensions/lltm</code>,</li>
+<li>Emit a <a href="https://ninja-build.org/">Ninja</a> build file into that temporary directory,</li>
+<li>Compile your source files into a shared library,</li>
+<li>Import this shared library as a Python module.</li>
+</ol>
+<p>In fact, if you pass <code>verbose=True</code> to <code>cpp_extension.load()</code>, you will be informed about the process:</p>
+<pre><code class="language-py">Using /tmp/torch_extensions as PyTorch extensions root...
+Creating extension directory /tmp/torch_extensions/lltm...
+Emitting ninja build file /tmp/torch_extensions/lltm/build.ninja...
+Building extension module lltm...
+Loading extension module lltm...
+
+</code></pre>
+<p>The resulting Python module will be exactly the same as produced by setuptools, but removes the requirement of having to maintain a separate <code>setup.py</code> build file. If your setup is more complicated and you do need the full power of <code>setuptools</code>, you <em>can</em> write your own <code>setup.py</code> – but in many cases this JIT technique will do just fine. The first time you run through this line, it will take some time, as the extension is compiling in the background. Since we use the Ninja build system to build your sources, re-compilation is incremental and thus re-loading the extension when you run your Python module a second time is fast and has low overhead if you didn’t change the extension’s source files.</p>
+<h2 id="writing-a-mixed-ccuda-extension">Writing a Mixed C++/CUDA extension</h2>
+<p>To really take our implementation to the next level, we can hand-write parts of our forward and backward passes with custom CUDA kernels. For the LLTM, this has the prospect of being particularly effective, as there are a large number of pointwise operations in sequence, that can all be fused and parallelized in a single CUDA kernel. Let’s see how we could write such a CUDA kernel and integrate it with PyTorch using this extension mechanism.</p>
+<p>The general strategy for writing a CUDA extension is to first write a C++ file which defines the functions that will be called from Python, and binds those functions to Python with pybind11. Furthermore, this file will also <em>declare</em> functions that are defined in CUDA (<code>.cu</code>) files. The C++ functions will then do some checks and ultimately forward its calls to the CUDA functions. In the CUDA files, we write our actual CUDA kernels. The <code>cpp_extension</code> package will then take care of compiling the C++ sources with a C++ compiler like <code>gcc</code> and the CUDA sources with NVIDIA’s <code>nvcc</code> compiler. This ensures that each compiler takes care of files it knows best to compile. Ultimately, they will be linked into one shared library that is available to us from Python code.</p>
+<p>We’ll start with the C++ file, which we’ll call <code>lltm_cuda.cpp</code>, for example:</p>
+<pre><code class="language-py">#include &lt;torch/torch.h&gt;
+
+#include &lt;vector&gt;
+
+// CUDA forward declarations
+
+std::vector&lt;at::Tensor&gt; lltm_cuda_forward(
+    at::Tensor input,
+    at::Tensor weights,
+    at::Tensor bias,
+    at::Tensor old_h,
+    at::Tensor old_cell);
+
+std::vector&lt;at::Tensor&gt; lltm_cuda_backward(
+    at::Tensor grad_h,
+    at::Tensor grad_cell,
+    at::Tensor new_cell,
+    at::Tensor input_gate,
+    at::Tensor output_gate,
+    at::Tensor candidate_cell,
+    at::Tensor X,
+    at::Tensor gate_weights,
+    at::Tensor weights);
+
+// C++ interface
+
+#define CHECK_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
+
+std::vector&lt;at::Tensor&gt; lltm_forward(
+    at::Tensor input,
+    at::Tensor weights,
+    at::Tensor bias,
+    at::Tensor old_h,
+    at::Tensor old_cell) {
+  CHECK_INPUT(input);
+  CHECK_INPUT(weights);
+  CHECK_INPUT(bias);
+  CHECK_INPUT(old_h);
+  CHECK_INPUT(old_cell);
+
+  return lltm_cuda_forward(input, weights, bias, old_h, old_cell);
+}
+
+std::vector&lt;at::Tensor&gt; lltm_backward(
+    at::Tensor grad_h,
+    at::Tensor grad_cell,
+    at::Tensor new_cell,
+    at::Tensor input_gate,
+    at::Tensor output_gate,
+    at::Tensor candidate_cell,
+    at::Tensor X,
+    at::Tensor gate_weights,
+    at::Tensor weights) {
+  CHECK_INPUT(grad_h);
+  CHECK_INPUT(grad_cell);
+  CHECK_INPUT(input_gate);
+  CHECK_INPUT(output_gate);
+  CHECK_INPUT(candidate_cell);
+  CHECK_INPUT(X);
+  CHECK_INPUT(gate_weights);
+  CHECK_INPUT(weights);
+
+  return lltm_cuda_backward(
+      grad_h,
+      grad_cell,
+      new_cell,
+      input_gate,
+      output_gate,
+      candidate_cell,
+      X,
+      gate_weights,
+      weights);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("forward", &amp;lltm_forward, "LLTM forward (CUDA)");
+  m.def("backward", &amp;lltm_backward, "LLTM backward (CUDA)");
+}
+
+</code></pre>
+<p>As you can see, it is largely boilerplate, checks and forwarding to functions that we’ll define in the CUDA file. We’ll name this file <code>lltm_cuda_kernel.cu</code> (note the <code>.cu</code> extension!). NVCC can reasonably compile C<ins>11, thus we still have ATen and the C</ins> standard library available to us (but not <code>torch.h</code>). Note that <code>setuptools</code> cannot handle files with the same name but different extensions, so if you use the <code>setup.py</code> method instead of the JIT method, you must give your CUDA file a different name than your C++ file (for the JIT method, <code>lltm.cpp</code> and <code>lltm.cu</code> would work fine). Let’s take a small peek at what this file will look like:</p>
+<pre><code class="language-py">#include &lt;ATen/ATen.h&gt;
+
+#include &lt;cuda.h&gt;
+#include &lt;cuda_runtime.h&gt;
+
+#include &lt;vector&gt;
+
+template &lt;typename scalar_t&gt;
+__device__ __forceinline__ scalar_t sigmoid(scalar_t z) {
+  return 1.0 / (1.0 + exp(-z));
+}
+
+</code></pre>
+<p>Here we see the headers I just described, as well as the fact that we are using CUDA-specific declarations like <code>__device__</code> and <code>__forceinline__</code> and functions like <code>exp</code>. Let’s continue with a few more helper functions that we’ll need:</p>
+<pre><code class="language-py">template &lt;typename scalar_t&gt;
+__device__ __forceinline__ scalar_t d_sigmoid(scalar_t z) {
+  const auto s = sigmoid(z);
+  return (1.0 - s) * s;
+}
+
+template &lt;typename scalar_t&gt;
+__device__ __forceinline__ scalar_t d_tanh(scalar_t z) {
+  const auto t = tanh(z);
+  return 1 - (t * t);
+}
+
+template &lt;typename scalar_t&gt;
+__device__ __forceinline__ scalar_t elu(scalar_t z, scalar_t alpha = 1.0) {
+  return fmax(0.0, z) + fmin(0.0, alpha * (exp(z) - 1.0));
+}
+
+template &lt;typename scalar_t&gt;
+__device__ __forceinline__ scalar_t d_elu(scalar_t z, scalar_t alpha = 1.0) {
+  const auto e = exp(z);
+  const auto d_relu = z &lt; 0.0 ? 0.0 : 1.0;
+  return d_relu + (((alpha * (e - 1.0)) &lt; 0.0) ? (alpha * e) : 0.0);
+}
+
+</code></pre>
+<p>To now actually implement a function, we’ll again need two things: one function that performs operations we don’t wish to explicitly write by hand and calls into CUDA kernels, and then the actual CUDA kernel for the parts we want to speed up. For the forward pass, the first function should look like this:</p>
+<pre><code class="language-py">std::vector&lt;at::Tensor&gt; lltm_cuda_forward(
+    at::Tensor input,
+    at::Tensor weights,
+    at::Tensor bias,
+    at::Tensor old_h,
+    at::Tensor old_cell) {
+  auto X = at::cat({old_h, input}, /*dim=*/1);
+  auto gates = at::addmm(bias, X, weights.transpose(0, 1));
+
+  const auto batch_size = old_cell.size(0);
+  const auto state_size = old_cell.size(1);
+
+  auto new_h = at::zeros_like(old_cell);
+  auto new_cell = at::zeros_like(old_cell);
+  auto input_gate = at::zeros_like(old_cell);
+  auto output_gate = at::zeros_like(old_cell);
+  auto candidate_cell = at::zeros_like(old_cell);
+
+  const int threads = 1024;
+  const dim3 blocks((state_size + threads - 1) / threads, batch_size);
+
+  AT_DISPATCH_FLOATING_TYPES(gates.type(), "lltm_forward_cuda", ([&amp;] {
+    lltm_cuda_forward_kernel&lt;scalar_t&gt;&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(
+        gates.data&lt;scalar_t&gt;(),
+        old_cell.data&lt;scalar_t&gt;(),
+        new_h.data&lt;scalar_t&gt;(),
+        new_cell.data&lt;scalar_t&gt;(),
+        input_gate.data&lt;scalar_t&gt;(),
+        output_gate.data&lt;scalar_t&gt;(),
+        candidate_cell.data&lt;scalar_t&gt;(),
+        state_size);
+  }));
+
+  return {new_h, new_cell, input_gate, output_gate, candidate_cell, X, gates};
+}
+
+</code></pre>
+<p>The main point of interest here is the <code>AT_DISPATCH_FLOATING_TYPES</code> macro and the kernel launch (indicated by the <code>&amp;lt;&amp;lt;&amp;lt;...&amp;gt;&amp;gt;&amp;gt;</code>). While ATen abstracts away the device and datatype of the tensors we deal with, a tensor will, at runtime, still be backed by memory of a concrete type on a concrete device. As such, we need a way of determining at runtime what type a tensor is and then selectively call functions with the corresponding correct type signature. Done manually, this would (conceptually) look something like this:</p>
+<pre><code class="language-py">switch (tensor.type().scalarType()) {
+  case at::ScalarType::Double:
+    return function&lt;double&gt;(tensor.data&lt;double&gt;());
+  case at::ScalarType::Float:
+    return function&lt;float&gt;(tensor.data&lt;float&gt;());
+  ...
+}
+
+</code></pre>
+<p>The purpose of <code>AT_DISPATCH_FLOATING_TYPES</code> is to take care of this dispatch for us. It takes a type (<code>gates.type()</code> in our case), a name (for error messages) and a lambda function. Inside this lambda function, the type alias <code>scalar_t</code> is available and is defined as the type that the tensor actually is at runtime in that context. As such, if we have a template function (which our CUDA kernel will be), we can instantiate it with this <code>scalar_t</code> alias, and the correct function will be called. In this case, we also want to retrieve the data pointers of the tensors as pointers of that <code>scalar_t</code> type. If you wanted to dispatch over all types and not just floating point types (<code>Float</code> and <code>Double</code>), you can use <code>AT_DISPATCH_ALL_TYPES</code>.</p>
+<p>Note that we perform some operations with plain ATen. These operations will still run on the GPU, but using ATen’s default implementations. This makes sense, because ATen will use highly optimized routines for things like matrix multiplies (e.g. <code>addmm</code>) or convolutions which would be much harder to implement and improve ourselves.</p>
+<p>As for the kernel launch itself, we are here specifying that each CUDA block will have 1024 threads, and that the entire GPU grid is split into as many blocks of <code>1 x 1024</code> threads as are required to fill our matrices with one thread per component. For example, if our state size was 2048 and our batch size 4, we’d launch a total of <code>4 x 2 = 8</code> blocks with each 1024 threads. If you’ve never heard of CUDA “blocks” or “grids” before, an <a href="https://devblogs.nvidia.com/even-easier-introduction-cuda">introductory read about CUDA</a> may help.</p>
+<p>The actual CUDA kernel is fairly simple (if you’ve ever programmed GPUs before):</p>
+<pre><code class="language-py">template &lt;typename scalar_t&gt;
+__global__ void lltm_cuda_forward_kernel(
+    const scalar_t* __restrict__ gates,
+    const scalar_t* __restrict__ old_cell,
+    scalar_t* __restrict__ new_h,
+    scalar_t* __restrict__ new_cell,
+    scalar_t* __restrict__ input_gate,
+    scalar_t* __restrict__ output_gate,
+    scalar_t* __restrict__ candidate_cell,
+    size_t state_size) {
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int index = blockIdx.y * state_size + column;
+  const int gates_row = blockIdx.y * (state_size * 3);
+  if (column &lt; state_size) {
+    input_gate[index] = sigmoid(gates[gates_row + column]);
+    output_gate[index] = sigmoid(gates[gates_row + state_size + column]);
+    candidate_cell[index] = elu(gates[gates_row + 2 * state_size + column]);
+    new_cell[index] =
+        old_cell[index] + candidate_cell[index] * input_gate[index];
+    new_h[index] = tanh(new_cell[index]) * output_gate[index];
+  }
+}
+
+</code></pre>
+<p>What’s primarily interesting here is that we are able to compute all of these pointwise operations entirely in parallel for each individual component in our gate matrices. If you imagine having to do this with a giant <code>for</code> loop over a million elements in serial, you can see why this would be much faster.</p>
+<p>The backwards pass follows much the same pattern and I won’t elaborate further on it:</p>
+<pre><code class="language-py">template &lt;typename scalar_t&gt;
+__global__ void lltm_cuda_backward_kernel(
+    scalar_t* __restrict__ d_old_cell,
+    scalar_t* __restrict__ d_gates,
+    const scalar_t* __restrict__ grad_h,
+    const scalar_t* __restrict__ grad_cell,
+    const scalar_t* __restrict__ new_cell,
+    const scalar_t* __restrict__ input_gate,
+    const scalar_t* __restrict__ output_gate,
+    const scalar_t* __restrict__ candidate_cell,
+    const scalar_t* __restrict__ gate_weights,
+    size_t state_size) {
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int index = blockIdx.y * state_size + column;
+  const int gates_row = blockIdx.y * (state_size * 3);
+  if (column &lt; state_size) {
+    const auto d_output_gate = tanh(new_cell[index]) * grad_h[index];
+    const auto d_tanh_new_cell = output_gate[index] * grad_h[index];
+    const auto d_new_cell =
+        d_tanh(new_cell[index]) * d_tanh_new_cell + grad_cell[index];
+
+    d_old_cell[index] = d_new_cell;
+    const auto d_candidate_cell = input_gate[index] * d_new_cell;
+    const auto d_input_gate = candidate_cell[index] * d_new_cell;
+
+    const auto input_gate_index = gates_row + column;
+    const auto output_gate_index = gates_row + state_size + column;
+    const auto candidate_cell_index = gates_row + 2 * state_size + column;
+
+    d_gates[input_gate_index] =
+        d_input_gate * d_sigmoid(gate_weights[input_gate_index]);
+    d_gates[output_gate_index] =
+        d_output_gate * d_sigmoid(gate_weights[output_gate_index]);
+    d_gates[candidate_cell_index] =
+        d_candidate_cell * d_elu(gate_weights[candidate_cell_index]);
+  }
+}
+
+std::vector&lt;at::Tensor&gt; lltm_cuda_backward(
+    at::Tensor grad_h,
+    at::Tensor grad_cell,
+    at::Tensor new_cell,
+    at::Tensor input_gate,
+    at::Tensor output_gate,
+    at::Tensor candidate_cell,
+    at::Tensor X,
+    at::Tensor gate_weights,
+    at::Tensor weights) {
+  auto d_old_cell = at::zeros_like(new_cell);
+  auto d_gates = at::zeros_like(gate_weights);
+
+  const auto batch_size = new_cell.size(0);
+  const auto state_size = new_cell.size(1);
+
+  const int threads = 1024;
+  const dim3 blocks((state_size + threads - 1) / threads, batch_size);
+
+  AT_DISPATCH_FLOATING_TYPES(X.type(), "lltm_backward_cuda", ([&amp;] {
+    lltm_cuda_backward_kernel&lt;scalar_t&gt;&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(
+        d_old_cell.data&lt;scalar_t&gt;(),
+        d_gates.data&lt;scalar_t&gt;(),
+        grad_h.contiguous().data&lt;scalar_t&gt;(),
+        grad_cell.contiguous().data&lt;scalar_t&gt;(),
+        new_cell.contiguous().data&lt;scalar_t&gt;(),
+        input_gate.contiguous().data&lt;scalar_t&gt;(),
+        output_gate.contiguous().data&lt;scalar_t&gt;(),
+        candidate_cell.contiguous().data&lt;scalar_t&gt;(),
+        gate_weights.contiguous().data&lt;scalar_t&gt;(),
+        state_size);
+  }));
+
+  auto d_weights = d_gates.t().mm(X);
+  auto d_bias = d_gates.sum(/*dim=*/0, /*keepdim=*/true);
+
+  auto d_X = d_gates.mm(weights);
+  auto d_old_h = d_X.slice(/*dim=*/1, 0, state_size);
+  auto d_input = d_X.slice(/*dim=*/1, state_size);
+
+  return {d_old_h, d_input, d_weights, d_bias, d_old_cell, d_gates};
+}
+
+</code></pre>
+<h3 id="integrating-a-ccuda-operation-with-pytorch">Integrating a C++/CUDA Operation with PyTorch</h3>
+<p>Integration of our CUDA-enabled op with PyTorch is again very straightforward. If you want to write a <code>setup.py</code> script, it could look like this:</p>
+<pre><code class="language-py">from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+setup(
+    name='lltm',
+    ext_modules=[
+        CUDAExtension('lltm_cuda', [
+            'lltm_cuda.cpp',
+            'lltm_cuda_kernel.cu',
+        ])
+    ],
+    cmdclass={
+        'build_ext': BuildExtension
+    })
+
+</code></pre>
+<p>Instead of <code>CppExtension()</code>, we now use <code>CUDAExtension()</code>. We can just specify the <code>.cu</code> file along with the <code>.cpp</code> files – the library takes care of all the hassle this entails for you. The JIT mechanism is even simpler:</p>
+<pre><code class="language-py">from torch.utils.cpp_extension import load
+
+lltm = load(name='lltm', sources=['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'])
+
+</code></pre>
+<h4 id="performance-comparison-1">Performance Comparison</h4>
+<p>Our hope was that parallelizing and fusing the pointwise operations of our code with CUDA would improve the performance of our LLTM. Let’s see if that holds true. We can run the code I listed earlier to run a benchmark. Our fastest version earlier was the CUDA-based C++ code:</p>
+<pre><code class="language-py">Forward: 149.802 us | Backward 393.458 us
+
+</code></pre>
+<p>And now with our custom CUDA kernel:</p>
+<pre><code class="language-py">Forward: 129.431 us | Backward 304.641 us
+
+</code></pre>
+<p>More performance increases!</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>You should now be equipped with a good overview of PyTorch’s C++ extension mechanism as well as a motivation for using them. You can find the code examples displayed in this note <a href="https://github.com/pytorch/extension-cpp">here</a>. If you have questions, please use <a href="https://discuss.pytorch.org">the forums</a>. Also be sure to check our <a href="https://pytorch.org/cppdocs/notes/faq.html">FAQ</a> in case you run into any issues.</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/68/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/68/index.html">Python 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10237个">10237</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/166/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/166/index.html">What the f*ck Python中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/95.html">leisurelicht</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">70页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7300个">7300</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/21/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/179/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/179/index.html">30秒学会常用Python代码</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/99.html">kriadmin</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2716个">2716</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/58/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/58/index.html">guava学习记录项目</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/34.html">tiantiangao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">24页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 70个">70</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../../book/156/index.html">
+<img class="uk-book-cover" src="../../../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../../book/156/index.html">pyspider中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../../user/88.html">aaronhua123</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../../" title="返回首页"><img class="" src="../../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../../book/169/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_getting_started.html" title="起步" data-book-page-rel-url="docs/1.0/tut_getting_started.html" data-book-page-id="11555">起步</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_60min_blitz.html" title="PyTorch 深度学习: 60 分钟极速入门" data-book-page-rel-url="docs/1.0/deep_learning_60min_blitz.html" data-book-page-id="11556">PyTorch 深度学习: 60 分钟极速入门</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_tensor_tutorial.html" title="什么是 PyTorch？" data-book-page-rel-url="docs/1.0/blitz_tensor_tutorial.html" data-book-page-id="11557">什么是 PyTorch？</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_autograd_tutorial.html" title="Autograd：自动求导" data-book-page-rel-url="docs/1.0/blitz_autograd_tutorial.html" data-book-page-id="11558">Autograd：自动求导</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_neural_networks_tutorial.html" title="神经网络" data-book-page-rel-url="docs/1.0/blitz_neural_networks_tutorial.html" data-book-page-id="11559">神经网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_cifar10_tutorial.html" title="训练分类器" data-book-page-rel-url="docs/1.0/blitz_cifar10_tutorial.html" data-book-page-id="11560">训练分类器</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/blitz_data_parallel_tutorial.html" title="可选：数据并行处理" data-book-page-rel-url="docs/1.0/blitz_data_parallel_tutorial.html" data-book-page-id="11561">可选：数据并行处理</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data_loading_tutorial.html" title="数据加载和处理教程" data-book-page-rel-url="docs/1.0/data_loading_tutorial.html" data-book-page-id="11562">数据加载和处理教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/pytorch_with_examples.html" title="用例子学习 PyTorch" data-book-page-rel-url="docs/1.0/pytorch_with_examples.html" data-book-page-id="11563">用例子学习 PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/transfer_learning_tutorial.html" title="迁移学习教程" data-book-page-rel-url="docs/1.0/transfer_learning_tutorial.html" data-book-page-id="11564">迁移学习教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" title="混合前端的 seq2seq 模型部署" data-book-page-rel-url="docs/1.0/deploy_seq2seq_hybrid_frontend_tutorial.html" data-book-page-id="11565">混合前端的 seq2seq 模型部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/saving_loading_models.html" title="Saving and Loading Models" data-book-page-rel-url="docs/1.0/saving_loading_models.html" data-book-page-id="11566">Saving and Loading Models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_tutorial.html" title="What is `torch.nn` _really_?" data-book-page-rel-url="docs/1.0/nn_tutorial.html" data-book-page-id="11567">What is `torch.nn` _really_?</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_image.html" title="图像" data-book-page-rel-url="docs/1.0/tut_image.html" data-book-page-id="11568">图像</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/finetuning_torchvision_models_tutorial.html" title="Torchvision 模型微调" data-book-page-rel-url="docs/1.0/finetuning_torchvision_models_tutorial.html" data-book-page-id="11569">Torchvision 模型微调</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/spatial_transformer_tutorial.html" title="空间变换器网络教程" data-book-page-rel-url="docs/1.0/spatial_transformer_tutorial.html" data-book-page-id="11570">空间变换器网络教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/neural_style_tutorial.html" title="使用 PyTorch 进行图像风格转换" data-book-page-rel-url="docs/1.0/neural_style_tutorial.html" data-book-page-id="11571">使用 PyTorch 进行图像风格转换</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/fgsm_tutorial.html" title="对抗性示例生成" data-book-page-rel-url="docs/1.0/fgsm_tutorial.html" data-book-page-id="11572">对抗性示例生成</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/super_resolution_with_caffe2.html" title="使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端" data-book-page-rel-url="docs/1.0/super_resolution_with_caffe2.html" data-book-page-id="11573">使用 ONNX 将模型从 PyTorch 传输到 Caffe2 和移动端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_text.html" title="文本" data-book-page-rel-url="docs/1.0/tut_text.html" data-book-page-id="11574">文本</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/chatbot_tutorial.html" title="聊天机器人教程" data-book-page-rel-url="docs/1.0/chatbot_tutorial.html" data-book-page-id="11575">聊天机器人教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_generation_tutorial.html" title="使用字符级别特征的 RNN 网络生成姓氏" data-book-page-rel-url="docs/1.0/char_rnn_generation_tutorial.html" data-book-page-id="11576">使用字符级别特征的 RNN 网络生成姓氏</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/char_rnn_classification_tutorial.html" title="使用字符级别特征的 RNN 网络进行姓氏分类" data-book-page-rel-url="docs/1.0/char_rnn_classification_tutorial.html" data-book-page-id="11577">使用字符级别特征的 RNN 网络进行姓氏分类</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/deep_learning_nlp_tutorial.html" title="Deep Learning for NLP with Pytorch" data-book-page-rel-url="docs/1.0/deep_learning_nlp_tutorial.html" data-book-page-id="11578">Deep Learning for NLP with Pytorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_pytorch_tutorial.html" title="PyTorch 介绍" data-book-page-rel-url="docs/1.0/nlp_pytorch_tutorial.html" data-book-page-id="11579">PyTorch 介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_deep_learning_tutorial.html" title="使用 PyTorch 进行深度学习" data-book-page-rel-url="docs/1.0/nlp_deep_learning_tutorial.html" data-book-page-id="11580">使用 PyTorch 进行深度学习</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_word_embeddings_tutorial.html" title="Word Embeddings: Encoding Lexical Semantics" data-book-page-rel-url="docs/1.0/nlp_word_embeddings_tutorial.html" data-book-page-id="11581">Word Embeddings: Encoding Lexical Semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_sequence_models_tutorial.html" title="序列模型和 LSTM 网络" data-book-page-rel-url="docs/1.0/nlp_sequence_models_tutorial.html" data-book-page-id="11582">序列模型和 LSTM 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nlp_advanced_tutorial.html" title="Advanced: Making Dynamic Decisions and the Bi-LSTM CRF" data-book-page-rel-url="docs/1.0/nlp_advanced_tutorial.html" data-book-page-id="11583">Advanced: Making Dynamic Decisions and the Bi-LSTM CRF</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/seq2seq_translation_tutorial.html" title="基于注意力机制的 seq2seq 神经网络翻译" data-book-page-rel-url="docs/1.0/seq2seq_translation_tutorial.html" data-book-page-id="11584">基于注意力机制的 seq2seq 神经网络翻译</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_generative.html" title="生成" data-book-page-rel-url="docs/1.0/tut_generative.html" data-book-page-id="11585">生成</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dcgan_faces_tutorial.html" title="DCGAN Tutorial" data-book-page-rel-url="docs/1.0/dcgan_faces_tutorial.html" data-book-page-id="11586">DCGAN Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_reinforcement_learning.html" title="强化学习" data-book-page-rel-url="docs/1.0/tut_reinforcement_learning.html" data-book-page-id="11587">强化学习</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/reinforcement_q_learning.html" title="Reinforcement Learning (DQN) Tutorial" data-book-page-rel-url="docs/1.0/reinforcement_q_learning.html" data-book-page-id="11588">Reinforcement Learning (DQN) Tutorial</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_extending_pytorch.html" title="扩展 PyTorch" data-book-page-rel-url="docs/1.0/tut_extending_pytorch.html" data-book-page-id="11589">扩展 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/numpy_extensions_tutorial.html" title="用 numpy 和 scipy 创建扩展" data-book-page-rel-url="docs/1.0/numpy_extensions_tutorial.html" data-book-page-id="11590">用 numpy 和 scipy 创建扩展</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_extension.html" title="Custom C++   and CUDA Extensions" data-book-page-rel-url="docs/1.0/cpp_extension.html" data-book-page-id="11591">Custom C++ and CUDA Extensions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch_script_custom_ops.html" title="Extending TorchScript with Custom C++   Operators" data-book-page-rel-url="docs/1.0/torch_script_custom_ops.html" data-book-page-id="11592">Extending TorchScript with Custom C++ Operators</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_production_usage.html" title="生产性使用" data-book-page-rel-url="docs/1.0/tut_production_usage.html" data-book-page-id="11593">生产性使用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dist_tuto.html" title="Writing Distributed Applications with PyTorch" data-book-page-rel-url="docs/1.0/dist_tuto.html" data-book-page-id="11594">Writing Distributed Applications with PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/aws_distributed_training_tutorial.html" title="使用 Amazon AWS 进行分布式训练" data-book-page-rel-url="docs/1.0/aws_distributed_training_tutorial.html" data-book-page-id="11595">使用 Amazon AWS 进行分布式训练</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/ONNXLive.html" title="ONNX 现场演示教程" data-book-page-rel-url="docs/1.0/ONNXLive.html" data-book-page-id="11596">ONNX 现场演示教程</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_export.html" title="在 C++ 中加载 PYTORCH 模型" data-book-page-rel-url="docs/1.0/cpp_export.html" data-book-page-id="11597">在 C++ 中加载 PYTORCH 模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tut_other_language.html" title="其它语言中的 PyTorch" data-book-page-rel-url="docs/1.0/tut_other_language.html" data-book-page-id="11598">其它语言中的 PyTorch</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cpp_frontend.html" title="使用 PyTorch C++ 前端" data-book-page-rel-url="docs/1.0/cpp_frontend.html" data-book-page-id="11599">使用 PyTorch C++ 前端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_notes.html" title="注解" data-book-page-rel-url="docs/1.0/docs_notes.html" data-book-page-id="11600">注解</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_autograd.html" title="自动求导机制" data-book-page-rel-url="docs/1.0/notes_autograd.html" data-book-page-id="11601">自动求导机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_broadcasting.html" title="广播语义" data-book-page-rel-url="docs/1.0/notes_broadcasting.html" data-book-page-id="11602">广播语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_cuda.html" title="CUDA 语义" data-book-page-rel-url="docs/1.0/notes_cuda.html" data-book-page-id="11603">CUDA 语义</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_extending.html" title="Extending PyTorch" data-book-page-rel-url="docs/1.0/notes_extending.html" data-book-page-id="11604">Extending PyTorch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_faq.html" title="Frequently Asked Questions" data-book-page-rel-url="docs/1.0/notes_faq.html" data-book-page-id="11605">Frequently Asked Questions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_multiprocessing.html" title="Multiprocessing best practices" data-book-page-rel-url="docs/1.0/notes_multiprocessing.html" data-book-page-id="11606">Multiprocessing best practices</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_randomness.html" title="Reproducibility" data-book-page-rel-url="docs/1.0/notes_randomness.html" data-book-page-id="11607">Reproducibility</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_serialization.html" title="Serialization semantics" data-book-page-rel-url="docs/1.0/notes_serialization.html" data-book-page-id="11608">Serialization semantics</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/notes_windows.html" title="Windows FAQ" data-book-page-rel-url="docs/1.0/notes_windows.html" data-book-page-id="11609">Windows FAQ</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_package_ref.html" title="包参考" data-book-page-rel-url="docs/1.0/docs_package_ref.html" data-book-page-id="11610">包参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torch.html" title="torch" data-book-page-rel-url="docs/1.0/torch.html" data-book-page-id="11611">torch</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensors.html" title="torch.Tensor" data-book-page-rel-url="docs/1.0/tensors.html" data-book-page-id="11612">torch.Tensor</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/tensor_attributes.html" title="Tensor Attributes" data-book-page-rel-url="docs/1.0/tensor_attributes.html" data-book-page-id="11613">Tensor Attributes</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/type_info.html" title="数据类型信息" data-book-page-rel-url="docs/1.0/type_info.html" data-book-page-id="11614">数据类型信息</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/sparse.html" title="torch.sparse" data-book-page-rel-url="docs/1.0/sparse.html" data-book-page-id="11615">torch.sparse</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/cuda.html" title="torch.cuda" data-book-page-rel-url="docs/1.0/cuda.html" data-book-page-id="11616">torch.cuda</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/storage.html" title="torch.Storage" data-book-page-rel-url="docs/1.0/storage.html" data-book-page-id="11617">torch.Storage</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn.html" title="torch.nn" data-book-page-rel-url="docs/1.0/nn.html" data-book-page-id="11618">torch.nn</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_functional.html" title="torch.nn.functional" data-book-page-rel-url="docs/1.0/nn_functional.html" data-book-page-id="11619">torch.nn.functional</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/nn_init.html" title="torch.nn.init" data-book-page-rel-url="docs/1.0/nn_init.html" data-book-page-id="11620">torch.nn.init</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/optim.html" title="torch.optim" data-book-page-rel-url="docs/1.0/optim.html" data-book-page-id="11621">torch.optim</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/autograd.html" title="Automatic differentiation package - torch.autograd" data-book-page-rel-url="docs/1.0/autograd.html" data-book-page-id="11622">Automatic differentiation package - torch.autograd</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed.html" title="Distributed communication package - torch.distributed" data-book-page-rel-url="docs/1.0/distributed.html" data-book-page-id="11623">Distributed communication package - torch.distributed</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributions.html" title="Probability distributions - torch.distributions" data-book-page-rel-url="docs/1.0/distributions.html" data-book-page-id="11624">Probability distributions - torch.distributions</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/jit.html" title="Torch Script" data-book-page-rel-url="docs/1.0/jit.html" data-book-page-id="11625">Torch Script</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/multiprocessing.html" title="多进程包 - torch.multiprocessing" data-book-page-rel-url="docs/1.0/multiprocessing.html" data-book-page-id="11626">多进程包 - torch.multiprocessing</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/bottleneck.html" title="torch.utils.bottleneck" data-book-page-rel-url="docs/1.0/bottleneck.html" data-book-page-id="11627">torch.utils.bottleneck</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/checkpoint.html" title="torch.utils.checkpoint" data-book-page-rel-url="docs/1.0/checkpoint.html" data-book-page-id="11628">torch.utils.checkpoint</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_cpp_extension.html" title="torch.utils.cpp_extension" data-book-page-rel-url="docs/1.0/docs_cpp_extension.html" data-book-page-id="11629">torch.utils.cpp_extension</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/data.html" title="torch.utils.data" data-book-page-rel-url="docs/1.0/data.html" data-book-page-id="11630">torch.utils.data</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/dlpack.html" title="torch.utils.dlpack" data-book-page-rel-url="docs/1.0/dlpack.html" data-book-page-id="11631">torch.utils.dlpack</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/hub.html" title="torch.hub" data-book-page-rel-url="docs/1.0/hub.html" data-book-page-id="11632">torch.hub</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/model_zoo.html" title="torch.utils.model_zoo" data-book-page-rel-url="docs/1.0/model_zoo.html" data-book-page-id="11633">torch.utils.model_zoo</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/onnx.html" title="torch.onnx" data-book-page-rel-url="docs/1.0/onnx.html" data-book-page-id="11634">torch.onnx</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/distributed_deprecated.html" title="Distributed communication package (deprecated) - torch.distributed.deprecated" data-book-page-rel-url="docs/1.0/distributed_deprecated.html" data-book-page-id="11635">Distributed communication package (deprecated) - torch.distributed.deprecated</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/docs_torchvision_ref.html" title="torchvision 参考" data-book-page-rel-url="docs/1.0/docs_torchvision_ref.html" data-book-page-id="11636">torchvision 参考</a>
+<ul>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_datasets.html" title="torchvision.datasets" data-book-page-rel-url="docs/1.0/torchvision_datasets.html" data-book-page-id="11637">torchvision.datasets</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_models.html" title="torchvision.models" data-book-page-rel-url="docs/1.0/torchvision_models.html" data-book-page-id="11638">torchvision.models</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_transforms.html" title="torchvision.transforms" data-book-page-rel-url="docs/1.0/torchvision_transforms.html" data-book-page-id="11639">torchvision.transforms</a>
+</li>
+<li>
+<a class="pjax" href="../../../../book/169/docs/1.0/torchvision_utils.html" title="torchvision.utils" data-book-page-rel-url="docs/1.0/torchvision_utils.html" data-book-page-id="11640">torchvision.utils</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =169;var bookPageId =11591;var bookPageRelUrl ='docs/1.0/cpp_extension.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,1023 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Spring Boot整合Memcached-从0到1实战微服务架构</title>
+<meta content='Spring Boot整合Memcached,从0到1实战微服务架构' name='keywords'>
+<meta content='Spring Boot整合Memcached,从0到1实战微服务架构' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/205/ms-storage/memcached-devops.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Memcached 缓..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/205/ms-storage/redis-devops.html">
+<span class="">Redis 内存数据库..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/205/index.html">从0到1实战微服务架构</a>
+<a target="_blank" rel="nofollow" href="https://github.com/skyline75489/hands-on-microservices" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="spring-boot整合memcached">Spring Boot整合Memcached</h1>
+<p>前面已经提到，缓存是快速提升系统性能，缓解瓶颈的有效手段。</p>
+<p>缓存的种类多种多样，小到CPU的缓存，大到静态生成的页面缓存。在本小节中，我们主要讨论在Spring Boot中整合如下两种缓存:</p>
+<ul>
+<li>本地缓存: 在内存中开辟一小块空间，用于缓存，速度很快，但容量受限。我们采用Gruva中的缓存实现。</li>
+<li>网络缓存: 同一微服务的不同节点间，通过网络共享，例如Memcached。</li>
+</ul>
+<h2 id="通用缓存接口">通用缓存接口</h2>
+<p>既然要在微服务中支持2种缓存，不妨设计一个较为通用的接口:</p>
+<pre><code class="language-java">public interface ICache&lt;K, V&gt; {
+
+    @Nullable
+    V get(K key);
+
+    @Nullable
+    default V cacheGet(K key, Function&lt;K, V&gt; func, int ttlSecs) {
+        V val = get(key);
+        if (val != null) {
+            return val;
+        } else {
+            val = func.apply(key);
+            put(key, val, ttlSecs);
+            return val;
+        }
+    }
+
+    default V cacheGet(K key, Function&lt;K, V&gt; func) {
+        return cacheGet(key, func, 0);
+    }
+
+    Map&lt;K, V&gt; batchGet(Collection&lt;K&gt; keys);
+
+    default Map&lt;K, V&gt; batchCacheGet(Collection&lt;K&gt; keys, Function&lt;Collection&lt;K&gt;, Map&lt;K, V&gt;&gt; func, int ttlSecs) {
+        // hit map
+        Map&lt;K, V&gt; hitMap = batchGet(keys);
+
+        // miss keys
+        Collection&lt;K&gt; missedKeys = null;
+        if (hitMap == null || hitMap.isEmpty()) {
+            missedKeys = keys;
+        } else {
+            missedKeys = keys.stream().filter(k -&gt; !hitMap.containsKey(k)).collect(Collectors.toSet());
+        }
+
+        // check if no miss keys
+        if (missedKeys == null || missedKeys.isEmpty()) {
+            return hitMap;
+        }
+
+        // fetch miss key
+        Map&lt;K, V&gt; missMap = func.apply(missedKeys);
+        missMap.entrySet().forEach(e -&gt; put(e.getKey(), e.getValue(), ttlSecs));
+
+        if (missMap == null || missMap.isEmpty()) {
+            // no miss map again
+            return hitMap;
+        } else {
+            // union &amp; return
+            hitMap.putAll(missMap);
+            return hitMap;
+        }
+    }
+
+    default Map&lt;K, V&gt; batchCacheGet(Collection&lt;K&gt; keys, Function&lt;Collection&lt;K&gt;, Map&lt;K, V&gt;&gt; func) {
+        return batchCacheGet(keys, func, 0);
+    }
+
+    void put(K key, V value);
+
+    void put(K key, V value, int ttlSecs);
+
+    void del(K key);
+
+    default void batchDel(Collection&lt;K&gt; keys) {
+        if (keys != null) {
+            keys.stream().forEach(key -&gt; del(key));
+        }
+    }
+
+    void clear();
+
+}
+</code></pre>
+<p>如上所示，我们定义了3大类Cache的基本操作:</p>
+<ul>
+<li>get/batchGet: 从缓存中获取数据，支持单个或批量操作。</li>
+<li>put/del: 向缓存中写入或删除，支持设置超时时间。</li>
+<li>cacheGet: 若缓存中存在则直接返回，否则通过一个Function来生成结果，并写入缓存。类似的，支持单个和批量操作、支持设置超时时间。</li>
+</ul>
+<h2 id="localcache的实现">LocalCache的实现</h2>
+<p>在设计Memcached缓存之前，先来看一下本地缓存实现：</p>
+<pre><code class="language-java">public class LocalCache&lt;K, V&gt; implements ICache&lt;K, V&gt; {
+
+    private Logger LOG = LoggerFactory.getLogger(getClass());
+
+    private Cache&lt;K, V&gt; gCache;
+
+    private long ttlSecs = 0;
+
+    public LocalCache(long capacity, long ttlSecs) {
+
+        CacheBuilder builder = CacheBuilder.newBuilder();
+        if (capacity &gt; 0) {
+            builder.maximumSize(capacity);
+        }
+        if (ttlSecs &gt; 0) {
+            this.ttlSecs = ttlSecs;
+            builder.expireAfterWrite(ttlSecs, TimeUnit.SECONDS);
+        }
+
+        this.gCache = builder.build();
+    }
+
+    @Nullable
+    @Override
+    public V get(K key) {
+        return gCache.getIfPresent(key);
+    }
+
+    @Override
+    public Map&lt;K, V&gt; batchGet(Collection&lt;K&gt; keys) {
+        if (keys == null || keys.isEmpty()) {
+            return new HashMap&lt;&gt;();
+        } else {
+            Map&lt;K, V&gt; result = new HashMap&lt;&gt;();
+            for (K key : keys) {
+                V val = gCache.getIfPresent(key);
+                if (val != null) {
+                    result.put(key, val);
+                }
+            }
+            return result;
+        }
+    }
+
+    @Override
+    public void put(K key, V value) {
+        gCache.put(key, value);
+    }
+
+    @Override
+    public void put(K key, V value, int curTtlSecs) {
+        if (curTtlSecs != this.ttlSecs) {
+            LOG.error("not support per-put ttlSecs currently");
+        }
+        put(key, value);
+    }
+
+    @Override
+    public void del(K key) {
+        gCache.invalidate(key);
+    }
+
+    @Override
+    public void batchDel(Collection&lt;K&gt; keys) {
+        gCache.invalidateAll(keys);
+    }
+
+    @Override
+    public void clear() {
+        gCache.invalidateAll();
+    }
+}
+</code></pre>
+<p>如上所示，我们调用了Grava的缓存，来实现了本地缓存。</p>
+<p>要说明的是，由于Grava的设计限制，目前TTL需要在创建缓存之初就设定好，并不支持per-key的ttl设定。</p>
+<h2 id="memcachedcache的实现">MemcachedCache的实现</h2>
+<p>在Spring Boot中集成Memcached，首先要选择一款基于Java的客户端，比较成熟的开源项目有:</p>
+<ul>
+<li>spymemcached</li>
+<li>XMemcached 在本小节中，我们选择社区更为活跃的XMemcached，它支持线程池、一致性哈系等较为重要的特性。</li>
+</ul>
+<p>首先来看一下客户端的构造：</p>
+<pre><code class="language-java">public class MemcachedClientBuilder2 {
+
+    public static MemcachedClient build(String serverList, int connPoolSize) throws IOException {
+        MemcachedClientBuilder builder = new XMemcachedClientBuilder(
+                AddrUtil.getAddresses(serverList));
+        // conn pool
+        builder.setConnectionPoolSize(connPoolSize);
+        // consistent hash
+        builder.setSessionLocator(new KetamaMemcachedSessionLocator());
+        return builder.build();
+    }
+
+}
+</code></pre>
+<p>如上所示，Builder主要设定了两个参数:</p>
+<ul>
+<li>serverList: 服务器列表（形如ip:port，若有多个可通过空格分割开）</li>
+<li>connPoolSize: 线程池大小</li>
+</ul>
+<p>如果你仔细观察ICache接口，可以发现它是泛型的ICache&lt;K, V&gt;，K和V可以是任意类型。</p>
+<p>然而，Memcached的设计较为轻量，Key必须是字符串，而Value则是byte数组。</p>
+<p>所以，需要设计一种通用的方式，以方便泛型数据类型到Memcached的Key/Value转换。</p>
+<p>我们将这一转换逻辑抽提成Key/Value的Transformer, Key的:</p>
+<pre><code class="language-java">public interface CacheKeyTransformer&lt;T&gt; {
+
+    String getKey(T t);
+
+}
+
+</code></pre>
+<p>和Value的</p>
+<pre><code class="language-java">public interface CacheValueTransformer&lt;T&gt; {
+
+    byte[] serialize(T obj);
+
+    T deserialize(byte[] bytes);
+
+}
+</code></pre>
+<p>这两个接口看起来很抽象，我们首先来看一下DefaultCacheKeyTransformer，实现了任何类型到String(Memcached Key类型)的转换:</p>
+<pre><code class="language-java">public class DefaultCacheKeyTransformer&lt;T&gt; implements CacheKeyTransformer&lt;T&gt; {
+
+    private String cacheType;
+
+    public DefaultCacheKeyTransformer(String cacheType) {
+        this.cacheType = cacheType;
+    }
+
+    @Override
+    public String getKey(T t) {
+        return cacheType + "#" + t.toString();
+    }
+
+}
+</code></pre>
+<p>一种很常见的场景，是将对象序列化为Json然后放到Memcached的Value中，JsonCacheValueTransformer完成了这一过程:</p>
+<pre><code class="language-java">public class JsonCacheValueTransformer&lt;T&gt; implements CacheValueTransformer&lt;T&gt; {
+
+    protected final Logger LOG = LoggerFactory.getLogger(getClass());
+
+    private ObjectMapper objectMapper;
+
+    private Class&lt;T&gt; cls;
+
+    public JsonCacheValueTransformer(Class&lt;T&gt; cls) {
+        this.objectMapper = new ObjectMapper();
+        this.cls = cls;
+    }
+
+    @Override
+    public byte[] serialize(T o) {
+        byte[] defReturn = new byte[1];
+        try {
+            if (o == null) {
+                return defReturn;
+            }
+            return objectMapper.writeValueAsBytes(o);
+        } catch (Exception e) {
+            LOG.error("JsonCacheValueTransformer serialize exception", e);
+            return defReturn;
+        }
+    }
+
+    @Override
+    public T deserialize(byte[] bytes) {
+        try {
+            if (bytes == null) {
+                return null;
+            }
+            return objectMapper.readValue(bytes, cls);
+        } catch (Exception e) {
+            LOG.error("JsonCacheValueTransformer deserialize exception", e);
+            return null;
+        }
+    }
+}
+</code></pre>
+<p>如上所示，我们应用了Jackson来实现了Json的序列化(反序列化)，并适配了byte数组到字符串的转换。</p>
+<p>此外，Cache的Value中直接存储Integer/Long/String也较为常见，感兴趣的可以直接查看<a href="https://github.com/liheyuan/lmsia-cache">lmsia-cache项目的源代码</a>，这里不再赘述。</p>
+<p>实现了Key/Value的序列化之后，我们看一下具体的MemcachedCache实现:</p>
+<pre><code class="language-java">public abstract class AbstractMemcachedCache&lt;K, V&gt; implements ICache&lt;K, V&gt; {
+
+    protected final Logger LOG = LoggerFactory.getLogger(getClass());
+
+    private static final int connPoolSize = 16;
+
+    protected abstract MemcachedClient getMemcachedClient();
+
+    protected abstract CacheKeyTransformer&lt;K&gt; getKeyTransformer();
+
+    protected abstract CacheValueTransformer&lt;V&gt; getValueTransformer();
+
+    private Transcoder&lt;byte[]&gt; transcoder = new Transcoder&lt;byte[]&gt;() {
+
+        @Override
+        public void setPrimitiveAsString(boolean primitiveAsString) {
+        }
+
+        @Override
+        public void setPackZeros(boolean packZeros) {
+        }
+
+        @Override
+        public void setCompressionThreshold(int to) {
+        }
+
+        @Override
+        public void setCompressionMode(CompressionMode compressMode) {
+        }
+
+        @Override
+        public boolean isPrimitiveAsString() {
+            return false;
+        }
+
+        @Override
+        public boolean isPackZeros() {
+            return false;
+        }
+
+        @Override
+        public CachedData encode(byte[] o) {
+            return new CachedData(0, o);
+        }
+
+        @Override
+        public byte[] decode(CachedData d) {
+            if (d != null) {
+                return d.getData();
+            } else {
+                return null;
+            }
+        }
+
+    };
+
+    public void init() throws Exception {
+
+        // check
+        if (getKeyTransformer() == null) {
+            throw new RuntimeException("keyTransformer can not be null");
+        }
+
+        if (getValueTransformer() == null) {
+            throw new RuntimeException("valueTransformer can not be null");
+        }
+
+    }
+
+
+    @Nullable
+    @Override
+    public V get(K key) {
+        try {
+            byte[] bytes = getMemcachedClient().get(getKeyTransformer().getKey(key), transcoder);
+            if (bytes == null) {
+                return null;
+            }
+            return getValueTransformer().deserialize(bytes);
+        } catch (Exception e) {
+            LOG.error("memcached get exception", e);
+            return null;
+        }
+    }
+
+    @Override
+    public Map&lt;K, V&gt; batchGet(Collection&lt;K&gt; keys) {
+        if (keys == null || keys.isEmpty()) {
+            return new HashMap&lt;&gt;();
+        }
+
+        Map&lt;K, String&gt; key2idMap = new HashMap&lt;&gt;();
+        for (K key : keys) {
+            key2idMap.put(key, getKeyTransformer().getKey(key));
+        }
+
+        Collection&lt;String&gt; ids = key2idMap.values();
+
+        try {
+            Map&lt;String, byte[]&gt; map = getMemcachedClient().get(ids, transcoder);
+            if (map == null || map.isEmpty()) {
+                return new HashMap&lt;&gt;();
+            }
+
+            Map&lt;K, V&gt; result = new HashMap&lt;&gt;();
+            for (Entry&lt;K, String&gt; entry : key2idMap.entrySet()) {
+                K key = entry.getKey();
+                String id = entry.getValue();
+
+                byte[] bytes = map.get(id);
+                if (bytes != null) {
+                    result.put(key, getValueTransformer().deserialize(bytes));
+                }
+            }
+            return result;
+
+        } catch (Exception e) {
+            LOG.error("batchGet exception", e);
+            return new HashMap&lt;&gt;();
+        }
+    }
+
+    @Override
+    public void put(K key, V value) {
+        put(key, value, 0);
+    }
+
+    @Override
+    public void put(K key, V value, int ttlSecs) {
+        try {
+            getMemcachedClient().add(
+                    getKeyTransformer().getKey(key),
+                    ttlSecs,
+                    getValueTransformer().serialize(value));
+        } catch (Exception e) {
+            LOG.error("memcached put exception", e);
+        }
+    }
+
+    @Override
+    public void del(K key) {
+        try {
+            getMemcachedClient().delete(getKeyTransformer().getKey(key));
+        } catch (Exception e) {
+            LOG.error("memcached del exception", e);
+        }
+    }
+
+    @Override
+    public void clear() {
+        try {
+            getMemcachedClient().flushAll();
+        } catch (Exception e) {
+            LOG.error("memcached flushAll exception", e);
+        }
+    }
+}
+</code></pre>
+<p>如上所示，AbstractMemcachedCache预留了3个抽象getter方法:</p>
+<ul>
+<li>memcachedClient</li>
+<li>keyTransfomer</li>
+<li>valueTransfomer</li>
+</ul>
+<p>实现者可以根据自己的需求来实现。</p>
+<h2 id="自动配置">自动配置</h2>
+<p>前面已经提到，MemcachedCache依赖MemcachedClient的实例。</p>
+<p>如果每次都要手动构造MemcachedClient，实在是有些繁琐，我们可以通过Spring Boot的自动配置来自动注入：</p>
+<pre><code class="language-java">@Configuration
+@ConfigurationProperties(prefix = "memcached")
+public class MemcachedClientAutoConfiguration {
+
+    // Server list seperate by space
+    private String serverList;
+
+    // Connection Pool Size, default 64
+    private int connPoolSize = 64;
+
+    public String getServerList() {
+        return serverList;
+    }
+
+    public void setServerList(String serverList) {
+        this.serverList = serverList;
+    }
+
+    public int getConnPoolSize() {
+        return connPoolSize;
+    }
+
+    public void setConnPoolSize(int connPoolSize) {
+        this.connPoolSize = connPoolSize;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(MemcachedClient.class)
+    public MemcachedClient createMemcachedClient() throws IOException {
+        return MemcachedClientBuilder2.build(serverList, connPoolSize);
+    }
+
+
+}
+</code></pre>
+<p>如上所示，上述自动配置会扫描配置文件：</p>
+<ul>
+<li>若发现"memcached"开头的配置，会尝试解析其serverList和connPoolSize字段。</li>
+<li>若解析成功，会调用之前介绍的Builder，自动生成一个MemcachedClient。</li>
+</ul>
+<h2 id="memcached的应用案例">Memcached的应用案例</h2>
+<p>我们通过一个简单的案例来说明MemcachedCache的使用。</p>
+<p>设计一个接口，返回10秒内每个用户的第一次访问的时间戳。</p>
+<p>我们通过MemcachedCache来实现，首先定义Cache:</p>
+<pre><code class="language-java">@Service
+public class TimestampMemcachedCache extends AbstractMemcachedCache&lt;Integer, Long&gt; {
+
+    @Autowired
+    private MemcachedClient client;
+
+    private CacheKeyTransformer&lt;Integer&gt; keyTransformer = new DefaultCacheKeyTransformer&lt;&gt;("timestamp");
+
+    private CacheValueTransformer&lt;Long&gt; valueTransformer = new LongValueTransformer();
+
+    @Override
+    protected MemcachedClient getMemcachedClient() {
+        return client;
+    }
+
+    @Override
+    protected CacheKeyTransformer&lt;Integer&gt; getKeyTransformer() {
+        return keyTransformer;
+    }
+
+    @Override
+    protected CacheValueTransformer&lt;Long&gt; getValueTransformer() {
+        return valueTransformer;
+    }
+}
+</code></pre>
+<p>如上所示，我们定义了&lt;Integer, Long&gt;类型的Cache，其中Integer的Key表示用户Id，Long类型的Value表示时间戳。</p>
+<p>上述的MemcachedClient是自动注入的，我们需要做一下配置：</p>
+<pre><code class="language-yaml">memcached.serverList: "127.0.0.1:11211"
+</code></pre>
+<p>在使用的Service中，如下使用:</p>
+<pre><code class="language-yaml">
+    @Autowired
+    private TimestampMemcachedCache cache;
+
+    @Override
+    public String getCacheTimestampByUserId(int usrId) {
+        return String.valueOf(cache.cacheGet(userId, key -&gt; System.currentTimeMillis(), 10));
+    }
+
+</code></pre>
+<p>如上所示，我们用了cacheGet来分别缓存最新时间戳，过期时间设为10秒钟。</p>
+<p>通过这个例子，你一定体会到了：有了ICache等封装后，Memcached的使用变得非常简单。</p>
+<h2 id="小结">小结</h2>
+<p>在本节中，我们设计了通过了ICache接口，并实现了LocalCache、MemcachedCache两种不同的Cache。其中，我们重点探讨了MemcachedClient实现的细节，包括MemcachedClient的自动注入、Memcached数据类型的转换(Transfomer)。</p>
+<h2 id="拓展阅读">拓展阅读</h2>
+<ol>
+<li>实际的应用中，缓存的更新是一个较为复杂的任务，建议阅读<a href="https://coolshell.cn/articles/17416.html">缓存更新的套路</a>。</li>
+</ol>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/142/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/142/index.html">免费开发书籍中文版清单</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/75.html">Free Ebook Foundation</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">78页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 117980个">117980</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/146/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/146/index.html">http2讲解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/78.html">bagder</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1463个">1463</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/184/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/38/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/38/index.html">Java资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">61页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月23日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 7938个">7938</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/16/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/go_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/16/index.html">Go语言web编程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/9.html">astaxie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="go">go</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">97页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 23774个">23774</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/128/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/128/index.html">写给人类的机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">10页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 29个">29</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/205/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/README.html" title="从0到1实战微服务架构" data-book-page-rel-url="README.html" data-book-page-id="13723">从0到1实战微服务架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/README.html" title="架构概览" data-book-page-rel-url="architecture/README.html" data-book-page-id="13724">架构概览</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/architecture/overview.html" title="微服务架构概览" data-book-page-rel-url="architecture/overview.html" data-book-page-id="13725">微服务架构概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/devops.html" title="运维技术链概览" data-book-page-rel-url="architecture/devops.html" data-book-page-id="13726">运维技术链概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/microservics.html" title="微服务技术栈概览" data-book-page-rel-url="architecture/microservics.html" data-book-page-id="13727">微服务技术栈概览</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/architecture/toolchain.html" title="研发工具链概览" data-book-page-rel-url="architecture/toolchain.html" data-book-page-id="13728">研发工具链概览</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/README.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/README.html" data-book-page-id="13729">微服务的自动发现与负载均衡</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/k8s-intro.html" title="Kubernetes 快速入门" data-book-page-rel-url="ms-discovery/k8s-intro.html" data-book-page-id="13730">Kubernetes 快速入门</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-discovery/msd.html" title="微服务的自动发现与负载均衡" data-book-page-rel-url="ms-discovery/msd.html" data-book-page-id="13731">微服务的自动发现与负载均衡</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/README.html" title="微服务的开发框架" data-book-page-rel-url="spring-boot/README.html" data-book-page-id="13732">微服务的开发框架</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-gradle-structure.html" title="Gradle子项目划分与微服务的代码结构" data-book-page-rel-url="spring-boot/sb-gradle-structure.html" data-book-page-id="13733">Gradle子项目划分与微服务的代码结构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-thrift.html" title="Spring Boot整合Thrift RPC" data-book-page-rel-url="spring-boot/sb-thrift.html" data-book-page-id="13734">Spring Boot整合Thrift RPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-rest.html" title="Spring Boot整合REST服务" data-book-page-rel-url="spring-boot/sb-rest.html" data-book-page-id="13735">Spring Boot整合REST服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/spring-boot/sb-mockito.html" title="Mockito 单元测试打桩神器" data-book-page-rel-url="spring-boot/sb-mockito.html" data-book-page-id="13736">Mockito 单元测试打桩神器</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/README.html" title="微服务的存储与缓存" data-book-page-rel-url="ms-storage/README.html" data-book-page-id="13737">微服务的存储与缓存</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/mysql-devops.html" title="MySQL 数据库的运维" data-book-page-rel-url="ms-storage/mysql-devops.html" data-book-page-id="13738">MySQL 数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-mysql.html" title="Spring Boot整合MySQL" data-book-page-rel-url="ms-storage/sb-mysql.html" data-book-page-id="13739">Spring Boot整合MySQL</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/memcached-devops.html" title="Memcached 缓存服务的运维" data-book-page-rel-url="ms-storage/memcached-devops.html" data-book-page-id="13740">Memcached 缓存服务的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-memcached.html" title="Spring Boot整合Memcached" data-book-page-rel-url="ms-storage/sb-memcached.html" data-book-page-id="13741">Spring Boot整合Memcached</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/redis-devops.html" title="Redis 内存数据库的运维" data-book-page-rel-url="ms-storage/redis-devops.html" data-book-page-id="13742">Redis 内存数据库的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-storage/sb-redis.html" title="Spring Boot整合Redis" data-book-page-rel-url="ms-storage/sb-redis.html" data-book-page-id="13743">Spring Boot整合Redis</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/README.html" title="微服务的消息队列" data-book-page-rel-url="ms-msgq/README.html" data-book-page-id="13744">微服务的消息队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rabbitmq-devops.html" title="RabbitMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rabbitmq-devops.html" data-book-page-id="13745">RabbitMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rabitmq.html" title="Spring Boot整合RabbitMQ" data-book-page-rel-url="ms-msgq/sb-rabitmq.html" data-book-page-id="13746">Spring Boot整合RabbitMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/rocketmq-devops.html" title="RocketMQ 消息队列的运维" data-book-page-rel-url="ms-msgq/rocketmq-devops.html" data-book-page-id="13747">RocketMQ 消息队列的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/sb-rocketmq.html" title="Spring Boot整合RocketMQ" data-book-page-rel-url="ms-msgq/sb-rocketmq.html" data-book-page-id="13748">Spring Boot整合RocketMQ</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/kafka-devops.html" title="Kafka 流处理平台的运维" data-book-page-rel-url="ms-msgq/kafka-devops.html" data-book-page-id="13749">Kafka 流处理平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-msgq/dev-kafka.html" title="Kafka 流处理开发简介" data-book-page-rel-url="ms-msgq/dev-kafka.html" data-book-page-id="13750">Kafka 流处理开发简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/README.html" title="微服务日志监控" data-book-page-rel-url="ms-log/README.html" data-book-page-id="13751">微服务日志监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-logback.html" title="Spring Boot配置Logback日志" data-book-page-rel-url="ms-log/sb-logback.html" data-book-page-id="13752">Spring Boot配置Logback日志</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-trace.html" title="Spring Boot整合分布式追踪" data-book-page-rel-url="ms-log/sb-trace.html" data-book-page-id="13753">Spring Boot整合分布式追踪</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/elk-devops.html" title="ELK日志分析平台的运维" data-book-page-rel-url="ms-log/elk-devops.html" data-book-page-id="13754">ELK日志分析平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-log/sb-eblk.html" title="Spring Boot整合EBLK日志分析平台" data-book-page-rel-url="ms-log/sb-eblk.html" data-book-page-id="13755">Spring Boot整合EBLK日志分析平台</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/README.html" title="微服务平台监控" data-book-page-rel-url="ms-monitor/README.html" data-book-page-id="13756">微服务平台监控</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sentry-devops.html" title="Sentry 错误预警系统的运维" data-book-page-rel-url="ms-monitor/sentry-devops.html" data-book-page-id="13757">Sentry 错误预警系统的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/sb-sentry.html" title="Spring Boot整合Sentry" data-book-page-rel-url="ms-monitor/sb-sentry.html" data-book-page-id="13758">Spring Boot整合Sentry</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-monitor/k8s-prometheus-grafana.html" title="Kubernetes + Prometheus + Grafana平台监控" data-book-page-rel-url="ms-monitor/k8s-prometheus-grafana.html" data-book-page-id="13759">Kubernetes + Prometheus + Grafana平台监控</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/README.html" title="微服务配置中心" data-book-page-rel-url="ms-config/README.html" data-book-page-id="13760">微服务配置中心</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/cfg4j.html" title="cfg4j及方案简介" data-book-page-rel-url="ms-config/cfg4j.html" data-book-page-id="13761">cfg4j及方案简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-config/sb-config.html" title="Spring Boot整合配置中心" data-book-page-rel-url="ms-config/sb-config.html" data-book-page-id="13762">Spring Boot整合配置中心</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/README.html" title="微服务熔断与限流" data-book-page-rel-url="ms-circuit-breaker-and-limit/README.html" data-book-page-id="13763">微服务熔断与限流</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-hystrix.html" title="熔断与Hystrix" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-hystrix.html" data-book-page-id="13764">熔断与Hystrix</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-circuit-breaker-and-limit/sb-limit.html" title="限流的实现" data-book-page-rel-url="ms-circuit-breaker-and-limit/sb-limit.html" data-book-page-id="13765">限流的实现</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/README.html" title="微服务持续交付" data-book-page-rel-url="ms-delivery/README.html" data-book-page-id="13766">微服务持续交付</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/jenkins-devops.html" title="Jenkins平台的运维" data-book-page-rel-url="ms-delivery/jenkins-devops.html" data-book-page-id="13767">Jenkins平台的运维</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-ci.html" title="Jenkins持续集成" data-book-page-rel-url="ms-delivery/ms-ci.html" data-book-page-id="13768">Jenkins持续集成</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/ms-delivery/ms-cd.html" title="Jenkins持续部署" data-book-page-rel-url="ms-delivery/ms-cd.html" data-book-page-id="13769">Jenkins持续部署</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/README.html" title="研发工具链" data-book-page-rel-url="toolchain/README.html" data-book-page-id="13770">研发工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/ldap.html" title="LDAP 内部账号管理系统" data-book-page-rel-url="toolchain/ldap.html" data-book-page-id="13771">LDAP 内部账号管理系统</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/gerrit.html" title="gerrit 代码的版本管理与评审" data-book-page-rel-url="toolchain/gerrit.html" data-book-page-id="13772">gerrit 代码的版本管理与评审</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/nexus.html" title="Nexus 私有maven仓库" data-book-page-rel-url="toolchain/nexus.html" data-book-page-id="13773">Nexus 私有maven仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/bom.html" title="BOM 减少版本冲突" data-book-page-rel-url="toolchain/bom.html" data-book-page-id="13774">BOM 减少版本冲突</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-template.html" title="Spring Boot 项目模板" data-book-page-rel-url="toolchain/spring-boot-template.html" data-book-page-id="13775">Spring Boot 项目模板</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/spring-boot-scripts.html" title="开发效率脚本" data-book-page-rel-url="toolchain/spring-boot-scripts.html" data-book-page-id="13776">开发效率脚本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/toolchain/stress-test.html" title="打压工具" data-book-page-rel-url="toolchain/stress-test.html" data-book-page-id="13777">打压工具</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/README.html" title="运维工具链" data-book-page-rel-url="devops/README.html" data-book-page-id="13778">运维工具链</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/205/devops/docker-repo.html" title="Docker 私有仓库" data-book-page-rel-url="devops/docker-repo.html" data-book-page-id="13779">Docker 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/discovery.html" title="Nginx REST 网关自动配置" data-book-page-rel-url="devops/discovery.html" data-book-page-id="13780">Nginx REST 网关自动配置</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/k8s-cluster.html" title="搭建Kubernetes集群" data-book-page-rel-url="devops/k8s-cluster.html" data-book-page-id="13781">搭建Kubernetes集群</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/openvpn-k8s.html" title="OpenVPN访问Kubernetes集群内网" data-book-page-rel-url="devops/openvpn-k8s.html" data-book-page-id="13782">OpenVPN访问Kubernetes集群内网</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/205/devops/jump-server.html" title="线上跳板机" data-book-page-rel-url="devops/jump-server.html" data-book-page-id="13783">线上跳板机</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =205;var bookPageId =13741;var bookPageRelUrl ='ms-storage/sb-memcached.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

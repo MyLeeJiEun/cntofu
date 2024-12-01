@@ -1,0 +1,827 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>在到达内核入口之前最后的准备-Linux 内核揭密</title>
+<meta content='在到达内核入口之前最后的准备,Linux 内核揭密' name='keywords'>
+<meta content='在到达内核入口之前最后的准备,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Initialization/linux-initialization-2.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">早期的中断和异常控制</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Initialization/linux-initialization-4.html">
+<span class="">内核入口 - star..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="内核初始化-第三部分">内核初始化 第三部分</h1>
+<h2 id="进入内核入口点之前最后的准备工作">进入内核入口点之前最后的准备工作</h2>
+<p>这是 Linux 内核初始化过程的第三部分。在<a href="https://github.com/MintCN/linux-insides-zh/blob/master/Initialization/linux-initialization-2.html">上一个部分</a> 中我们接触到了初期中断和异常处理，而在这个部分中我们要继续看一看 Linux 内核的初始化过程。在之后的章节我们将会关注“内核入口点”—— <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> 文件中的<code>start_kernel</code> 函数。没错，从技术上说这并不是内核的入口点，只是不依赖于特定架构的通用内核代码的开始。不过，在我们调用 <code>start_kernel</code> 之前，有些准备必须要做。下面我们就来看一看。</p>
+<h2 id="boot-params-again">boot_params again</h2>
+<p>在上一个部分中我们讲到了设置中断描述符表，并将其加载进 <code>IDTR</code> 寄存器。下一步是调用 <code>copy_bootdata</code> 函数：</p>
+<pre><code class="language-C">copy_bootdata(__va(real_mode_data));
+</code></pre>
+<p>这个函数接受一个参数—— <code>read_mode_data</code> 的虚拟地址。<code>boot_params</code> 结构体是在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/uapi/asm/bootparam.h#L114">arch/x86/include/uapi/asm/bootparam.h</a> 作为第一个参数传递到 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/head_64.S">arch/x86/kernel/head_64.S</a> 中的 <code>x86_64_start_kernel</code> 函数的：</p>
+<pre><code>	/* rsi is pointer to real mode structure with interesting info.
+	   pass it to C */
+	movq	%rsi, %rdi
+</code></pre>
+<p>下面我们来看一看 <code>__va</code> 宏。 这个宏定义在 <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a>：</p>
+<pre><code class="language-C">#define __va(x)                 ((void *)((unsigned long)(x)+PAGE_OFFSET))
+</code></pre>
+<p>其中 <code>PAGE_OFFSET</code> 就是 <code>__PAGE_OFFSET</code>（即 <code>0xffff880000000000</code>），也是所有对物理地址进行直接映射后的虚拟基地址。因此我们就得到了 <code>boot_params</code> 结构体的虚拟地址，并把他传入 <code>copy_bootdata</code> 函数中。在这个函数里我们把 <code>real_mod_data</code> （定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/setup.h">arch/x86/kernel/setup.h</a>） 拷贝进 <code>boot_params</code>：</p>
+<pre><code class="language-C">extern struct boot_params boot_params;
+</code></pre>
+<p><code>copy_boot_data</code> 的实现如下:</p>
+<pre><code class="language-C">static void __init copy_bootdata(char *real_mode_data)
+{
+	char * command_line;
+	unsigned long cmd_line_ptr;
+
+	memcpy(&amp;boot_params, real_mode_data, sizeof boot_params);
+	sanitize_boot_params(&amp;boot_params);
+	cmd_line_ptr = get_cmd_line_ptr();
+	if (cmd_line_ptr) {
+		command_line = __va(cmd_line_ptr);
+		memcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+	}
+}
+</code></pre>
+<p>首先，这个函数的声明中有一个 <code>__init</code> 前缀，这表示这个函数只在初始化阶段使用，并且它所使用的内存将会被释放。</p>
+<p>在这个函数中首先声明了两个用于解析内核命令行的变量，然后使用<code>memcpy</code> 函数将 <code>real_mode_data</code> 拷贝进 <code>boot_params</code>。如果系统引导工具（bootloader）没能正确初始化 <code>boot_params</code> 中的某些成员的话，那么在接下来调用的 <code>sanitize_boot_params</code> 函数中将会对这些成员进行清零，比如 <code>ext_ramdisk_image</code> 等。此后我们通过调用 <code>get_cmd_line_ptr</code> 函数来得到命令行的地址：</p>
+<pre><code class="language-C">unsigned long cmd_line_ptr = boot_params.hdr.cmd_line_ptr;
+cmd_line_ptr |= (u64)boot_params.ext_cmd_line_ptr &lt;&lt; 32;
+return cmd_line_ptr;
+</code></pre>
+<p><code>get_cmd_line_ptr</code> 函数将会从 <code>boot_params</code> 中获得命令行的64位地址并返回。最后，我们检查一下是否正确获得了 <code>cmd_line_ptr</code>，并把它的虚拟地址拷贝到一个字节数组 <code>boot_command_line</code> 中：</p>
+<pre><code class="language-C">extern char __initdata boot_command_line[];
+</code></pre>
+<p>这一步完成之后，我们就得到了内核命令行和 <code>boot_params</code> 结构体。之后，内核通过调用 <code>load_ucode_bsp</code> 函数来加载处理器微代码（microcode），不过我们目前先暂时忽略这一步。</p>
+<p>微代码加载之后，内核会对 <code>console_loglevel</code> 进行检查，同时通过 <code>early_printk</code> 函数来打印出字符串 <code>Kernel Alive</code>。不过这个输出不会真的被显示出来，因为这个时候 <code>early_printk</code> 还没有被初始化。这是目前内核中的一个小bug，作者已经提交了补丁 <a href="http://git.kernel.org/cgit/linux/kernel/git/tip/tip.git/commit/?id=91d8f0416f3989e248d3a3d3efb821eda10a85d2">commit</a>，补丁很快就能应用在主分支中了。所以你可以先跳过这段代码。</p>
+<h2 id="初始化内存页">初始化内存页</h2>
+<p>至此，我们已经拷贝了 <code>boot_params</code> 结构体，接下来将对初期页表进行一些设置以便在初始化内核的过程中使用。我们之前已经对初始化了初期页表，以便支持换页，这在之前的<a href="http://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-1.html">部分</a>中已经讨论过。现在则通过调用 <code>reset_early_page_tables</code> 函数将初期页表中大部分项清零（在之前的部分也有介绍），只保留内核高地址的映射。然后我们调用：</p>
+<pre><code class="language-C">	clear_page(init_level4_pgt);
+</code></pre>
+<p><code>init_level4_pgt</code> 同样定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/head_64.S">arch/x86/kernel/head_64.S</a>:</p>
+<pre><code class="language-assembly">NEXT_PAGE(init_level4_pgt)
+	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+	.org    init_level4_pgt + L4_PAGE_OFFSET*8, 0
+	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+	.org    init_level4_pgt + L4_START_KERNEL*8, 0
+	.quad   level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE
+</code></pre>
+<p>这段代码为内核的代码段、数据段和 bss 段映射了前 2.5G 个字节。<code>clear_page</code> 函数定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/lib/clear_page_64.S">arch/x86/lib/clear_page_64.S</a>：</p>
+<pre><code class="language-assembly">ENTRY(clear_page)
+	CFI_STARTPROC
+	xorl %eax,%eax
+	movl $4096/64,%ecx
+	.p2align 4
+	.Lloop:
+    decl	%ecx
+#define PUT(x) movq %rax,x*8(%rdi)
+	movq %rax,(%rdi)
+	PUT(1)
+	PUT(2)
+	PUT(3)
+	PUT(4)
+	PUT(5)
+	PUT(6)
+	PUT(7)
+	leaq 64(%rdi),%rdi
+	jnz	.Lloop
+	nop
+	ret
+	CFI_ENDPROC
+	.Lclear_page_end:
+	ENDPROC(clear_page)
+</code></pre>
+<p>顾名思义，这个函数会将页表清零。这个函数的开始和结束部分有两个宏 <code>CFI_STARTPROC</code> 和 <code>CFI_ENDPROC</code>，他们会展开成 GNU 汇编指令，用于调试：</p>
+<pre><code class="language-C">#define CFI_STARTPROC           .cfi_startproc
+#define CFI_ENDPROC             .cfi_endproc
+</code></pre>
+<p>在 <code>CFI_STARTPROC</code> 之后我们将 <code>eax</code> 寄存器清零，并将 <code>ecx</code> 赋值为 64（用作计数器）。接下来从 <code>.Lloop</code> 标签开始循环，首先就是将 <code>ecx</code> 减一。然后将 <code>rax</code> 中的值（目前为0）写入 <code>rdi</code> 指向的地址，<code>rdi</code> 中保存的是 <code>init_level4_pgt</code> 的基地址。接下来重复7次这个步骤，但是每次都相对 <code>rdi</code> 多偏移8个字节。之后 <code>init_level4_pgt</code> 的前64个字节就都被填充为0了。接下来我们将 <code>rdi</code> 中的值加上64，重复这个步骤，直到 <code>ecx</code> 减至0。最后就完成了将 <code>init_level4_pgt</code> 填零。</p>
+<p>在将 <code>init_level4_pgt</code> 填0之后，再把它的最后一项设置为内核高地址的映射：</p>
+<pre><code class="language-C">init_level4_pgt[511] = early_level4_pgt[511];
+</code></pre>
+<p>在前面我们已经使用 <code>reset_early_page_table</code> 函数清除 <code>early_level4_pgt</code> 中的大部分项，而只保留内核高地址的映射。</p>
+<p><code>x86_64_start_kernel</code> 函数的最后一步是调用：</p>
+<pre><code class="language-C">x86_64_start_reservations(real_mode_data);
+</code></pre>
+<p>并传入 <code>real_mode_data</code> 参数。 <code>x86_64_start_reservations</code> 函数与 <code>x86_64_start_kernel</code> 函数定义在同一个文件中：</p>
+<pre><code class="language-C">void __init x86_64_start_reservations(char *real_mode_data)
+{
+	if (!boot_params.hdr.version)
+		copy_bootdata(__va(real_mode_data));
+
+	reserve_ebda_region();
+
+	start_kernel();
+}
+</code></pre>
+<p>这就是进入内核入口点之前的最后一个函数了。下面我们就来介绍一下这个函数。</p>
+<h2 id="内核入口点前的最后一步">内核入口点前的最后一步</h2>
+<p>在 <code>x86_64_start_reservations</code> 函数中首先检查了 <code>boot_params.hdr.version</code>：</p>
+<pre><code class="language-C">if (!boot_params.hdr.version)
+	copy_bootdata(__va(real_mode_data));
+</code></pre>
+<p>如果它为0，则再次调用 <code>copy_bootdata</code>，并传入 <code>real_mode_data</code> 的虚拟地址。</p>
+<p>接下来则调用了 <code>reserve_ebda_region</code> 函数，它定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/head.c">arch/x86/kernel/head.c</a>。这个函数为 <code>EBDA</code>（即Extended BIOS Data Area，扩展BIOS数据区域）预留空间。扩展BIOS预留区域位于常规内存顶部（译注：常规内存（Conventiional Memory）是指前640K字节内存），包含了端口、磁盘参数等数据。</p>
+<p>接下来我们来看一下 <code>reserve_ebda_region</code> 函数。它首先会检查是否启用了半虚拟化：</p>
+<pre><code class="language-C">if (paravirt_enabled())
+	return;
+</code></pre>
+<p>如果开启了半虚拟化，那么就退出 <code>reserve_ebda_region</code> 函数，因为此时没有扩展BIOS数据区域。下面我们首先得到低地址内存的末尾地址：</p>
+<pre><code class="language-C">lowmem = *(unsigned short *)__va(BIOS_LOWMEM_KILOBYTES);
+lowmem &lt;&lt;= 10;
+</code></pre>
+<p>首先我们得到了BIOS地地址内存的虚拟地址，以KB为单位，然后将其左移10位（即乘以1024）转换为以字节为单位。然后我们需要获得扩展BIOS数据区域的地址：</p>
+<pre><code class="language-C">ebda_addr = get_bios_ebda();
+</code></pre>
+<p>其中， <code>get_bios_ebda</code> 函数定义在 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/bios_ebda.h">arch/x86/include/asm/bios_ebda.h</a>：</p>
+<pre><code class="language-C">static inline unsigned int get_bios_ebda(void)
+{
+	unsigned int address = *(unsigned short *)phys_to_virt(0x40E);
+	address &lt;&lt;= 4;
+	return address;
+}
+</code></pre>
+<p>下面我们来尝试理解一下这段代码。这段代码中，首先我们将物理地址 <code>0x40E</code> 转换为虚拟地址，<code>0x0040:0x000e</code> 就是包含有扩展BIOS数据区域基地址的代码段。这里我们使用了 <code>phys_to_virt</code> 函数进行地址转换，而不是之前使用的 <code>__va</code> 宏。不过，事实上他们两个基本上是一样的：</p>
+<pre><code class="language-C">static inline void *phys_to_virt(phys_addr_t address)
+{
+         return __va(address);
+}
+</code></pre>
+<p>而不同之处在于，<code>phys_to_virt</code> 函数的参数类型 <code>phys_addr_t</code> 的定义依赖于 <code>CONFIG_PHYS_ADDR_T_64BIT</code>：</p>
+<pre><code class="language-C">#ifdef CONFIG_PHYS_ADDR_T_64BIT
+	typedef u64 phys_addr_t;
+#else
+	typedef u32 phys_addr_t;
+#endif
+</code></pre>
+<p>具体的类型是由 <code>CONFIG_PHYS_ADDR_T_64BIT</code> 设置选项控制的。此后我们得到了包含扩展BIOS数据区域虚拟基地址的段，把它左移4位后返回。这样，<code>ebda_addr</code> 变量就包含了扩展BIOS数据区域的基地址。</p>
+<p>下一步我们来检查扩展BIOS数据区域与低地址内存的地址，看一看它们是否小于 <code>INSANE_CUTOFF</code> 宏：</p>
+<pre><code class="language-C">if (ebda_addr &lt; INSANE_CUTOFF)
+	ebda_addr = LOWMEM_CAP;
+
+if (lowmem &lt; INSANE_CUTOFF)
+	lowmem = LOWMEM_CAP;
+</code></pre>
+<p><code>INSANE_CUTOFF</code> 为：</p>
+<pre><code class="language-C">#define INSANE_CUTOFF		0x20000U
+</code></pre>
+<p>即 128 KB. 上一步我们得到了低地址内存中的低地址部分以及扩展BIOS数据区域，然后调用 <code>memblock_reserve</code> 函数来在低内存地址与1MB之间为扩展BIOS数据预留内存区域。</p>
+<pre><code class="language-C">lowmem = min(lowmem, ebda_addr);
+lowmem = min(lowmem, LOWMEM_CAP);
+memblock_reserve(lowmem, 0x100000 - lowmem);
+</code></pre>
+<p><code>memblock_reserve</code> 函数定义在 <a href="https://github.com/torvalds/linux/blob/master/mm/block.c">mm/block.c</a>，它接受两个参数：</p>
+<ul>
+<li>基物理地址</li>
+<li>区域大小</li>
+</ul>
+<p>然后在给定的基地址处预留指定大小的内存。<code>memblock_reserve</code> 是在这本书中我们接触到的第一个Linux内核内存管理框架中的函数。我们很快会详细地介绍内存管理，不过现在还是先来看一看这个函数的实现。</p>
+<h2 id="linux内核管理框架初探">Linux内核管理框架初探</h2>
+<p>在上一段中我们遇到了对 <code>memblock_reserve</code> 函数的调用。现在我们来尝试理解一下这个函数是如何工作的。 <code>memblock_reserve</code> 函数只是调用了：</p>
+<pre><code class="language-C">memblock_reserve_region(base, size, MAX_NUMNODES, 0);
+</code></pre>
+<p><code>memblock_reserve_region</code> 接受四个参数：</p>
+<ul>
+<li>内存区域的物理基地址</li>
+<li>内存区域的大小</li>
+<li>最大 NUMA 节点数</li>
+<li>标志参数 flags</li>
+</ul>
+<p>在 <code>memblock_reserve_region</code> 函数一开始，就是一个 <code>memblock_type</code> 结构体类型的变量：</p>
+<pre><code class="language-C">struct memblock_type *_rgn = &amp;memblock.reserved;
+</code></pre>
+<p><code>memblock_type</code> 类型代表了一块内存，定义如下：</p>
+<pre><code class="language-C">struct memblock_type {
+         unsigned long cnt;
+         unsigned long max;
+         phys_addr_t total_size;
+         struct memblock_region *regions;
+};
+</code></pre>
+<p>因为我们要为扩展BIOS数据区域预留内存块，所以当前内存区域的类型就是预留。<code>memblock</code> 结构体的定义为：</p>
+<pre><code class="language-C">struct memblock {
+         bool bottom_up;
+         phys_addr_t current_limit;
+         struct memblock_type memory;
+         struct memblock_type reserved;
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+         struct memblock_type physmem;
+#endif
+};
+</code></pre>
+<p>它描述了一块通用的数据块。我们用 <code>memblock.reserved</code> 的值来初始化 <code>_rgn</code>。<code>memblock</code> 全局变量定义如下：</p>
+<pre><code class="language-C">struct memblock memblock __initdata_memblock = {
+	.memory.regions		= memblock_memory_init_regions,
+	.memory.cnt		= 1,
+	.memory.max		= INIT_MEMBLOCK_REGIONS,
+	.reserved.regions	= memblock_reserved_init_regions,
+	.reserved.cnt		= 1,
+	.reserved.max		= INIT_MEMBLOCK_REGIONS,
+#ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+	.physmem.regions	= memblock_physmem_init_regions,
+	.physmem.cnt		= 1,
+	.physmem.max		= INIT_PHYSMEM_REGIONS,
+#endif
+	.bottom_up		= false,
+	.current_limit		= MEMBLOCK_ALLOC_ANYWHERE,
+};
+</code></pre>
+<p>我们现在不会继续深究这个变量，但在内存管理部分的中我们会详细地对它进行介绍。需要注意的是，这个变量的声明中使用了 <code>__initdata_memblock</code>：</p>
+<pre><code class="language-C">#define __initdata_memblock __meminitdata
+</code></pre>
+<p>而 <code>__meminit_data</code> 为：</p>
+<pre><code class="language-C">#define __meminitdata    __section(.meminit.data)
+</code></pre>
+<p>自此我们得出这样的结论：所有的内存块都将定义在 <code>.meminit.data</code> 区段中。在我们定义了 <code>_rgn</code> 之后，使用了 <code>memblock_dbg</code> 宏来输出相关的信息。你可以在从内核命令行传入参数 <code>memblock=debug</code> 来开启这些输出。</p>
+<p>在输出了这些调试信息后，是对下面这个函数的调用：</p>
+<pre><code class="language-C">memblock_add_range(_rgn, base, size, nid, flags);
+</code></pre>
+<p>它向 <code>.meminit.data</code> 区段添加了一个新的内存块区域。由于 <code>_rgn</code> 的值是 <code>&amp;memblock.reserved</code>，下面的代码就直接将扩展BIOS数据区域的基地址、大小和标志填入 <code>_rgn</code> 中：</p>
+<pre><code class="language-C">if (type-&gt;regions[0].size == 0) {
+    WARN_ON(type-&gt;cnt != 1 || type-&gt;total_size);
+    type-&gt;regions[0].base = base;
+    type-&gt;regions[0].size = size;
+    type-&gt;regions[0].flags = flags;
+    memblock_set_region_node(&amp;type-&gt;regions[0], nid);
+    type-&gt;total_size = size;
+    return 0;
+}
+</code></pre>
+<p>在填充好了区域后，接着是对 <code>memblock_set_region_node</code> 函数的调用。它接受两个参数：</p>
+<ul>
+<li>填充好的内存区域的地址</li>
+<li>NUMA节点ID</li>
+</ul>
+<p>其中我们的区域由 <code>memblock_region</code> 结构体来表示：</p>
+<pre><code class="language-C">struct memblock_region {
+    phys_addr_t base;
+	phys_addr_t size;
+	unsigned long flags;
+#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+    int nid;
+#endif
+};
+</code></pre>
+<p>NUMA节点ID依赖于 <code>MAX_NUMNODES</code> 宏，定义在 <a href="https://github.com/torvalds/linux/blob/master/include/linux/numa.h">include/linux/numa.h</a></p>
+<pre><code class="language-C">#define MAX_NUMNODES    (1 &lt;&lt; NODES_SHIFT)
+</code></pre>
+<p>其中 <code>NODES_SHIFT</code> 依赖于 <code>CONFIG_NODES_SHIFT</code> 配置参数，定义如下：</p>
+<pre><code class="language-C">#ifdef CONFIG_NODES_SHIFT
+  #define NODES_SHIFT     CONFIG_NODES_SHIFT
+#else
+  #define NODES_SHIFT     0
+#endif
+</code></pre>
+<p><code>memblick_set_region_node</code> 函数只是填充了 <code>memblock_region</code> 中的 <code>nid</code> 成员：</p>
+<pre><code class="language-C">static inline void memblock_set_region_node(struct memblock_region *r, int nid)
+{
+         r-&gt;nid = nid;
+}
+</code></pre>
+<p>在这之后我们就在 <code>.meminit.data</code> 区段拥有了为扩展BIOS数据区域预留的第一个 <code>memblock</code>。<code>reserve_ebda_region</code> 已经完成了它该做的任务，我们回到 <a href="https://github.com/torvalds/linux/blob/master/arch/x86/kernel/head64.c">arch/x86/kernel/head64.c</a> 继续。</p>
+<p>至此我们已经结束了进入内核之前所有的准备工作。<code>x86_64_start_reservations</code> 的最后一步是调用 <a href="https://github.com/torvalds/linux/blob/master/init/main.c">init/main.c</a> 中的：</p>
+<pre><code class="language-C">start_kernel()
+</code></pre>
+<p>这一部分到此结束。</p>
+<h2 id="小结">小结</h2>
+<p>本书的第三部分到这里就结束了。在下一部分中，我们将会见到内核入口点处的初始化工作 —— 位于 <code>start_kernel</code> 函数中。这些工作是在启动第一个进程 <code>init</code> 之前首先要完成的工作。</p>
+<p>如果你有任何问题或建议，请在twitter上联系我 <a href="https://twitter.com/0xAX">0xAX</a>，或者通过<a href="anotherworldofworld@gmail.com">邮件</a>与我沟通，还可以新开<a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>。</p>
+<h2 id="相关链接">相关链接</h2>
+<ul>
+<li><a href="http://stanislavs.org/helppc/bios_data_area.html">BIOS data area</a></li>
+<li><a href="http://www.kryslix.com/nsfaq/Q.6.html">What is in the extended BIOS data area on a PC?</a></li>
+<li><a href="https://github.com/MintCN/linux-insides-zh/blob/master/Initialization/linux-initialization-2.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/44/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/44/index.html">Shell 编程范例</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 296个">296</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/195/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/195/index.html">Linux命令大全搜索工具</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/111.html">jaywcjlove</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/86/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/scala_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/86/index.html">《快学Scala》读书笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/55.html">xuexingdong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="scala">scala</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">7页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/204/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/204/index.html">系统重构与迁移指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/72.html">phodal</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">183页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2021年10月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 个"></span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/120/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/120/index.html">Openstack用户指南（简体中文版）</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">47页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8075;var bookPageRelUrl ='Initialization/linux-initialization-3.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

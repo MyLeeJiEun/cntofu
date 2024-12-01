@@ -1,0 +1,874 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>数值运算-Shell 编程范例</title>
+<meta content='数值运算,Shell 编程范例' name='keywords'>
+<meta content='数值运算,Shell 编程范例' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/44/zh/chapters/01-chapter1.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">准备工作</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/44/zh/chapters/01-chapter3.markdown">
+<span class="">布尔运算</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/44/index.html">Shell 编程范例</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-shell-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="数值运算">数值运算</h1>
+<ul>
+<li><a href="#toc_22467_18587_1">前言</a></li>
+<li><a href="#toc_22467_18587_2">整数运算</a></li>
+<li><a href="#toc_22467_18587_3">范例：对某个数加 1</a></li>
+<li><a href="#toc_22467_18587_4">范例：从 1 加到某个数</a></li>
+<li><a href="#toc_22467_18587_5">范例：求模</a></li>
+<li><a href="#toc_22467_18587_6">范例：求幂</a></li>
+<li><a href="#toc_22467_18587_7">范例：进制转换</a></li>
+<li><a href="#toc_22467_18587_8">范例：ascii 字符编码</a></li>
+<li><a href="#toc_22467_18587_9">浮点运算</a></li>
+<li><a href="#toc_22467_18587_10">范例：求 1 除以 13，保留 3 位有效数字</a></li>
+<li><a href="#toc_22467_18587_11">范例：余弦值转角度</a></li>
+<li><a href="#toc_22467_18587_12">范例：有一组数据，求人均月收入最高家庭</a></li>
+<li><a href="#toc_22467_18587_13">随机数</a></li>
+<li><a href="#toc_22467_18587_14">范例：获取一个随机数</a></li>
+<li><a href="#toc_22467_18587_15">范例：随机产生一个从 0 到 255 之间的数字</a></li>
+<li><a href="#toc_22467_18587_16">其他运算</a></li>
+<li><a href="#toc_22467_18587_17">范例：获取一系列数</a></li>
+<li><a href="#toc_22467_18587_18">范例：统计字符串中各单词出现次数</a></li>
+<li><a href="#toc_22467_18587_19">范例：统计指定单词出现次数</a></li>
+<li><a href="#toc_22467_18587_20">小结</a></li>
+<li><a href="#toc_22467_18587_21">资料</a></li>
+<li><a href="#toc_22467_18587_22">后记</a></li>
+</ul>
+<p><span id="toc_22467_18587_1"></span></p>
+<h2 id="前言">前言</h2>
+<p>从本文开始，打算结合平时积累和进一步实践，通过一些范例来介绍Shell编程。因为范例往往能够给人以学有所用的感觉，而且给人以动手实践的机会，从而激发人的学习热情。</p>
+<p>考虑到易读性，这些范例将非常简单，但是实用，希望它们能够成为我们解决日常问题的参照物或者是“茶余饭后”的小点心，当然这些“点心”肯定还有值得探讨、优化的地方。</p>
+<p>更复杂有趣的例子请参考 <a href="http://www.tldp.org/LDP/abs/html/">Advanced Bash-Scripting Guide</a> (一本深入学习 Shell 脚本艺术的书籍)。</p>
+<p>该系列概要：</p>
+<ul>
+<li>目的：享受用 Shell 解决问题的乐趣；和朋友们一起交流和探讨。</li>
+<li>计划：先零散地写些东西，之后再不断补充，最后整理成册。</li>
+<li>读者：熟悉 Linux 基本知识，如文件系统结构、常用命令行工具、Shell 编程基础等。</li>
+<li>建议：看范例时，可参考<a href="http://bbs.chinaunix.net/forum.php?mod=viewthread&amp;tid=2198159">《Shell基础十二篇》</a>和<a href="http://bbs.chinaunix.net/thread-218853-1-1.html">《Shell十三问》</a>。</li>
+<li>环境：如没特别说明，该系列使用的 Shell 将特指 Bash，版本在 3.1.17 以上。</li>
+<li>说明：该系列不是依据 Shell 语法组织，而是面向某些潜在的操作对象和操作本身，它们反应了现实应用。当然，在这个过程中肯定会涉及到 Shell 的语法。</li>
+</ul>
+<p>这一篇打算讨论一下 Shell 编程中的基本数值运算，这类运算包括：</p>
+<ul>
+<li>数值（包括整数和浮点数）间的加、减、乘、除、求幂、求模等</li>
+<li>产生指定范围的随机数</li>
+<li>产生指定范围的数列</li>
+</ul>
+<p>Shell 本身可以做整数运算，复杂一些的运算要通过外部命令实现，比如 <code>expr</code>，<code>bc</code>，<code>awk</code> 等。另外，可通过 <code>RANDOM</code> 环境变量产生一个从 0 到 32767 的随机数，一些外部工具，比如 <code>awk</code> 可以通过 <code>rand()</code> 函数产生随机数。而 <code>seq</code> 命令可以用来产生一个数列。下面对它们分别进行介绍。</p>
+<p><span id="toc_22467_18587_2"></span></p>
+<h2 id="整数运算">整数运算</h2>
+<p><span id="toc_22467_18587_3"></span></p>
+<h3 id="范例对某个数加-1">范例：对某个数加 1</h3>
+<pre><code>$ i=0;
+$ ((i++))
+$ echo $i
+1
+
+$ let i++
+$ echo $i
+2
+
+$ expr $i + 1
+3
+$ echo $i
+2
+
+$ echo $i 1 | awk '{printf $1+$2}'
+3
+</code></pre>
+<p>说明： <code>expr</code> 之后的 <code>$i</code>，<code>+</code>，1 之间有空格分开。如果进行乘法运算，需要对运算符进行转义，否则 Shell 会把乘号解释为通配符，导致语法错误； <code>awk</code> 后面的 <code>$1</code> 和 <code>$2</code> 分别指 <code>$i</code> 和 1，即从左往右的第 1 个和第 2 个数。</p>
+<p>用 Shell 的内置命令查看各个命令的类型如下：</p>
+<pre><code>$ type type
+type is a shell builtin
+$ type let
+let is a shell builtin
+$ type expr
+expr is hashed (/usr/bin/expr)
+$ type bc
+bc is hashed (/usr/bin/bc)
+$ type awk
+awk is /usr/bin/awk
+</code></pre>
+<p>从上述演示可看出： <code>let</code> 是 Shell 内置命令，其他几个是外部命令，都在 <code>/usr/bin</code> 目录下。而 <code>expr</code> 和 <code>bc</code> 因为刚用过，已经加载在内存的 <code>hash</code> 表中。这将有利于我们理解在上一章介绍的脚本多种执行方法背后的原理。</p>
+<p>说明：如果要查看不同命令的帮助，对于 <code>let</code> 和 <code>type</code> 等 Shell 内置命令，可以通过 Shell 的一个内置命令 <code>help</code> 来查看相关帮助，而一些外部命令可以通过 Shell 的一个外部命令 <code>man</code> 来查看帮助，用法诸如 <code>help let</code>，<code>man expr</code> 等。</p>
+<p><span id="toc_22467_18587_4"></span></p>
+<h3 id="范例从-1-加到某个数">范例：从 1 加到某个数</h3>
+<pre><code>#!/bin/bash
+# calc.sh
+
+i=0;
+while [ $i -lt 10000 ]
+do
+	((i++))
+done
+echo $i
+</code></pre>
+<p>说明：这里通过 <code>while [ 条件表达式 ]; do .... done</code> 循环来实现。<code>-lt</code> 是小于号 <code>&lt;</code>，具体见 <code>test</code> 命令的用法：<code>man test</code>。</p>
+<p>如何执行该脚本？</p>
+<p>办法一：直接把脚本文件当成子 Shell （Bash）的一个参数传入</p>
+<pre><code>$ bash calc.sh
+$ type bash
+bash is hashed (/bin/bash)
+</code></pre>
+<p>办法二：是通过 <code>bash</code> 的内置命令 <code>.</code> 或 <code>source</code> 执行</p>
+<pre><code>$ . ./calc.sh
+</code></pre>
+<p>或</p>
+<pre><code>$ source ./calc.sh
+$ type .
+. is a shell builtin
+$ type source
+source is a shell builtin
+</code></pre>
+<p>办法三：是修改文件为可执行，直接在当前 Shell 下执行</p>
+<pre><code>$ chmod ./calc.sh
+$ ./calc.sh
+</code></pre>
+<p>下面，逐一演示用其他方法计算变量加一，即把 <code>((i++))</code> 行替换成下面的某一个：</p>
+<pre><code>let i++;
+
+i=$(expr $i + 1)
+
+i=$(echo $i+1|bc)
+
+i=$(echo "$i 1" | awk '{printf $1+$2;}')
+</code></pre>
+<p>比较计算时间如下：</p>
+<pre><code>$ time calc.sh
+10000
+
+real    0m1.319s
+user    0m1.056s
+sys     0m0.036s
+$ time calc_let.sh
+10000
+
+real    0m1.426s
+user    0m1.176s
+sys     0m0.032s
+$  time calc_expr.sh
+1000
+
+real    0m27.425s
+user    0m5.060s
+sys     0m14.177s
+$ time calc_bc.sh
+1000
+
+real    0m56.576s
+user    0m9.353s
+sys     0m24.618s
+$ time ./calc_awk.sh
+100
+
+real    0m11.672s
+user    0m2.604s
+sys     0m2.660s
+</code></pre>
+<p>说明： <code>time</code> 命令可以用来统计命令执行时间，这部分时间包括总的运行时间，用户空间执行时间，内核空间执行时间，它通过 <code>ptrace</code> 系统调用实现。</p>
+<p>通过上述比较可以发现 <code>(())</code> 的运算效率最高。而 <code>let</code> 作为 Shell 内置命令，效率也很高，但是 <code>expr</code>，<code>bc</code>，<code>awk</code> 的计算效率就比较低。所以，在 Shell 本身能够完成相关工作的情况下，建议优先使用 Shell 本身提供的功能。但是 Shell 本身无法完成的功能，比如浮点运算，所以就需要外部命令的帮助。另外，考虑到 Shell 脚本的可移植性，在性能不是很关键的情况下，不要使用某些 Shell 特有的语法。</p>
+<p><code>let</code>，<code>expr</code>，<code>bc</code> 都可以用来求模，运算符都是 <code>%</code>，而 <code>let</code> 和 <code>bc</code> 可以用来求幂，运算符不一样，前者是 <code>**</code>，后者是 <code>^</code> 。例如：</p>
+<p><span id="toc_22467_18587_5"></span></p>
+<h3 id="范例求模">范例：求模</h3>
+<pre><code>$ expr 5 % 2
+1
+
+$ let i=5%2
+$ echo $i
+1
+
+$ echo 5 % 2 | bc
+1
+
+$ ((i=5%2))
+$ echo $i
+1
+</code></pre>
+<p><span id="toc_22467_18587_6"></span></p>
+<h3 id="范例求幂">范例：求幂</h3>
+<pre><code>$ let i=5**2
+$ echo $i
+25
+
+$ ((i=5**2))
+$ echo $i
+
+25
+$ echo "5^2" | bc
+25
+</code></pre>
+<p><span id="toc_22467_18587_7"></span></p>
+<h3 id="范例进制转换">范例：进制转换</h3>
+<p>进制转换也是比较常用的操作，可以用 <code>Bash</code> 的内置支持也可以用 <code>bc</code> 来完成，例如把 8 进制的 11 转换为 10 进制，则可以：</p>
+<pre><code>$ echo "obase=10;ibase=8;11" | bc -l
+9
+
+$ echo $((8#11))
+9
+</code></pre>
+<p>上面都是把某个进制的数转换为 10 进制的，如果要进行任意进制之间的转换还是 <code>bc</code> 比较灵活，因为它可以直接用 <code>ibase</code> 和 <code>obase</code> 分别指定进制源和进制转换目标。</p>
+<p><span id="toc_22467_18587_8"></span></p>
+<h3 id="范例ascii-字符编码">范例：ascii 字符编码</h3>
+<p>如果要把某些字符串以特定的进制表示，可以用 <code>od</code> 命令，例如默认的分隔符 <code>IFS</code> 包括空格、 <code>TAB</code> 以及换行，可以用 <code>man ascii</code> 佐证。</p>
+<pre><code>$ echo -n "$IFS" | od -c
+0000000      t  n
+0000003
+$ echo -n "$IFS" | od -b
+0000000 040 011 012
+0000003
+</code></pre>
+<p><span id="toc_22467_18587_9"></span></p>
+<h2 id="浮点运算">浮点运算</h2>
+<p><code>let</code> 和 <code>expr</code> 都无法进行浮点运算，但是 <code>bc</code> 和 <code>awk</code> 可以。</p>
+<p><span id="toc_22467_18587_10"></span></p>
+<h3 id="范例求-1-除以-13保留-3-位有效数字">范例：求 1 除以 13，保留 3 位有效数字</h3>
+<pre><code>$ echo "scale=3; 1/13"  | bc
+.076
+
+$ echo "1 13" | awk '{printf("%0.3f\n",$1/$2)}'
+0.077
+</code></pre>
+<p>说明： <code>bc</code> 在进行浮点运算时需指定精度，否则默认为 0，即进行浮点运算时，默认结果只保留整数。而 <code>awk</code> 在控制小数位数时非常灵活，仅仅通过 <code>printf</code> 的格式控制就可以实现。</p>
+<p>补充：在用 <code>bc</code> 进行运算时，如果不用 <code>scale</code> 指定精度，而在 <code>bc</code> 后加上 <code>-l</code> 选项，也可以进行浮点运算，只不过这时的默认精度是 20 位。例如：</p>
+<pre><code>$ echo 1/13100 | bc -l
+.00007633587786259541
+</code></pre>
+<p><span id="toc_22467_18587_11"></span></p>
+<h3 id="范例余弦值转角度">范例：余弦值转角度</h3>
+<p>用 <code>bc -l</code> 计算，可以获得高精度：</p>
+<pre><code>$ export cos=0.996293; echo "scale=100; a(sqrt(1-$cos^2)/$cos)*180/(a(1)*4)" | bc -l
+4.934954755411383632719834036931840605159706398655243875372764917732
+5495504159766011527078286004072131
+</code></pre>
+<p>当然也可以用 <code>awk</code> 来计算：</p>
+<pre><code>$ echo 0.996293 | awk '{ printf("%s\n", atan2(sqrt(1-$1^2),$1)*180/3.1415926535);}'
+4.93495
+</code></pre>
+<p><span id="toc_22467_18587_12"></span></p>
+<h3 id="范例有一组数据求人均月收入最高家庭">范例：有一组数据，求人均月收入最高家庭</h3>
+<p>在这里随机产生了一组测试数据，文件名为 <code>income.txt</code>。</p>
+<pre><code>1 3 4490
+2 5 3896
+3 4 3112
+4 4 4716
+5 4 4578
+6 6 5399
+7 3 5089
+8 6 3029
+9 4 6195
+10 5 5145
+</code></pre>
+<p>说明：上面的三列数据分别是家庭编号、家庭人数、家庭月总收入。</p>
+<p>分析：为了求月均收入最高家庭，需要对后面两列数进行除法运算，即求出每个家庭的月均收入，然后按照月均收入排序，找出收入最高家庭。</p>
+<p>实现：</p>
+<pre><code>#!/bin/bash
+# gettopfamily.sh
+
+[ $# -lt 1 ] &amp;&amp; echo "please input the income file" &amp;&amp; exit -1
+[ ! -f $1 ] &amp;&amp; echo "$1 is not a file" &amp;&amp; exit -1
+
+income=$1
+awk '{
+	printf("%d %0.2f\n", $1, $3/$2);
+}' $income | sort -k 2 -n -r
+</code></pre>
+<p>说明：</p>
+<ul>
+<li><code>[ $# -lt 1 ]</code>：要求至少输入一个参数，<code>$#</code> 是 Shell 中传入参数的个数</li>
+<li><code>[ ! -f $1 ]</code>：要求输入参数是一个文件，<code>-f</code> 的用法见 <code>test</code> 命令，<code>man test</code></li>
+<li><code>income=$1</code>：把输入参数赋给 income 变量，再作为 <code>awk</code> 的参数，即需处理的文件</li>
+<li><code>awk</code>：用文件第三列除以第二列，求出月均收入，考虑到精确性，保留了两位精度</li>
+<li><code>sort -k 2 -n -r</code>：这里对结果的 <code>awk</code> 结果的第二列 <code>-k 2</code>，即月均收入进行排序，按照数字排序 <code>-n</code>，并按照递减的顺序排序 <code>-r</code>。</li>
+</ul>
+<p>演示：</p>
+<pre><code>$ ./gettopfamily.sh income.txt
+7 1696.33
+9 1548.75
+1 1496.67
+4 1179.00
+5 1144.50
+10 1029.00
+6 899.83
+2 779.20
+3 778.00
+8 504.83
+</code></pre>
+<p>补充：之前的 <code>income.txt</code> 数据是随机产生的。在做一些实验时，往往需要随机产生一些数据，在下一小节，我们将详细介绍它。这里是产生 <code>income.txt</code> 数据的脚本：</p>
+<pre><code>#!/bin/bash
+# genrandomdata.sh
+
+for i in $(seq 1 10)
+do
+	echo $i $(($RANDOM/8192+3)) $((RANDOM/10+3000))
+done
+</code></pre>
+<p>说明：上述脚本中还用到<code>seq</code>命令产生从1到10的一列数，这个命令的详细用法在该篇最后一节也会进一步介绍。</p>
+<p><span id="toc_22467_18587_13"></span></p>
+<h2 id="随机数">随机数</h2>
+<p>环境变量 <code>RANDOM</code> 产生从 0 到 32767 的随机数，而 <code>awk</code> 的 <code>rand()</code> 函数可以产生 0 到 1 之间的随机数。</p>
+<p><span id="toc_22467_18587_14"></span></p>
+<h3 id="范例获取一个随机数">范例：获取一个随机数</h3>
+<pre><code>$ echo $RANDOM
+81
+
+$ echo "" | awk '{srand(); printf("%f", rand());}'
+0.237788
+</code></pre>
+<p>说明： <code>srand()</code> 在无参数时，采用当前时间作为 <code>rand()</code> 随机数产生器的一个 <code>seed</code> 。</p>
+<p><span id="toc_22467_18587_15"></span></p>
+<h3 id="范例随机产生一个从-0-到-255-之间的数字">范例：随机产生一个从 0 到 255 之间的数字</h3>
+<p>可以通过 <code>RANDOM</code> 变量的缩放和 <code>awk</code> 中 <code>rand()</code> 的放大来实现。</p>
+<pre><code>$ expr $RANDOM / 128
+
+$ echo "" | awk '{srand(); printf("%d\n", rand()*255);}'
+</code></pre>
+<p>思考：如果要随机产生某个 IP 段的 IP 地址，该如何做呢？看例子：友善地获取一个可用的 IP 地址。</p>
+<pre><code>#!/bin/bash
+# getip.sh -- get an usable ipaddress automatically
+# author: falcon &amp;lt;zhangjinw@gmail.com&gt;
+# update: Tue Oct 30 23:46:17 CST 2007
+
+# set your own network, default gateway, and the time out of "ping" command
+net="192.168.1"
+default_gateway="192.168.1.1"
+over_time=2
+
+# check the current ipaddress
+ping -c 1 $default_gateway -W $over_time
+[ $? -eq 0 ] &amp;&amp; echo "the current ipaddress is okey!" &amp;&amp; exit -1;
+
+while :; do
+	# clear the current configuration
+	ifconfig eth0 down
+	# configure the ip address of the eth0
+	ifconfig eth0 \
+		$net.$(($RANDOM /130 +2)) \
+		up
+	# configure the default gateway
+	route add default gw $default_gateway
+	# check the new configuration
+	ping -c 1 $default_gateway -W $over_time
+	# if work, finish
+	[ $? -eq 0 ] &amp;&amp; break
+done
+</code></pre>
+<p>说明：如果你的默认网关地址不是 <code>192.168.1.1</code>，请自行配置 <code>default_gateway</code>（可以用 <code>route -n</code> 命令查看），因为用 <code>ifconfig</code> 配置地址时不能配置为网关地址，否则你的IP地址将和网关一样，导致整个网络不能正常工作。</p>
+<p><span id="toc_22467_18587_16"></span></p>
+<h2 id="其他运算">其他运算</h2>
+<p>其实通过一个循环就可以产生一系列数，但是有相关工具为什么不用呢！<code>seq</code> 就是这么一个小工具，它可以产生一系列数，你可以指定数的递增间隔，也可以指定相邻两个数之间的分割符。</p>
+<p><span id="toc_22467_18587_17"></span></p>
+<h3 id="范例获取一系列数">范例：获取一系列数</h3>
+<pre><code>$ seq 5
+1
+2
+3
+4
+5
+$ seq 1 5
+1
+2
+3
+4
+5
+$ seq 1 2 5
+1
+3
+5
+$ seq -s: 1 2 5
+1:3:5
+$ seq 1 2 14
+1
+3
+5
+7
+9
+11
+13
+$ seq -w 1 2 14
+01
+03
+05
+07
+09
+11
+13
+$ seq -s: -w 1 2 14
+01:03:05:07:09:11:13
+$ seq -f "0x%g" 1 5
+0x1
+0x2
+0x3
+0x4
+0x5
+</code></pre>
+<p>一个比较典型的使用 <code>seq</code> 的例子，构造一些特定格式的链接，然后用 <code>wget</code> 下载这些内容：</p>
+<pre><code>$ for i in `seq -f"http://thns.tsinghua.edu.cn/thnsebooks/ebook73/%02g.pdf" 1 21`;do wget -c $i; done
+</code></pre>
+<p>或者</p>
+<pre><code>$ for i in `seq -w 1 21`;do wget -c "http://thns.tsinghua.edu.cn/thnsebooks/ebook73/$i"; done
+</code></pre>
+<p>补充：在 <code>Bash</code> 版本 3 以上，在 <code>for</code> 循环的 <code>in</code> 后面，可以直接通过 <code>{1..5}</code> 更简洁地产生自 1 到 5 的数字（注意，1 和 5 之间只有两个点），例如：</p>
+<pre><code>$ for i in {1..5}; do echo -n "$i "; done
+1 2 3 4 5
+</code></pre>
+<p><span id="toc_22467_18587_18"></span></p>
+<h3 id="范例统计字符串中各单词出现次数">范例：统计字符串中各单词出现次数</h3>
+<p>我们先给单词一个定义：由字母组成的单个或者多个字符系列。</p>
+<p>首先，统计每个单词出现的次数：</p>
+<pre><code>$ wget -c http://tinylab.org
+$ cat index.html | sed -e "s/[^a-zA-Z]/\n/g" | grep -v ^$ | sort | uniq -c
+</code></pre>
+<p>接着，统计出现频率最高的前10个单词：</p>
+<pre><code>$ wget -c http://tinylab.org
+$ cat index.html | sed -e "s/[^a-zA-Z]/\n/g" | grep -v ^$ | sort | uniq -c | sort -n -k 1 -r | head -10
+    524 a
+    238 tag
+    205 href
+    201 class
+    193 http
+    189 org
+    175 tinylab
+    174 www
+    146 div
+    128 title
+</code></pre>
+<p>说明：</p>
+<ul>
+<li><code>cat index.html</code>: 输出 index.html 文件里的内容</li>
+<li><code>sed -e "s/[^a-zA-Z]/\n/g"</code>: 把非字母字符替换成空格，只保留字母字符</li>
+<li><code>grep -v ^$</code>: 去掉空行</li>
+<li><code>sort</code>: 排序</li>
+<li><code>uniq -c</code>：统计相同行的个数，即每个单词的个数</li>
+<li><code>sort -n -k 1 -r</code>：按照第一列 <code>-k 1</code> 的数字 <code>-n</code> 逆序 <code>-r</code> 排序</li>
+<li><code>head -10</code>：取出前十行</li>
+</ul>
+<p><span id="toc_22467_18587_19"></span></p>
+<h3 id="范例统计指定单词出现次数">范例：统计指定单词出现次数</h3>
+<p>可以考虑采取两种办法：</p>
+<ul>
+<li>只统计那些需要统计的单词</li>
+<li>用上面的算法把所有单词的个数都统计出来，然后再返回那些需要统计的单词给用户</li>
+</ul>
+<p>不过，这两种办法都可以通过下面的结构来实现。先看办法一：</p>
+<pre><code>#!/bin/bash
+# statistic_words.sh
+
+if [ $# -lt 1 ]; then
+	echo "Usage: basename $0 FILE WORDS ...."
+	exit -1
+fi
+
+FILE=$1
+((WORDS_NUM=$#-1))
+
+for n in $(seq $WORDS_NUM)
+do
+	shift
+	cat $FILE | sed -e "s/[^a-zA-Z]/\n/g" \
+		| grep -v ^$ | sort | grep ^$1$ | uniq -c
+done
+</code></pre>
+<p>说明：</p>
+<ul>
+<li><code>if 条件部分</code>：要求至少两个参数，第一个单词文件，之后参数为要统计的单词</li>
+<li><code>FILE=$1</code>: 获取文件名，即脚本之后的第一个字符串</li>
+<li><code>((WORDS_NUM=$#-1))</code>：获取单词个数，即总的参数个数 <code>$#</code> 减去文件名参数（1个）</li>
+<li><code>for 循环部分</code>：首先通过 <code>seq</code> 产生需要统计的单词个数系列，<code>shift</code> 是 Shell 内置变量（请通过 <code>help shift</code> 获取帮助)，它把用户从命令行中传入的参数依次往后移动位置，并把当前参数作为第一个参数即 <code>$1</code>，这样通过 <code>$1</code>就可以遍历用户所有输入的单词（仔细一想，这里貌似有数组下标的味道）。你可以考虑把 <code>shift</code> 之后的那句替换成 <code>echo $1</code> 测试 <code>shift</code> 的用法</li>
+</ul>
+<p>演示：</p>
+<pre><code>$ chmod +x statistic_words.sh
+$ ./statistic_words.sh index.html tinylab linux python
+    175 tinylab
+     43 linux
+      3 python
+</code></pre>
+<p>再看办法二，我们只需要修改 <code>shift</code> 之后的那句即可：</p>
+<pre><code>#!/bin/bash
+# statistic_words.sh
+
+if [ $# -lt 1 ]; then
+	echo "ERROR: you should input 2 words at least";
+	echo "Usage: basename $0 FILE WORDS ...."
+	exit -1
+fi
+
+FILE=$1
+((WORDS_NUM=$#-1))
+
+for n in $(seq $WORDS_NUM)
+do
+	shift
+	cat $FILE | sed -e "s/[^a-zA-Z]/\n/g" \
+		| grep -v ^$ | sort | uniq -c | grep " $1$"
+done
+</code></pre>
+<p>演示：</p>
+<pre><code>$ ./statistic_words.sh index.html tinylab linux python
+    175 tinylab
+     43 linux
+      3 python
+</code></pre>
+<p>说明：很明显，办法一的效率要高很多，因为它提前找出了需要统计的单词，然后再统计，而后者则不然。实际上，如果使用 <code>grep</code> 的 <code>-E</code> 选项，我们无须引入循环，而用一条命令就可以搞定：</p>
+<pre><code>$ cat index.html | sed -e "s/[^a-zA-Z]/\n/g" | grep -v ^$ | sort | grep -E "^tinylab$|^linux$" | uniq -c
+     43 linux
+    175 tinylab
+</code></pre>
+<p>或者</p>
+<pre><code>$ cat index.html | sed -e "s/[^a-zA-Z]/\n/g" | grep -v ^$ | sort | egrep  "^tinylab$|^linux$" | uniq -c
+     43 linux
+    175 tinylab
+</code></pre>
+<p>说明：需要注意到 <code>sed</code> 命令可以直接处理文件，而无需通过 <code>cat</code> 命令输出以后再通过管道传递，这样可以减少一个不必要的管道操作，所以上述命令可以简化为：</p>
+<pre><code>$ sed -e "s/[^a-zA-Z]/\n/g" index.html | grep -v ^$ | sort | egrep  "^tinylab$|^linux$" | uniq -c
+     43 linux
+    175 tinylab
+</code></pre>
+<p>所以，可见这些命令 <code>sed</code>，<code>grep</code>，<code>uniq</code>，<code>sort</code> 是多么有用，它们本身虽然只完成简单的功能，但是通过一定的组合，就可以实现各种五花八门的事情啦。对了，统计单词还有个非常有用的命令 <code>wc -w</code>，需要用到的时候也可以用它。</p>
+<p>补充：在 <a href="http://www.tldp.org/LDP/abs/html/">Advanced Bash-Scripting Guide</a> 一书中还提到 <code>jot</code> 命令和 <code>factor</code> 命令，由于机器上没有，所以没有测试，<code>factor</code> 命令可以产生某个数的所有素数。如：</p>
+<pre><code>$ factor 100
+100: 2 2 5 5
+</code></pre>
+<p><span id="toc_22467_18587_20"></span></p>
+<h2 id="小结">小结</h2>
+<p>到这里，Shell 编程范例之数值计算就结束啦。该篇主要介绍了：</p>
+<ul>
+<li>Shell 编程中的整数运算、浮点运算、随机数的产生、数列的产生</li>
+<li>Shell 的内置命令、外部命令的区别，以及如何查看他们的类型和帮助</li>
+<li>Shell 脚本的几种执行办法</li>
+<li>几个常用的 Shell 外部命令： <code>sed</code>，<code>awk</code>，<code>grep</code>，<code>uniq</code>，<code>sort</code> 等</li>
+<li>范例：数字递增；求月均收入；自动获取 <code>IP</code> 地址；统计单词个数</li>
+<li>其他：相关用法如命令列表，条件测试等在上述范例中都已涉及，请认真阅读之</li>
+</ul>
+<p>如果您有时间，请温习之。</p>
+<p><span id="toc_22467_18587_21"></span></p>
+<h2 id="资料">资料</h2>
+<ul>
+<li><a href="http://www.tldp.org/LDP/abs/html/">Advanced Bash-Scripting Guide</a></li>
+<li><a href="http://bbs.chinaunix.net/thread-218853-1-1.html">shell 十三问</a></li>
+<li><a href="http://bbs.chinaunix.net/forum.php?mod=viewthread&amp;tid=2198159">shell 基础十二篇</a></li>
+<li>SED 手册</li>
+<li>AWK 使用手册</li>
+<li>几个 Shell 讨论区
+<ul>
+<li><a href="http://www.linuxsir.org/bbs/forumdisplay.php?f=60">LinuxSir.org</a></li>
+<li><a href="http://bbs.chinaunix.net/forum-24-1.html">ChinaUnix.net</a></li>
+</ul> </li>
+</ul>
+<p><span id="toc_22467_18587_22"></span></p>
+<h2 id="后记">后记</h2>
+<p>大概花了 3 个多小时才写完，目前是 23:33，该回宿舍睡觉啦，明天起来修改错别字和补充一些内容，朋友们晚安！</p>
+<p>10 月 31 号，修改部分措辞，增加一篇统计家庭月均收入的范例，添加总结和参考资料，并用附录所有代码。</p>
+<p>Shell 编程是一件非常有趣的事情，如果您想一想：上面计算家庭月均收入的例子，然后和用 <code>M$ Excel</code> 来做这个工作比较，你会发现前者是那么简单和省事，而且给您以运用自如的感觉。</p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/191/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/114/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/114/index.html">Linux 内核揭密</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">86页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2个">2</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/28/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/59/index.html">
+<img class="uk-book-cover" src="/static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/59/index.html">TensorFlow 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/35.html">jikexueyuanwiki</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8767个">8767</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/98/index.html">
+<img class="uk-book-cover" src="/static/icons/48/visualstudio_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/98/index.html">Microsoft Visual Studio Code 中文手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/60.html">likebeta</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="visualstudio">visualstudio</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">66页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/170/index.html">
+<img class="uk-book-cover" src="/static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/170/index.html">scikit-learn (sklearn) 官方文档中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">65页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2022个">2022</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/44/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2880">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2881">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2882">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter1.markdown" title="准备工作" data-book-page-rel-url="zh/chapters/01-chapter1.markdown" data-book-page-id="2883">准备工作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter2.markdown" title="数值运算" data-book-page-rel-url="zh/chapters/01-chapter2.markdown" data-book-page-id="2884">数值运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter3.markdown" title="布尔运算" data-book-page-rel-url="zh/chapters/01-chapter3.markdown" data-book-page-id="2885">布尔运算</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter4.markdown" title="字符串操作" data-book-page-rel-url="zh/chapters/01-chapter4.markdown" data-book-page-id="2886">字符串操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter5.markdown" title="文件操作" data-book-page-rel-url="zh/chapters/01-chapter5.markdown" data-book-page-id="2887">文件操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter6.markdown" title="文件系统操作" data-book-page-rel-url="zh/chapters/01-chapter6.markdown" data-book-page-id="2888">文件系统操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter7.markdown" title="进程操作" data-book-page-rel-url="zh/chapters/01-chapter7.markdown" data-book-page-id="2889">进程操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter8.markdown" title="网络操作" data-book-page-rel-url="zh/chapters/01-chapter8.markdown" data-book-page-id="2890">网络操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter9.markdown" title="用户管理" data-book-page-rel-url="zh/chapters/01-chapter9.markdown" data-book-page-id="2891">用户管理</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/chapters/01-chapter10.markdown" title="总结" data-book-page-rel-url="zh/chapters/01-chapter10.markdown" data-book-page-id="2892">总结</a>
+</li>
+<li>
+<a class="pjax" href="/book/44/zh/appendix/02-chapter1.markdown" title="附录" data-book-page-rel-url="zh/appendix/02-chapter1.markdown" data-book-page-id="2893">附录</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =44;var bookPageId =2884;var bookPageRelUrl ='zh/chapters/01-chapter2.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

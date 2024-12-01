@@ -1,0 +1,1088 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel Container——IoC 服务容器源码解析(服务器解析)-Laravel 源码详解</title>
+<meta content='Laravel Container——IoC 服务容器源码解析(服务器解析),Laravel 源码详解' name='keywords'>
+<meta content='Laravel Container——IoC 服务容器源码解析(服务器解析),Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel Con..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20Container——服务容器的细节特性.html">
+<span class="">Laravel Con..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="make解析">make解析</h1>
+<p>首先欢迎关注我的博客： <a href="http://www.leoyang90.cn">www.leoyang90.cn</a></p>
+<p>服务容器对对象的自动解析是服务容器的核心功能，make 函数、build 函数是实例化对象重要的核心，先大致看一下代码：</p>
+<pre><code class="language-php">public function make($abstract)
+{
+    $abstract = $this-&gt;getAlias($abstract);
+
+    if (isset($this-&gt;deferredServices[$abstract])) {
+        $this-&gt;loadDeferredProvider($abstract);
+    }
+
+    return parent::make($abstract);
+}
+</code></pre>
+<pre><code class="language-php">    public function make($abstract)
+    {
+        return $this-&gt;resolve($abstract);
+    }
+    
+    public function resolve($abstract, $parameters = [])
+    {
+        $abstract = $this-&gt;getAlias($abstract);
+        
+        $needsContextualBuild = ! empty($parameters) || ! is_null(
+            $this-&gt;getContextualConcrete($abstract)
+        );
+
+        // If an instance of the type is currently being managed as a singleton we'll
+        // just return an existing instance instead of instantiating new instances
+        // so the developer can keep using the same objects instance every time.
+        if (isset($this-&gt;instances[$abstract]) &amp;&amp; ! $needsContextualBuild) {
+            return $this-&gt;instances[$abstract];
+        }
+
+        $concrete = $this-&gt;getConcrete($abstract);
+
+        // We're ready to instantiate an instance of the concrete type registered for
+        // the binding. This will instantiate the types, as well as resolve any of
+        // its "nested" dependencies recursively until all have gotten resolved.
+        if ($this-&gt;isBuildable($concrete, $abstract)) {
+            $object = $this-&gt;build($concrete);
+        } else {
+            $object = $this-&gt;make($concrete);
+        }
+
+        // If we defined any extenders for this type, we'll need to spin through them
+        // and apply them to the object being built. This allows for the extension
+        // of services, such as changing configuration or decorating the object.
+        foreach ($this-&gt;getExtenders($abstract) as $extender) {
+            $object = $extender($object, $this);
+        }
+
+        // If the requested type is registered as a singleton we'll want to cache off
+        // the instances in "memory" so we can return it later without creating an
+        // entirely new instance of an object on each subsequent request for it.
+        if ($this-&gt;isShared($abstract) &amp;&amp; ! $needsContextualBuild) {
+            $this-&gt;instances[$abstract] = $object;
+        }
+
+        $this-&gt;fireResolvingCallbacks($abstract, $object);
+
+        $this-&gt;resolved[$abstract] = true;
+
+        return $object;
+    }
+</code></pre>
+<p>在讲解解析流程之前，我们先说说使用make函数进行解析的分类：</p>
+<p>这里我把使用make函数进行解析的情况分为大致两种：</p>
+<blockquote>
+<ul>
+<li>解析对象没有绑定过任何类，例如：</li>
+</ul>
+</blockquote>
+<pre><code class="language-php">$app-&gt;make('App\Http\Controllers\HomeController');
+</code></pre>
+<blockquote>
+<ul>
+<li>解析对象绑定过实现类</li>
+</ul>
+</blockquote>
+<p>对于绑定过实现类的对象可以分为两种：</p>
+<blockquote>
+<ul>
+<li>绑定的是类名，例如：</li>
+</ul>
+</blockquote>
+<pre><code class="language-php">$app-&gt;when('App\Http\Controllers\HomeController')
+-&gt;needs('App\Http\Requests\InRequest')
+-&gt;give('App\Http\Requests\TestsRequest');
+</code></pre>
+<blockquote>
+<ul>
+<li>绑定的是闭包</li>
+</ul>
+</blockquote>
+<p>对于绑定的是闭包的又可以分为：</p>
+<blockquote>
+<ul>
+<li>用户绑定闭包，例如：</li>
+</ul>
+</blockquote>
+<pre><code class="language-php">$app-&gt;singleton('auth',function($app){
+    return new AuthManager($app)
+})；／／对象类直接实现方法
+
+$app-&gt;singleton(EloquentFactory::class, function ($app) {
+    return EloquentFactory::construct(
+        $app-&gt;make(FakerGenerator::class), database_path('factories')
+);／／对象类依赖注入
+});
+</code></pre>
+<blockquote>
+<ul>
+<li>服务容器外包一层闭包函数（make／build），例如：</li>
+</ul>
+</blockquote>
+<pre><code class="language-php">$app-&gt;singleton(
+    Illuminate\Contracts\Http\Kernel::class,
+    App\Http\Kernel::class
+);//包装make
+
+$app-&gt;singleton(
+    App\ConSole\Kernel::class,
+);//包装build
+</code></pre>
+<p>我们在这里先大致讲一下服务容器解析的流程，值得注意的是其中 build 函数有可能会递归调用 make：</p>
+<blockquote>
+<ol>
+<li>获取服务名称。</li>
+<li>加载延迟服务。判断当前的接口是否是延迟服务提供者，若是延迟服务提供者，那么还要对服务提供者进行注册与启动操作。</li>
+<li>解析单例。如果接口服务是已经被解析过的单例对象，而且并非上下文绑定，那么直接取出对象。</li>
+<li>获取注册的实现。实现方式可能是上下文绑定的，也可能是 binding 数组中的闭包，也有可能就是接口本身。</li>
+<li>build 解析。首先判断是否需要递归。是，则递归 make；否，则调用 build 函数；直到调用 build 为止</li>
+<li>执行扩展。若当前解析对象存在扩展，运行扩展函数。</li>
+<li>创造单例对象。若 shared 为真，且不存在上下文绑定，则放入单例数组中</li>
+<li>回调</li>
+<li>标志解析</li>
+</ol>
+</blockquote>
+<p>下面我们开始详细分解代码逻辑。由于 getAlias 函数已经在 <a href="http://leoyang90.cn/2017/05/07/laravel-container-bind/">上一篇</a> 讲过，这里不会再说。而loadDeferredProvider 函数作用是加载延迟服务，与容器解析关系不大，我们放在以后再说。</p>
+<h2 id="获取注册的实现">获取注册的实现</h2>
+<p>获取解析类的真正实现，函数优先去获取上下文绑定的实现，否则获取 binding 数组中的实现，获取不到就是直接返回自己作为实现：</p>
+<pre><code class="language-php">protected function getConcrete($abstract)
+{
+    if (! is_null($concrete = $this-&gt;getContextualConcrete($abstract))) {
+        return $concrete;
+    }
+
+    if (isset($this-&gt;bindings[$abstract])) {
+        return $this-&gt;bindings[$abstract]['concrete'];
+    }
+
+    return $abstract;
+}
+</code></pre>
+<p>一般来说，上下文绑定的服务是通过依赖注入来实现的：</p>
+<pre><code class="language-php">$this-&gt;app-&gt;when(PhotoController::class)
+          -&gt;needs(Filesystem::class)
+          -&gt;give(function () {
+              return Storage::disk('local');
+          });
+       
+class PhotoController{
+    protected $file;
+
+    public function __construct(Filesystem $file){
+      $this-&gt;file = $file;
+    }
+}
+</code></pre>
+<p>服务容器会在解析 PhotoController 的时候，通过放射获取参数类型 Filesystem，并且会把 Filesystem 自动解析为 Storage::disk('local')。如何实现的呢？首先，从 <a href="http://leoyang90.cn/2017/05/07/laravel-container-bind/">上一篇</a> 文章我们知道，当进行上下文绑定的时候，实际上是维护 contextual 数组，通过上下文绑定，这个数组中存在：</p>
+<pre><code class="language-php">contextual[PhotoController][Filesystem] = function () { return Storage::disk('local'); }
+</code></pre>
+<p>若是服务容器试图构造 PhotoController 类，那么由于其构造函数依赖于 Filesystem，所以容器必须先生成 Filesystem 类，然后再注入到 PhotoController 中。</p>
+<p>在构造 Filesystem 之前，服务容器会先把 PhotoController 放入 buildStack 中，继而再去解析 Filesystem。</p>
+<p>解析 Filesystem 时，运行 getContextualConcrete 函数：</p>
+<pre><code class="language-php">protected function getContextualConcrete($abstract)
+{
+    if (! is_null($binding = $this-&gt;findInContextualBindings($abstract))) {
+        return $binding;
+    }
+     
+    if (empty($this-&gt;abstractAliases[$abstract])) {
+        return;
+    }
+
+    foreach ($this-&gt;abstractAliases[$abstract] as $alias) {
+        if (! is_null($binding = $this-&gt;findInContextualBindings($alias))) {
+            return $binding;
+        }
+    }
+}
+ 
+protected function findInContextualBindings($abstract)
+{
+    if (isset($this-&gt;contextual[end($this-&gt;buildStack)][$abstract])) {
+        return $this-&gt;contextual[end($this-&gt;buildStack)][$abstract];
+    }
+}
+</code></pre>
+<p>从上面可以看出，getContextualConcrete 函数把当前解析的类（Filesystem）作为 abstract，buildStack 最后一个类（PhotoController）作为 concrete，寻找 this-&gt;contextual[concrete] [abstract] （contextual[PhotoController] [Filesystem]）中的值，在这个例子里面这个数组值就是那个匿名函数。</p>
+<h2 id="build-解析">build 解析</h2>
+<p>对于服务容器来说，绑定是可以递归的，例如：</p>
+<pre><code class="language-php">$app-&gt;bind('a','b');
+$app-&gt;bind('b','c');
+$app-&gt;bind('c',function(){
+    return new C;
+  })
+</code></pre>
+<p>遇到这样的情况，bind 绑定中 getClosure 函数开始发挥作用，该函数会给类包一层闭包，闭包内调用 make 函数，服务容器会不断递归调用 make 函数，直到最后一层，也就是绑定 c 的匿名函数。但是另一方面，有一些绑定方式并没有调用 bind 函数，例如上下文绑定 context：</p>
+<pre><code class="language-php">$this-&gt;app-&gt;when(E::class)
+          -&gt;needs(F::class)
+          -&gt;give(A::class);
+</code></pre>
+<p>当make(E::class)的时候，getConcrete 返回 A 类，而不是调用 make 函数的闭包，所以并不会启动递归流程得到 C 的匿名函数，所以造成 A 类完全无法解析，isBuildable 函数就是解决这种问题的，当发现需要解析构造的对象很有可能是递归的，那么就递归调用 make 函数，否则才会调用build。</p>
+<pre><code class="language-php">...
+if ($this-&gt;isBuildable($concrete, $abstract)) {
+        $object = $this-&gt;build($concrete);
+    } else {
+        $object = $this-&gt;make($concrete);
+    }
+...
+     
+protected function isBuildable($concrete, $abstract)
+{
+    return $concrete === $abstract || $concrete instanceof Closure;
+}
+</code></pre>
+<h2 id="执行扩展">执行扩展</h2>
+<p>获取扩展闭包，并运行扩展函数：</p>
+<pre><code class="language-php">protected function getExtenders($abstract)
+{
+    $abstract = $this-&gt;getAlias($abstract);
+
+    if (isset($this-&gt;extenders[$abstract])) {
+        return $this-&gt;extenders[$abstract];
+    }
+
+    return [];
+}
+</code></pre>
+<h2 id="回调">回调</h2>
+<p>先后启动全局的解析事件回调函数，再启动针对类型的事件回调函数：</p>
+<pre><code class="language-php">protected function fireResolvingCallbacks($abstract, $object)
+{
+    $this-&gt;fireCallbackArray($object, $this-&gt;globalResolvingCallbacks);
+
+    $this-&gt;fireCallbackArray(
+        $object, $this-&gt;getCallbacksForType($abstract, $object, $this-&gt;resolvingCallbacks)
+    );
+
+    $this-&gt;fireAfterResolvingCallbacks($abstract, $object);
+}
+
+protected function getCallbacksForType($abstract, $object, array $callbacksPerType)
+{
+    $results = [];
+
+    foreach ($callbacksPerType as $type =&gt; $callbacks) {
+        if ($type === $abstract || $object instanceof $type) {
+            $results = array_merge($results, $callbacks);
+        }
+    }
+
+    return $results;
+}
+ 
+protected function fireAfterResolvingCallbacks($abstract, $object)
+{
+    $this-&gt;fireCallbackArray($object, $this-&gt;globalAfterResolvingCallbacks);
+
+    $this-&gt;fireCallbackArray(
+        $object, $this-&gt;getCallbacksForType($abstract, $object, $this-&gt;afterResolvingCallbacks)
+    );
+ 
+</code></pre>
+<h1 id="build-解析-1">build 解析</h1>
+<hr>
+<p>make 函数承担了解析的大致框架，build 主要的职责就是利用反射将类构造出来，先看看主要代码：</p>
+<pre><code class="language-php">public function build($concrete)
+{
+    // If the concrete type is actually a Closure, we will just execute it and
+    // hand back the results of the functions, which allows functions to be
+    // used as resolvers for more fine-tuned resolution of these objects.
+    if ($concrete instanceof Closure) {
+         return $concrete($this, $this-&gt;getLastParameterOverride());
+    }
+
+    $reflector = new ReflectionClass($concrete);
+
+    // If the type is not instantiable, the developer is attempting to resolve
+    // an abstract type such as an Interface of Abstract Class and there is
+    // no binding registered for the abstractions so we need to bail out.
+    if (! $reflector-&gt;isInstantiable()) {
+        return $this-&gt;notInstantiable($concrete);
+    }
+
+    $this-&gt;buildStack[] = $concrete;
+
+    $constructor = $reflector-&gt;getConstructor();
+
+    // If there are no constructors, that means there are no dependencies then
+    // we can just resolve the instances of the objects right away, without
+    // resolving any other types or dependencies out of these containers.
+    if (is_null($constructor)) {
+        array_pop($this-&gt;buildStack);
+
+        return new $concrete;
+    }
+
+    $dependencies = $constructor-&gt;getParameters();
+
+    // Once we have all the constructor's parameters we can create each of the
+    // dependency instances and then use the reflection instances to make a
+    // new instance of this class, injecting the created dependencies in.
+    $instances = $this-&gt;resolveDependencies(
+        $dependencies
+    );
+
+    array_pop($this-&gt;buildStack);
+
+    return $reflector-&gt;newInstanceArgs($instances);
+}
+</code></pre>
+<p>我们下面详细的说一下各个部分：</p>
+<h2 id="闭包函数执行">闭包函数执行</h2>
+<pre><code class="language-php">if ($concrete instanceof Closure) {
+     return $concrete($this, $this-&gt;getLastParameterOverride());
+}
+</code></pre>
+<p>这段代码很简单，但是作用很大。前面说过闭包函数有很多种类：</p>
+<ul>
+<li>用户绑定时提供的直接提供实现类的方式：</li>
+</ul>
+<pre><code class="language-php">$app-&gt;singleton('auth',function($app){
+    return new AuthManager($app)
+})；／／对象类直接实现方法
+</code></pre>
+<p>这种情况 concrete(this) 直接就可以解析构造出具体实现类，服务容器解析完毕。</p>
+<ul>
+<li>用户绑定时提供的带有依赖注入的实现：</li>
+</ul>
+<pre><code class="language-php">$app-&gt;singleton(EloquentFactory::class, function ($app) {
+    return EloquentFactory::construct(
+        $app-&gt;make(FakerGenerator::class), database_path('factories')
+);／／对象类依赖注入
+</code></pre>
+<p>这种情况下，concrete(this) 会转而去解析 FakerGenerator::class，递归调用 make 函数。</p>
+<ul>
+<li>bind函数使用 getClosure 包装而来：</li>
+</ul>
+<pre><code class="language-php">function($container, $parameters = []){
+    method = make/build;
+    return $container-&gt;$method($concrete, $parameters);
+}
+</code></pre>
+<p>这种情况，concrete(this) 将会继续递归调用 make 或者 build。</p>
+<h2 id="反射">反射</h2>
+<p>当 build 的参数是类名而不是闭包的时候，就要利用反射构建类对象，如果构建的类对象不需要依赖任何其他参数，那么：</p>
+<pre><code class="language-php">$reflector = new ReflectionClass($concrete);
+$constructor = $reflector-&gt;getConstructor();
+if (is_null($constructor)) {
+    return new $concrete;
+}
+</code></pre>
+<p>如果需要依赖注入，那么就要用反射机制来获取 __construct 函数所需要注入的依赖，如果在make的时候带入参数值，那么直接利用传入的参数值；如果依赖是类对像，那么递归调用 make 函数；如果依赖是变量值，那么就从上下文中或者参数默认值中去获取：</p>
+<pre><code class="language-php">...
+$dependencies = $constructor-&gt;getParameters();
+$instances = $this-&gt;resolveDependencies($dependencies);
+...
+     
+protected function resolveDependencies(array $dependencies)
+{
+    $results = [];
+
+    foreach ($dependencies as $dependency) {
+      
+      if ($this-&gt;hasParameterOverride($dependency)) {
+          $results[] = $this-&gt;getParameterOverride($dependency);
+               
+          continue;
+      }
+      
+      $results[] = is_null($class = $dependency-&gt;getClass())
+                            ? $this-&gt;resolvePrimitive($dependency)
+                            : $this-&gt;resolveClass($dependency);
+      }
+
+    return $results;
+}
+</code></pre>
+<p>解析变量值参数，如果变量值在上下文绑定中设置过，则去取上下文绑定的值，否则通过反射去取参数默认值，如果没有默认值，那么就要终止报错：</p>
+<pre><code class="language-php">protected function resolvePrimitive(ReflectionParameter $parameter)
+{
+      if (! is_null($concrete = $this-&gt;getContextualConcrete('$'.$parameter-&gt;name))) {
+          return $concrete instanceof Closure ? $concrete($this) : $concrete;
+      }
+
+      if ($parameter-&gt;isDefaultValueAvailable()) {
+          return $parameter-&gt;getDefaultValue();
+      }
+
+      $this-&gt;unresolvablePrimitive($parameter);
+}
+
+protected function hasParameterOverride($dependency)
+{
+    return array_key_exists(
+        $dependency-&gt;name, $this-&gt;getLastParameterOverride()
+    );
+}
+
+protected function getParameterOverride($dependency)
+{
+    return $this-&gt;getLastParameterOverride()[$dependency-&gt;name];
+}
+
+protected function getLastParameterOverride()
+{
+    return count($this-&gt;with) ? end($this-&gt;with) : [];
+}
+</code></pre>
+<p>解析类参数，利用服务容器进行依赖注入：</p>
+<pre><code class="language-php">protected function resolveClass(ReflectionParameter $parameter)
+{
+      try {
+          return $this-&gt;make($parameter-&gt;getClass()-&gt;name);
+      }
+      catch (BindingResolutionException $e) {
+          if ($parameter-&gt;isOptional()) {
+              return $parameter-&gt;getDefaultValue();
+          }
+
+        throw $e;
+      }
+}
+</code></pre>
+<h2 id="buildstack-解析栈">buildstack 解析栈</h2>
+<p>值的注意的是服务容器里面有个 buildStack，每次利用反射对参数进行依赖注入的时候，都要向这个数组中压入当前的解析对象，前面说过这部分是为了上下文绑定而设计的：</p>
+<pre><code class="language-php">...
+$this-&gt;buildStack[] = $concrete;//压入数组栈中
+...
+$instances = $this-&gt;resolveDependencies($dependencies);／／解析依赖注入的参数
+array_pop($this-&gt;buildStack);／／弹出数组栈
+...
+</code></pre>
+<h1 id="解析标签">解析标签</h1>
+<hr>
+<p>使用标签绑定的类，将会使用 tagged 来解析:</p>
+<pre><code class="language-php">public function tagged($tag)
+{
+    $results = [];
+
+    if (isset($this-&gt;tags[$tag])) {
+        foreach ($this-&gt;tags[$tag] as $abstract) {
+            $results[] = $this-&gt;make($abstract);
+        }
+    }
+
+    return $results;
+}
+</code></pre>
+<h1 id="call方法注入">call方法注入</h1>
+<hr>
+<p>服务容器中，我们直接使用或者间接的使用 make 来构造服务对象，但是在实际的应用场景中，会有这样的需求：我们拥有一个对象或者闭包函数，想要调用它的一个函数，但是它函数里面却有其他类的参数，这个就需要进行 call 方法注入</p>
+<pre><code class="language-php">public function call($callback, array $parameters = [], $defaultMethod = null)
+{
+    return BoundMethod::call($this, $callback, $parameters, $defaultMethod);
+}
+</code></pre>
+<p>在 <a href="http://www.leoyang90.cn/2017/05/06/Laravel-container/">上一篇</a> 文章中，我们说过，call 函数中的 callback 参数有以下几种形式：</p>
+<ul>
+<li>闭包 Closure</li>
+<li>class<a href="https://github.com/method"><strong>@method</strong></a></li>
+<li>类静态函数，class::method</li>
+<li>类静态函数： [ className／classObj, method ]；类非静态函数： [ classObj, method ]</li>
+<li>若 defaultMethod 不为空，className 虽然调用 call 的形式有 5 种，但是实际最终的形式是三种，第二种和第五种被转化为了第四种。 接下来，我们详细的解析源码：</li>
+</ul>
+<h2 id="call">call</h2>
+<p>先看一下 call 方法的主体：</p>
+<pre><code class="language-php">public static function call($container, $callback, array $parameters = [], $defaultMethod = null)
+{
+    if (static::isCallableWithAtSign($callback) || $defaultMethod) {
+        return static::callClass($container, $callback, $parameters, $defaultMethod);
+    }
+
+    return static::callBoundMethod($container, $callback, function () use ($container, $callback, $parameters) {
+        return call_user_func_array(
+            $callback, static::getMethodDependencies($container, $callback, $parameters)
+        );
+    });
+}
+</code></pre>
+<p>可以看出来，call 方法注入主要有 4 个大的步骤：</p>
+<ol>
+<li>对于 className<a href="https://github.com/method"><strong>@method</strong></a> 和 className-defaultMethod，实例化 className 为类对象，转化为 [ classObj, method ]。</li>
+<li>判断 [ classObj ／ classname, method ] 是否存在被绑定的方法，如果有则调用。</li>
+<li>利用服务容器解析依赖的参数。</li>
+<li>调用 call_user_func_array。</li>
+</ol>
+<h2 id="实例化类对象">实例化类对象</h2>
+<p>在这里 className<a href="https://github.com/method"><strong>@method</strong></a> 和 className-defaultMethod 两种情况被转化为 [ classObj, method ]， className会被实例化为类对象，并重新调用 call：</p>
+<pre><code class="language-php">protected static function isCallableWithAtSign($callback)
+{
+    return is_string($callback) &amp;&amp; strpos($callback, '@') !== false;
+}
+    
+protected static function callClass($container, $target, array $parameters = [], $defaultMethod = null)
+{
+    $segments = explode('@', $target);
+
+    $method = count($segments) == 2
+                    ? $segments[1] : $defaultMethod;
+
+    if (is_null($method)) {
+        throw new InvalidArgumentException('Method not provided.');
+    }
+
+    return static::call(
+        $container, [$container-&gt;make($segments[0]), $method], $parameters
+    );
+} 
+</code></pre>
+<h2 id="执行绑定方法">执行绑定方法</h2>
+<p>针对 [ className／classObj, method ], 调用被绑定的方法：</p>
+<pre><code class="language-php">protected static function callBoundMethod($container, $callback, $default)
+{
+    if (! is_array($callback)) {
+        return value($default);
+    }
+
+    $method = static::normalizeMethod($callback);
+
+    if ($container-&gt;hasMethodBinding($method)) {
+        return $container-&gt;callMethodBinding($method, $callback[0]);
+    }
+
+    return value($default);
+}
+
+protected static function normalizeMethod($callback)
+{
+    $class = is_string($callback[0]) ? $callback[0] : get_class($callback[0]);
+
+    return "{$class}@{$callback[1]}";
+}
+    
+public function hasMethodBinding($method)
+{
+    return isset($this-&gt;methodBindings[$method]);
+}        
+
+public function callMethodBinding($method, $instance)
+{
+    return call_user_func($this-&gt;methodBindings[$method], $instance, $this);
+}
+</code></pre>
+<p>那么这个被绑定的方法 methodBindings 从哪里来呢，就是 <a href="http://www.leoyang90.cn/2017/05/06/Laravel-container/">上一篇</a> 文章提的 bindMethod：</p>
+<pre><code class="language-php">public function bindMethod($method, $callback)
+{
+    $this-&gt;methodBindings[$method] = $callback;
+}
+</code></pre>
+<p>从上面可以看出来，methodBindings 中 callback 参数一定是 classname<a href="https://github.com/method"><strong>@method</strong></a> 形式的。</p>
+<h2 id="实例化依赖">实例化依赖</h2>
+<p>这一步就要通过反射来获取函数方法需要注入的参数类型，然后利用服务容器对参数类型进行解析构建：</p>
+<pre><code class="language-php">protected static function getMethodDependencies($container, $callback, array $parameters = [])
+{
+    $dependencies = [];
+
+    foreach (static::getCallReflector($callback)-&gt;getParameters() as $parameter) {
+        static::addDependencyForCallParameter($container, $parameter, $parameters, $dependencies);
+    }
+
+    return array_merge($dependencies, $parameters);
+}
+</code></pre>
+<p>getCallReflector 函数利用反射来获取参数类型，值得注意的是class::method是需要拆分处理的：</p>
+<pre><code class="language-php">protected static function getCallReflector($callback)
+{
+    if (is_string($callback) &amp;&amp; strpos($callback, '::') !== false) {
+        $callback = explode('::', $callback);
+    }
+
+    return is_array($callback)
+                    ? new ReflectionMethod($callback[0], $callback[1])
+                    : new ReflectionFunction($callback);
+}
+</code></pre>
+<p>利用传入的参数，利用服务容器构建解析参数类型，或者获取参数默认值：</p>
+<pre><code class="language-php">protected static function addDependencyForCallParameter($container, $parameter,
+                                                            array &amp;$parameters, &amp;$dependencies)
+{
+    if (array_key_exists($parameter-&gt;name, $parameters)) {
+        $dependencies[] = $parameters[$parameter-&gt;name];
+
+        unset($parameters[$parameter-&gt;name]);
+    } elseif ($parameter-&gt;getClass()) {
+        $dependencies[] = $container-&gt;make($parameter-&gt;getClass()-&gt;name);
+    } elseif ($parameter-&gt;isDefaultValueAvailable()) {
+        $dependencies[] = $parameter-&gt;getDefaultValue();
+    }
+}
+</code></pre>
+<h2 id="call-user-func-array">call_user_func_array</h2>
+<p>关于这个函数可以参考 <a href="https://segmentfault.com/a/1190000006981167">Laravel学习笔记之Callback Type</a></p>
+<pre><code class="language-php">call_user_func_array(
+            $callback, static::getMethodDependencies($container, $callback, $parameters)
+        );
+</code></pre>
+<blockquote>
+<p>Written with <a href="https://stackedit.io/">StackEdit</a>.</p>
+</blockquote>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/86/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/scala_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/86/index.html">《快学Scala》读书笔记</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/55.html">xuexingdong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="scala">scala</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">7页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/31/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/140/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/haskell_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/140/index.html">HASKELL 趣學指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/73.html">MnO2</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="haskell">haskell</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">17页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 301个">301</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/122/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/spark_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/122/index.html">Databricks Spark 知识库简体中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spark">spark</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1个">1</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/71/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/71/index.html">使用 jMonkeyEngine 进行游戏开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/43.html">jmecn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8个">8</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/191/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7740;var bookPageRelUrl ='Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

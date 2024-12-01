@@ -1,0 +1,685 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Paxos 与 Raft-区块链技术指南(Blockchain Guide)</title>
+<meta content='Paxos 与 Raft,区块链技术指南,Blockchain Guide' name='keywords'>
+<meta content='Paxos 与 Raft,区块链技术指南,Blockchain Guide' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/1/distribute_system/acid.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">ACID 原则</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/1/distribute_system/bft.html">
+<span class="">拜占庭问题与算法</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/1/index.html">区块链技术指南 (Blockchain Guide)</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ayamefing/blockchain_guide" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h2 id="paxos-与-raft">Paxos 与 Raft</h2>
+<p>Paxos 问题是指分布式的系统中存在故障（fault），但不存在恶意（corrupt）节点场景（即可能消息丢失或重复，但无错误消息）下的共识达成（Consensus）问题。因为最早是 Leslie Lamport 用 Paxon 岛的故事模型来进行描述而命名。</p>
+<h3 id="paxos">Paxos</h3>
+<p>1990 年由 Leslie Lamport 提出的 <a href="http://research.microsoft.com/users/lamport/pubs/lamport-paxos.pdf">Paxos</a> 共识算法，在工程角度实现了一种最大化保障分布式系统一致性（存在极小的概率无法实现一致）的机制。Paxos 被广泛应用在 Chubby、ZooKeeper 这样的系统中，Leslie Lamport 因此获得了 2013 年度图灵奖。</p>
+<p>故事背景是古希腊 Paxon 岛上的多个法官在一个大厅内对一个议案进行表决，如何达成统一的结果。他们之间通过服务人员来传递纸条，但法官可能离开或进入大厅，服务人员可能偷懒去睡觉。</p>
+<p>Paxos 是第一个被证明的共识算法，其原理基于 <a href="https://en.wikipedia.org/wiki/Two-phase_commit_protocol">两阶段提交</a> 并进行扩展。</p>
+<p>作为现在共识算法设计的鼻祖，以最初论文的难懂（算法本身并不复杂）出名。算法中将节点分为三种类型：</p>
+<ul>
+<li>proposer：提出一个提案，等待大家批准为结案。往往是客户端担任该角色；</li>
+<li>acceptor：负责对提案进行投票。往往是服务端担任该角色；</li>
+<li>learner：被告知结案结果，并与之统一，不参与投票过程。可能为客户端或服务端。</li>
+</ul>
+<p>并且，算法需要满足 safety 和 liveness 两方面的约束要求（实际上这两个基础属性是大部分分布式算法都该考虑的）：</p>
+<ul>
+<li>safety：保证决议结果是对的，无歧义的，不会出现错误情况。
+<ul>
+<li>决议（value）只有在被 proposers 提出的 proposal 才能被最终批准；</li>
+<li>在一次执行实例中，只批准（chosen）一个最终决议，意味着多数接受（accept）的结果能成为决议；</li>
+</ul> </li>
+<li>liveness：保证决议过程能在有限时间内完成。
+<ul>
+<li>决议总会产生，并且 learners 能获得被批准（chosen）的决议。</li>
+</ul> </li>
+</ul>
+<p>基本过程包括 proposer 提出提案，先争取大多数 acceptor 的支持，超过一半支持时，则发送结案结果给所有人进行确认。一个潜在的问题是 proposer 在此过程中出现故障，可以通过超时机制来解决。极为凑巧的情况下，每次新的一轮提案的 proposer 都恰好故障，系统则永远无法达成一致（概率很小）。</p>
+<p>Paxos 能保证在超过 $1/2$ 的正常节点存在时，系统能达成共识。</p>
+<p>读者可以试着自己设计一套能达成共识的方案，会发现在满足各种约束情况下，算法自然就会那样设计。</p>
+<h4 id="单个提案者多接收者">单个提案者+多接收者</h4>
+<p>如果系统中限定只有某个特定节点是提案者，那么一致性肯定能达成（只有一个方案，要么达成，要么失败）。提案者只要收到了来自多数接收者的投票，即可认为通过，因为系统中不存在其他的提案。</p>
+<p>但一旦提案者故障，则系统无法工作。</p>
+<h4 id="多个提案者单个接收者">多个提案者+单个接收者</h4>
+<p>限定某个节点作为接收者。这种情况下，共识也很容易达成，接收者收到多个提案，选第一个提案作为决议，拒绝掉后续的提案即可。</p>
+<p>缺陷也是容易发生单点故障，包括接收者故障或首个提案者节点故障。</p>
+<p>以上两种情形其实类似主从模式，虽然不那么可靠，但因为原理简单而被广泛采用。</p>
+<p>当提案者和接收者都推广到多个的情形，会出现一些挑战。</p>
+<h4 id="多个提案者多个接收者">多个提案者+多个接收者</h4>
+<p>既然限定单提案者或单接收者都会出现故障，那么就得允许出现多个提案者和多个接收者。问题一下子变得复杂了。</p>
+<p>一种情况是同一时间片段（如一个提案周期）内只有一个提案者，这时可以退化到单提案者的情形。需要设计一种机制来保障提案者的正确产生，例如按照时间、序列、或者大家猜拳（出一个数字来比较）之类。考虑到分布式系统要处理的工作量很大，这个过程要尽量高效，满足这一条件的机制非常难设计。</p>
+<p>另一种情况是允许同一时间片段内可以出现多个提案者。那同一个节点可能收到多份提案，怎么对他们进行区分呢？这个时候采用只接受第一个提案而拒绝后续提案的方法也不适用。很自然的，提案需要带上不同的序号。节点需要根据提案序号来判断接受哪个。比如接受其中序号较大（往往意味着是接受新提出的，因为旧提案者故障概率更大）的提案。</p>
+<p>如何为提案分配序号呢？一种可能方案是每个节点的提案数字区间彼此隔离开，互相不冲突。为了满足递增的需求可以配合用时间戳作为前缀字段。</p>
+<p>此外，提案者即便收到了多数接收者的投票，也不敢说就一定通过。因为在此过程中系统中其它提案者</p>
+<h4 id="两阶段的提交">两阶段的提交</h4>
+<p>提案者发出提案之后，收到一些反馈。这个时候得知的一种结果是自己的提案被大多数接受了，一种结果是没被接受。没被接受的话好说，过会再试试。</p>
+<p>即便受到来自大多数的接受反馈，也不能认为就最终确认了。因为这些接收者自己并不知道自己刚反馈的提案就恰好是全局的绝大多数。</p>
+<p>很自然的，引入了新的一个阶段，即提案者在前一阶段拿到所有的反馈后，判断这个提案是可能被大多数接受的提案，需要对其进行最终确认。</p>
+<p>Paxos 里面对这两个阶段分别命名为准备（prepare）和提交（commit）。准备阶段解决大家对哪个提案进行投票的问题，提交阶段解决确认最终值的问题。</p>
+<p><strong>准备阶段</strong>：</p>
+<ul>
+<li>提案者发送自己计划提交的提案的编号到多个接受者，试探是否可以锁定多数接受者的支持。</li>
+<li>接受者时刻保留收到过提案的最大编号和接受的最大提案。如果收到提案号比目前保留的最大提案号还大，则返回自己已接受的提案值（如果还未接受过任何提案，则为空）给提案者，更新当前最大提案号，并说明不再接受小于最大提案号的提案。</li>
+</ul>
+<p><strong>提交阶段</strong>：</p>
+<ul>
+<li>提案者如果收到大多数的回复（表示大部分人听到它的请求），则可准备发出带有刚才提案号的接受消息。如果收到的回复中不带有新的提案，说明锁定成功。则使用自己的提案内容；如果返回中有提案内容，则替换提案值为返回中编号最大的提案值。如果没收到足够多的回复，则需要再次发出请求。</li>
+<li>接受者收到接受消息后，如果发现提案号不小于已接受的最大提案号，则接受该提案，并更新接受的最大提案。</li>
+</ul>
+<p>一旦多数接受了共同的提案值，则形成决议，成为最终确认。</p>
+<h3 id="raft">Raft</h3>
+<p>Raft 是对 Paxos 的重新设计和实现。</p>
+<p><a href="https://ramcloud.atlassian.net/wiki/download/attachments/6586375/raft.pdf">Raft</a> 算法是Paxos 算法的一种简化实现。</p>
+<p>包括三种角色：leader、candiate 和 follower，其基本过程为：</p>
+<ul>
+<li>Leader 选举：每个 candidate 随机经过一定时间都会提出选举方案，最近阶段中得票最多者被选为 leader；</li>
+<li>同步 log：leader 会找到系统中 log 最新的记录，并强制所有的 follower 来刷新到这个记录；</li>
+</ul>
+<p><em>注：此处 log 并非是指日志消息，而是各种事件的发生记录。</em></p>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/109/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/blockchain_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/109/index.html">区块链(BlockChain)技术开发相关资料</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="blockchain">blockchain</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">6页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 3个">3</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/191/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/100/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/lua_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/100/index.html">Lua编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/61.html">andycai</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="lua">lua</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 192个">192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/52/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/logstash_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/52/index.html">Logstash最佳实践</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/29.html">chenryn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="logstash">logstash</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 693个">693</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/144/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gulp_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/144/index.html">gulp 入门指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/39.html">onface</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="gulp">gulp</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">8页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1780个">1780</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/117/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/117/index.html">成为专业程序员路上用到的各种优秀资料、神器及框架</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title=""></span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">26页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/1/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/README.html" title="前言" data-book-page-rel-url="README.html" data-book-page-id="1">前言</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/revision.html" title="修订记录" data-book-page-rel-url="revision.html" data-book-page-id="2">修订记录</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/contribute.html" title="如何贡献" data-book-page-rel-url="contribute.html" data-book-page-id="3">如何贡献</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/born/README.html" title="区块链思想的诞生与概念" data-book-page-rel-url="born/README.html" data-book-page-id="4">区块链思想的诞生与概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/born/currency.html" title="从数字货币说起" data-book-page-rel-url="born/currency.html" data-book-page-id="5">从数字货币说起</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/born/bitcoin.html" title="比特币：前所未有的社会学实验" data-book-page-rel-url="born/bitcoin.html" data-book-page-id="6">比特币：前所未有的社会学实验</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/born/what.html" title="区块链核心概念" data-book-page-rel-url="born/what.html" data-book-page-id="7">区块链核心概念</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/born/summary.html" title="小结" data-book-page-rel-url="born/summary.html" data-book-page-id="8">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/intro/README.html" title="区块链技术的价值、挑战与展望" data-book-page-rel-url="intro/README.html" data-book-page-id="9">区块链技术的价值、挑战与展望</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/intro/business.html" title="商业价值" data-book-page-rel-url="intro/business.html" data-book-page-id="10">商业价值</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/intro/tech.html" title="关键技术和挑战" data-book-page-rel-url="intro/tech.html" data-book-page-id="11">关键技术和挑战</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/intro/vision.html" title="趋势与展望" data-book-page-rel-url="intro/vision.html" data-book-page-id="12">趋势与展望</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/intro/summary.html" title="小结" data-book-page-rel-url="intro/summary.html" data-book-page-id="13">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/README.html" title="典型应用场景" data-book-page-rel-url="scenario/README.html" data-book-page-id="14">典型应用场景</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/scenario/trading.html" title="金融服务" data-book-page-rel-url="scenario/trading.html" data-book-page-id="15">金融服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/trust.html" title="征信和权属管理" data-book-page-rel-url="scenario/trust.html" data-book-page-id="16">征信和权属管理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/sharing.html" title="资源共享" data-book-page-rel-url="scenario/sharing.html" data-book-page-id="17">资源共享</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/capital.html" title="投资管理" data-book-page-rel-url="scenario/capital.html" data-book-page-id="18">投资管理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/iot.html" title="物联网与供应链" data-book-page-rel-url="scenario/iot.html" data-book-page-id="19">物联网与供应链</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/others.html" title="其它场景" data-book-page-rel-url="scenario/others.html" data-book-page-id="20">其它场景</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/scenario/summary.html" title="小结" data-book-page-rel-url="scenario/summary.html" data-book-page-id="21">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/README.html" title="分布式系统核心问题" data-book-page-rel-url="distribute_system/README.html" data-book-page-id="22">分布式系统核心问题</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/problem.html" title="一致性问题" data-book-page-rel-url="distribute_system/problem.html" data-book-page-id="23">一致性问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/consensus.html" title="共识算法" data-book-page-rel-url="distribute_system/consensus.html" data-book-page-id="24">共识算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/flp.html" title="FLP 不可能性原理" data-book-page-rel-url="distribute_system/flp.html" data-book-page-id="25">FLP 不可能性原理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/cap.html" title="CAP 原理" data-book-page-rel-url="distribute_system/cap.html" data-book-page-id="26">CAP 原理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/acid.html" title="ACID 原则" data-book-page-rel-url="distribute_system/acid.html" data-book-page-id="27">ACID 原则</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/paxos.html" title="Paxos 与 Raft" data-book-page-rel-url="distribute_system/paxos.html" data-book-page-id="28">Paxos 与 Raft</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/bft.html" title="拜占庭问题与算法" data-book-page-rel-url="distribute_system/bft.html" data-book-page-id="29">拜占庭问题与算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/availability.html" title="可靠性指标" data-book-page-rel-url="distribute_system/availability.html" data-book-page-id="30">可靠性指标</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/distribute_system/summary.html" title="小结" data-book-page-rel-url="distribute_system/summary.html" data-book-page-id="31">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/README.html" title="密码学与安全技术" data-book-page-rel-url="crypto/README.html" data-book-page-id="32">密码学与安全技术</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/crypto/hash.html" title="Hash 算法与摘要" data-book-page-rel-url="crypto/hash.html" data-book-page-id="33">Hash 算法与摘要</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/algorithm.html" title="加解密算法" data-book-page-rel-url="crypto/algorithm.html" data-book-page-id="34">加解密算法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/signature.html" title="数字签名" data-book-page-rel-url="crypto/signature.html" data-book-page-id="35">数字签名</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/cert.html" title="数字证书" data-book-page-rel-url="crypto/cert.html" data-book-page-id="36">数字证书</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/pki.html" title="PKI 体系" data-book-page-rel-url="crypto/pki.html" data-book-page-id="37">PKI 体系</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/merkle_trie.html" title="Merkle 树" data-book-page-rel-url="crypto/merkle_trie.html" data-book-page-id="38">Merkle 树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/homoencryption.html" title="同态加密" data-book-page-rel-url="crypto/homoencryption.html" data-book-page-id="39">同态加密</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/others.html" title="其它问题" data-book-page-rel-url="crypto/others.html" data-book-page-id="40">其它问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/crypto/summary.html" title="小结" data-book-page-rel-url="crypto/summary.html" data-book-page-id="41">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/README.html" title="比特币项目 -- 思想诞生的摇篮" data-book-page-rel-url="bitcoin/README.html" data-book-page-id="42">比特币项目 -- 思想诞生的摇篮</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/introductin.html" title="简介" data-book-page-rel-url="bitcoin/introductin.html" data-book-page-id="43">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/design.html" title="原理和设计" data-book-page-rel-url="bitcoin/design.html" data-book-page-id="44">原理和设计</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/mining.html" title="挖矿" data-book-page-rel-url="bitcoin/mining.html" data-book-page-id="45">挖矿</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/tools.html" title="工具" data-book-page-rel-url="bitcoin/tools.html" data-book-page-id="46">工具</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/consensus.html" title="共识机制" data-book-page-rel-url="bitcoin/consensus.html" data-book-page-id="47">共识机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/lightning_network.html" title="闪电网络" data-book-page-rel-url="bitcoin/lightning_network.html" data-book-page-id="48">闪电网络</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/sidechain.html" title="侧链" data-book-page-rel-url="bitcoin/sidechain.html" data-book-page-id="49">侧链</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/bitcoin/summary.html" title="小结" data-book-page-rel-url="bitcoin/summary.html" data-book-page-id="50">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/README.html" title="Ethereum（以太坊）-- 技术落地的实验" data-book-page-rel-url="ethereum/README.html" data-book-page-id="51">Ethereum（以太坊）-- 技术落地的实验</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/intro.html" title="简介" data-book-page-rel-url="ethereum/intro.html" data-book-page-id="52">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/install.html" title="安装" data-book-page-rel-url="ethereum/install.html" data-book-page-id="53">安装</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/tools.html" title="相关工具" data-book-page-rel-url="ethereum/tools.html" data-book-page-id="54">相关工具</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/design.html" title="协议设计" data-book-page-rel-url="ethereum/design.html" data-book-page-id="55">协议设计</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/smartContract_example01.html" title="智能合约示例一" data-book-page-rel-url="ethereum/smartContract_example01.html" data-book-page-id="56">智能合约示例一</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/ethereum/summary.html" title="小结" data-book-page-rel-url="ethereum/summary.html" data-book-page-id="57">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/README.html" title="Hyperledger（超级账本）-- 商用分布式账本" data-book-page-rel-url="hyperledger/README.html" data-book-page-id="58">Hyperledger（超级账本）-- 商用分布式账本</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/history.html" title="诞生与发展" data-book-page-rel-url="hyperledger/history.html" data-book-page-id="59">诞生与发展</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/community.html" title="社区组织" data-book-page-rel-url="hyperledger/community.html" data-book-page-id="60">社区组织</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/top_project.html" title="五大顶级项目" data-book-page-rel-url="hyperledger/top_project.html" data-book-page-id="61">五大顶级项目</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/contribute.html" title="开发和提交代码" data-book-page-rel-url="hyperledger/contribute.html" data-book-page-id="62">开发和提交代码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/hyperledger/summary.html" title="小结" data-book-page-rel-url="hyperledger/summary.html" data-book-page-id="63">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/README.html" title="Fabric 部署与管理" data-book-page-rel-url="fabric/README.html" data-book-page-id="64">Fabric 部署与管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/fabric/intro.html" title="简介" data-book-page-rel-url="fabric/intro.html" data-book-page-id="65">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/1.0.html" title="使用 Fabric 1.0 版本" data-book-page-rel-url="fabric/1.0.html" data-book-page-id="66">使用 Fabric 1.0 版本</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/v0.6/README.html" title="Fabric v0.6" data-book-page-rel-url="fabric/v0.6/README.html" data-book-page-id="67">Fabric v0.6</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/fabric/v0.6/install.html" title="安装部署" data-book-page-rel-url="fabric/v0.6/install.html" data-book-page-id="68">安装部署</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/v0.6/usage.html" title="使用 chaincode" data-book-page-rel-url="fabric/v0.6/usage.html" data-book-page-id="69">使用 chaincode</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/v0.6/membersrcv-usage.html" title="权限管理" data-book-page-rel-url="fabric/v0.6/membersrcv-usage.html" data-book-page-id="70">权限管理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/v0.6/hyperledger-py.html" title="Python 客户端" data-book-page-rel-url="fabric/v0.6/hyperledger-py.html" data-book-page-id="71">Python 客户端</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric/summary.html" title="小结" data-book-page-rel-url="fabric/summary.html" data-book-page-id="72">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/README.html" title="区块链应用开发" data-book-page-rel-url="app_dev/README.html" data-book-page-id="73">区块链应用开发</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/intro.html" title="简介" data-book-page-rel-url="app_dev/intro.html" data-book-page-id="74">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode.html" title="链上代码工作原理" data-book-page-rel-url="app_dev/chaincode.html" data-book-page-id="75">链上代码工作原理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode_example01.html" title="示例一：信息公证" data-book-page-rel-url="app_dev/chaincode_example01.html" data-book-page-id="76">示例一：信息公证</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode_example02.html" title="示例二：交易资产" data-book-page-rel-url="app_dev/chaincode_example02.html" data-book-page-id="77">示例二：交易资产</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode_example03.html" title="示例三：数字货币发行与管理" data-book-page-rel-url="app_dev/chaincode_example03.html" data-book-page-id="78">示例三：数字货币发行与管理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode_example04.html" title="示例四：学历认证" data-book-page-rel-url="app_dev/chaincode_example04.html" data-book-page-id="79">示例四：学历认证</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/chaincode_example05.html" title="示例五：社区能源共享" data-book-page-rel-url="app_dev/chaincode_example05.html" data-book-page-id="80">示例五：社区能源共享</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/app_dev/summary.html" title="小结" data-book-page-rel-url="app_dev/summary.html" data-book-page-id="81">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric_design/README.html" title="Fabric 架构与设计" data-book-page-rel-url="fabric_design/README.html" data-book-page-id="82">Fabric 架构与设计</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/fabric_design/intro.html" title="简介" data-book-page-rel-url="fabric_design/intro.html" data-book-page-id="83">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric_design/design.html" title="架构设计" data-book-page-rel-url="fabric_design/design.html" data-book-page-id="84">架构设计</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric_design/protocol.html" title="消息协议" data-book-page-rel-url="fabric_design/protocol.html" data-book-page-id="85">消息协议</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/fabric_design/summary.html" title="小结" data-book-page-rel-url="fabric_design/summary.html" data-book-page-id="86">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/baas/README.html" title="区块链即服务" data-book-page-rel-url="baas/README.html" data-book-page-id="87">区块链即服务</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/baas/bluemix.html" title="Bluemix BaaS" data-book-page-rel-url="baas/bluemix.html" data-book-page-id="88">Bluemix BaaS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/baas/sv.html" title="超能 BaaS" data-book-page-rel-url="baas/sv.html" data-book-page-id="89">超能 BaaS</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/baas/cello.html" title="使用 Hyperledger Cello 搭建区块链服务" data-book-page-rel-url="baas/cello.html" data-book-page-id="90">使用 Hyperledger Cello 搭建区块链服务</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/baas/summary.html" title="小结" data-book-page-rel-url="baas/summary.html" data-book-page-id="91">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/evaluation/README.html" title="性能与评测" data-book-page-rel-url="evaluation/README.html" data-book-page-id="92">性能与评测</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/evaluation/intro.html" title="简介" data-book-page-rel-url="evaluation/intro.html" data-book-page-id="93">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/evaluation/hyperledger.html" title="Hyperledger Fabric v0.6" data-book-page-rel-url="evaluation/hyperledger.html" data-book-page-id="94">Hyperledger Fabric v0.6</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/evaluation/summary.html" title="小结" data-book-page-rel-url="evaluation/summary.html" data-book-page-id="95">小结</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/appendix/README.html" title="附录" data-book-page-rel-url="appendix/README.html" data-book-page-id="96">附录</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/1/appendix/terms.html" title="术语" data-book-page-rel-url="appendix/terms.html" data-book-page-id="97">术语</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/appendix/faq.html" title="常见问题" data-book-page-rel-url="appendix/faq.html" data-book-page-id="98">常见问题</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/appendix/companies.html" title="相关组织" data-book-page-rel-url="appendix/companies.html" data-book-page-id="99">相关组织</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/appendix/grpc.html" title="ProtoBuf 与 gRPC" data-book-page-rel-url="appendix/grpc.html" data-book-page-id="100">ProtoBuf 与 gRPC</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/1/appendix/resources.html" title="资源链接" data-book-page-rel-url="appendix/resources.html" data-book-page-id="101">资源链接</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =1;var bookPageId =28;var bookPageRelUrl ='distribute_system/paxos.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

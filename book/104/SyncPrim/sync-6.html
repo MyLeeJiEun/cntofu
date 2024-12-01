@@ -1,0 +1,773 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>顺序锁-Linux 内核揭密</title>
+<meta content='顺序锁,Linux 内核揭密' name='keywords'>
+<meta content='顺序锁,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/104/SyncPrim/sync-5.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">读者/写者信号量</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/104/MM/README.html">
+<span class="">内存管理</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/104/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/ye11ow/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="synchronization-primitives-in-the-linux-kernel-part-6">Synchronization primitives in the Linux kernel. Part 6.</h1>
+<h2 id="introduction">Introduction</h2>
+<p>This is the sixth part of the chapter which describes <a href="https://en.wikipedia.org/wiki/Synchronization_(computer_science)">synchronization primitives</a> in the Linux kernel and in the previous parts we finished to consider different <a href="https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock">readers-writer lock</a> synchronization primitives. We will continue to learn synchronization primitives in this part and start to consider a similar synchronization primitive which can be used to avoid the <code>writer starvation</code> problem. The name of this synchronization primitive is - <code>seqlock</code> or <code>sequential locks</code>.</p>
+<p>We know from the previous <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-5.html">part</a> that <a href="https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock">readers-writer lock</a> is a special lock mechanism which allows concurrent access for read-only operations, but an exclusive lock is needed for writing or modifying data. As we may guess, it may lead to a problem which is called <code>writer starvation</code>. In other words, a writer process can't acquire a lock as long as at least one reader process which aqcuired a lock holds it. So, in the situation when contention is high, it will lead to situation when a writer process which wants to acquire a lock will wait for it for a long time.</p>
+<p>The <code>seqlock</code> synchronization primitive can help solve this problem.</p>
+<p>As in all previous parts of this <a href="https://0xax.gitbooks.io/linux-insides/content">book</a>, we will try to consider this synchronization primitive from the theoretical side and only than we will consider <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> provided by the Linux kernel to manipulate with <code>seqlocks</code>.</p>
+<p>So, let's start.</p>
+<h2 id="sequential-lock">Sequential lock</h2>
+<p>So, what is a <code>seqlock</code> synchronization primitive and how does it work? Let's try to answer on these questions in this paragraph. Actually <code>sequential locks</code> were introduced in the Linux kernel 2.6.x. Main point of this synchronization primitive is to provide fast and lock-free access to shared resources. Since the heart of <code>sequential lock</code> synchronization primitive is <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a> synchronization primitive, <code>sequential locks</code> work in situations where the protected resources are small and simple. Additionally write access must be rare and also should be fast.</p>
+<p>Work of this synchronization primitive is based on the sequence of events counter. Actually a <code>sequential lock</code> allows free access to a resource for readers, but each reader must check existence of conflicts with a writer. This synchronization primitive introduces a special counter. The main algorithm of work of <code>sequential locks</code> is simple: Each writer which acquired a sequential lock increments this counter and additionally acquires a <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a>. When this writer finishes, it will release the acquired spinlock to give access to other writers and increment the counter of a sequential lock again.</p>
+<p>Read only access works on the following principle, it gets the value of a <code>sequential lock</code> counter before it will enter into <a href="https://en.wikipedia.org/wiki/Critical_section">critical section</a> and compares it with the value of the same <code>sequential lock</code> counter at the exit of critical section. If their values are equal, this means that there weren't writers for this period. If their values are not equal, this means that a writer has incremented the counter during the <a href="https://en.wikipedia.org/wiki/Critical_section">critical section</a>. This conflict means that reading of protected data must be repeated.</p>
+<p>That's all. As we may see principle of work of <code>sequential locks</code> is simple.</p>
+<pre><code class="language-C">unsigned int seq_counter_value;
+
+do {
+    seq_counter_value = get_seq_counter_val(&amp;the_lock);
+    //
+    // do as we want here
+    //
+} while (__retry__);
+</code></pre>
+<p>Actually the Linux kernel does not provide <code>get_seq_counter_val()</code> function. Here it is just a stub. Like a <code>__retry__</code> too. As I already wrote above, we will see actual the <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> for this in the next paragraph of this part.</p>
+<p>Ok, now we know what a <code>seqlock</code> synchronization primitive is and how it is represented in the Linux kernel. In this case, we may go ahead and start to look at the <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> which the Linux kernel provides for manipulation of synchronization primitives of this type.</p>
+<h2 id="sequential-lock-api">Sequential lock API</h2>
+<p>So, now we know a little about <code>sequentional lock</code> synchronization primitive from theoretical side, let's look at its implementation in the Linux kernel. All <code>sequentional locks</code> <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> are located in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/seqlock.h">include/linux/seqlock.h</a> header file.</p>
+<p>First of all we may see that the a <code>sequential lock</code> machanism is represented by the following type:</p>
+<pre><code class="language-C">typedef struct {
+	struct seqcount seqcount;
+	spinlock_t lock;
+} seqlock_t;
+</code></pre>
+<p>As we may see the <code>seqlock_t</code> provides two fields. These fields represent a sequential lock counter, description of which we saw above and also a <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a> which will protect data from other writers. Note that the <code>seqcount</code> counter represented as <code>seqcount</code> type. The <code>seqcount</code> is structure:</p>
+<pre><code class="language-C">typedef struct seqcount {
+	unsigned sequence;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map dep_map;
+#endif
+} seqcount_t;
+</code></pre>
+<p>which holds counter of a sequential lock and <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a> related field.</p>
+<p>As always in previous parts of this <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/">chapter</a>, before we will consider an <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> of <code>sequential lock</code> mechanism in the Linux kernel, we need to know how to initialize an instance of <code>seqlock_t</code>.</p>
+<p>We saw in the previous parts that often the Linux kernel provides two approaches to execute initialization of the given synchronization primitive. The same situation with the <code>seqlock_t</code> structure. These approaches allows to initialize a <code>seqlock_t</code> in two following:</p>
+<ul>
+<li><code>statically</code>;</li>
+<li><code>dynamically</code>.</li>
+</ul>
+<p>ways. Let's look at the first approach. We are able to intialize a <code>seqlock_t</code> statically with the <code>DEFINE_SEQLOCK</code> macro:</p>
+<pre><code class="language-C">#define DEFINE_SEQLOCK(x) \
+		seqlock_t x = __SEQLOCK_UNLOCKED(x)
+</code></pre>
+<p>which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/seqlock.h">include/linux/seqlock.h</a> header file. As we may see, the <code>DEFINE_SEQLOCK</code> macro takes one argument and expands to the definition and initialization of the <code>seqlock_t</code> structure. Initialization occurs with the help of the <code>__SEQLOCK_UNLOCKED</code> macro which is defined in the same source code file. Let's look at the implementation of this macro:</p>
+<pre><code class="language-C">#define __SEQLOCK_UNLOCKED(lockname)			\
+	{						\
+		.seqcount = SEQCNT_ZERO(lockname),	\
+		.lock =	__SPIN_LOCK_UNLOCKED(lockname)	\
+	}
+</code></pre>
+<p>As we may see the, <code>__SEQLOCK_UNLOCKED</code> macro executes initialization of fields of the given <code>seqlock_t</code> structure. The first field is <code>seqcount</code> initialized with the <code>SEQCNT_ZERO</code> macro which expands to the:</p>
+<pre><code class="language-C">#define SEQCNT_ZERO(lockname) { .sequence = 0, SEQCOUNT_DEP_MAP_INIT(lockname)}
+</code></pre>
+<p>So we just initialize counter of the given sequential lock to zero and additionally we can see <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a> related initialization which depends on the state of the <code>CONFIG_DEBUG_LOCK_ALLOC</code> kernel configuration option:</p>
+<pre><code class="language-C">#ifdef CONFIG_DEBUG_LOCK_ALLOC
+# define SEQCOUNT_DEP_MAP_INIT(lockname) \
+    .dep_map = { .name = #lockname } \
+    ...
+    ...
+    ...
+#else
+# define SEQCOUNT_DEP_MAP_INIT(lockname)
+    ...
+    ...
+    ...
+#endif
+</code></pre>
+<p>As I already wrote in previous parts of this <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/">chapter</a> we will not consider <a href="https://en.wikipedia.org/wiki/Debugging">debugging</a> and <a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a> related stuff in this part. So for now we just skip the <code>SEQCOUNT_DEP_MAP_INIT</code> macro. The second field of the given <code>seqlock_t</code> is <code>lock</code> initialized with the <code>__SPIN_LOCK_UNLOCKED</code> macro which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/spinlock_types.h">include/linux/spinlock_types.h</a> header file. We will not consider implementation of this macro here as it just initialize <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">rawspinlock</a> with architecture-specific methods (More abot spinlocks you may read in first parts of this <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/">chapter</a>).</p>
+<p>We have considered the first way to initialize a sequential lock. Let's consider second way to do the same, but do it dynamically. We can initialize a sequentional lock with the <code>seqlock_init</code> macro which is defined in the same <a href="https://github.com/torvalds/linux/blob/master/include/linux/seqlock.h">include/linux/seqlock.h</a> header file.</p>
+<p>Let's look at the implementation of this macro:</p>
+<pre><code class="language-C">#define seqlock_init(x)					\
+	do {						\
+		seqcount_init(&amp;(x)-&gt;seqcount);		\
+		spin_lock_init(&amp;(x)-&gt;lock);		\
+	} while (0)
+</code></pre>
+<p>As we may see, the <code>seqlock_init</code> expands into two macros. The first macro <code>seqcount_init</code> takes counter of the given sequential lock and expands to the call of the <code>__seqcount_init</code> function:</p>
+<pre><code class="language-C"># define seqcount_init(s)				\
+	do {						\
+		static struct lock_class_key __key;	\
+		__seqcount_init((s), #s, &amp;__key);	\
+	} while (0)
+</code></pre>
+<p>from the same header file. This function</p>
+<pre><code class="language-C">static inline void __seqcount_init(seqcount_t *s, const char *name,
+					  struct lock_class_key *key)
+{
+    lockdep_init_map(&amp;s-&gt;dep_map, name, key, 0);
+    s-&gt;sequence = 0;
+}
+</code></pre>
+<p>just initializes counter of the given <code>seqcount_t</code> with zero. The second call from the <code>seqlock_init</code> macro is the call of the <code>spin_lock_init</code> macro which we saw in the <a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">first part</a> of this chapter.</p>
+<p>So, now we know how to initialize a <code>sequential lock</code>, now let's look at how to use it. The Linux kernel provides following <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> to manipulate <code>sequential locks</code>:</p>
+<pre><code class="language-C">static inline unsigned read_seqbegin(const seqlock_t *sl);
+static inline unsigned read_seqretry(const seqlock_t *sl, unsigned start);
+static inline void write_seqlock(seqlock_t *sl);
+static inline void write_sequnlock(seqlock_t *sl);
+static inline void write_seqlock_irq(seqlock_t *sl);
+static inline void write_sequnlock_irq(seqlock_t *sl);
+static inline void read_seqlock_excl(seqlock_t *sl)
+static inline void read_sequnlock_excl(seqlock_t *sl)
+</code></pre>
+<p>and others. Before we move on to considering the implementation of this <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>, we must know that actually there are two types of readers. The first type of reader never blocks a writer process. In this case writer will not wait for readers. The second type of reader which can lock. In this case, the locking reader will block the writer as it will wait while reader will not release its lock.</p>
+<p>First of all let's consider the first type of readers. The <code>read_seqbegin</code> function begins a seq-read <a href="https://en.wikipedia.org/wiki/Critical_section">critical section</a>.</p>
+<p>As we may see this function just returns value of the <code>read_seqcount_begin</code> function:</p>
+<pre><code class="language-C">static inline unsigned read_seqbegin(const seqlock_t *sl)
+{
+	return read_seqcount_begin(&amp;sl-&gt;seqcount);
+}
+</code></pre>
+<p>In its turn the <code>read_seqcount_begin</code> function calls the <code>raw_read_seqcount_begin</code> function:</p>
+<pre><code class="language-C">static inline unsigned read_seqcount_begin(const seqcount_t *s)
+{
+	return raw_read_seqcount_begin(s);
+}
+</code></pre>
+<p>which just returns value of the <code>sequential lock</code> counter:</p>
+<pre><code class="language-C">static inline unsigned raw_read_seqcount(const seqcount_t *s)
+{
+	unsigned ret = READ_ONCE(s-&gt;sequence);
+	smp_rmb();
+	return ret;
+}
+</code></pre>
+<p>After we have the initial value of the given <code>sequential lock</code> counter and did some stuff, we know from the previous paragraph of this function, that we need to compare it with the current value of the counter the same <code>sequential lock</code> before we will exit from the critical section. We can achieve this by the call of the <code>read_seqretry</code> function. This function takes a <code>sequential lock</code>, start value of the counter and through a chain of functions:</p>
+<pre><code class="language-C">static inline unsigned read_seqretry(const seqlock_t *sl, unsigned start)
+{
+	return read_seqcount_retry(&amp;sl-&gt;seqcount, start);
+}
+
+static inline int read_seqcount_retry(const seqcount_t *s, unsigned start)
+{
+	smp_rmb();
+	return __read_seqcount_retry(s, start);
+}
+</code></pre>
+<p>it calls the <code>__read_seqcount_retry</code> function:</p>
+<pre><code class="language-C">static inline int __read_seqcount_retry(const seqcount_t *s, unsigned start)
+{
+	return unlikely(s-&gt;sequence != start);
+}
+</code></pre>
+<p>which just compares value of the counter of the given <code>sequential lock</code> with the initial value of this counter. If the initial value of the counter which is obtained from <code>read_seqbegin()</code> function is odd, this means that a writer was in the middle of updating the data when our reader began to act. In this case the value of the data can be in inconsistent state, so we need to try to read it again.</p>
+<p>This is a common pattern in the Linux kernel. For example, you may remember the <code>jiffies</code> concept from the <a href="https://0xax.gitbooks.io/linux-insides/content/Timers/timers-1.html">first part</a> of the <a href="https://0xax.gitbooks.io/linux-insides/content/Timers/">timers and time management in the Linux kernel</a> chapter. The sequential lock is used to obtain value of <code>jiffies</code> at <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> architecture:</p>
+<pre><code class="language-C">u64 get_jiffies_64(void)
+{
+	unsigned long seq;
+	u64 ret;
+
+	do {
+		seq = read_seqbegin(&amp;jiffies_lock);
+		ret = jiffies_64;
+	} while (read_seqretry(&amp;jiffies_lock, seq));
+	return ret;
+}
+</code></pre>
+<p>Here we just read the value of the counter of the <code>jiffies_lock</code> sequential lock and then we write value of the <code>jiffies_64</code> system variable to the <code>ret</code>. As here we may see <code>do/while</code> loop, the body of the loop will be executed at least one time. So, as the body of loop was executed, we read and compare the current value of the counter of the <code>jiffies_lock</code> with the initial value. If these values are not equal, execution of the loop will be repeated, else <code>get_jiffies_64</code> will return its value in <code>ret</code>.</p>
+<p>We just saw the first type of readers which do not block writer and other readers. Let's consider second type. It does not update value of a <code>sequential lock</code> counter, but just locks <code>spinlock</code>:</p>
+<pre><code class="language-C">static inline void read_seqlock_excl(seqlock_t *sl)
+{
+	spin_lock(&amp;sl-&gt;lock);
+}
+</code></pre>
+<p>So, no one reader or writer can't access protected data. When a reader finishes, the lock must be unlocked with the:</p>
+<pre><code class="language-C">static inline void read_sequnlock_excl(seqlock_t *sl)
+{
+	spin_unlock(&amp;sl-&gt;lock);
+}
+</code></pre>
+<p>function.</p>
+<p>Now we know how <code>sequential lock</code> work for readers. Let's consider how does writer act when it wants to acquire a <code>sequential lock</code> to modify data. To acquire a <code>sequential lock</code>, writer should use <code>write_seqlock</code> function. If we look at the implementation of this function:</p>
+<pre><code class="language-C">static inline void write_seqlock(seqlock_t *sl)
+{
+	spin_lock(&amp;sl-&gt;lock);
+	write_seqcount_begin(&amp;sl-&gt;seqcount);
+}
+</code></pre>
+<p>We will see that it acquires <code>spinlock</code> to prevent access from other writers and calls the <code>write_seqcount_begin</code> function. This function just increments value of the <code>sequential lock</code> counter:</p>
+<pre><code class="language-C">static inline void raw_write_seqcount_begin(seqcount_t *s)
+{
+	s-&gt;sequence++;
+	smp_wmb();
+}
+</code></pre>
+<p>When a writer process will finish to modify data, the <code>write_sequnlock</code> function must be called to release a lock and give access to other writers or readers. Let's consider at the implementation of the <code>write_sequnlock</code> function. It looks pretty simple:</p>
+<pre><code class="language-C">static inline void write_sequnlock(seqlock_t *sl)
+{
+	write_seqcount_end(&amp;sl-&gt;seqcount);
+	spin_unlock(&amp;sl-&gt;lock);
+}
+</code></pre>
+<p>First of all it just calls <code>write_seqcount_end</code> function to increase value of the counter of the <code>sequential</code> lock again:</p>
+<pre><code class="language-C">static inline void raw_write_seqcount_end(seqcount_t *s)
+{
+	smp_wmb();
+	s-&gt;sequence++;
+}
+</code></pre>
+<p>and in the end we just call the <code>spin_unlock</code> macro to give access for other readers or writers.</p>
+<p>That's all about <code>sequential lock</code> mechanism in the Linux kernel. Of course we did not consider full <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> of this mechanism in this part. But all other functions are based on these which we described here. For example, Linux kernel also provides some safe macros/functions to use <code>sequential lock</code> mechanism in <a href="https://en.wikipedia.org/wiki/Interrupt_handler">interrupt handlers</a> of <a href="https://0xax.gitbooks.io/linux-insides/content/Interrupts/interrupts-9.html">softirq</a>: <code>write_seqclock_irq</code> and <code>write_sequnlock_irq</code>:</p>
+<pre><code class="language-C">static inline void write_seqlock_irq(seqlock_t *sl)
+{
+	spin_lock_irq(&amp;sl-&gt;lock);
+	write_seqcount_begin(&amp;sl-&gt;seqcount);
+}
+
+static inline void write_sequnlock_irq(seqlock_t *sl)
+{
+	write_seqcount_end(&amp;sl-&gt;seqcount);
+	spin_unlock_irq(&amp;sl-&gt;lock);
+}
+</code></pre>
+<p>As we may see, these functions differ only in the initialization of spinlock. They call <code>spin_lock_irq</code> and <code>spin_unlock_irq</code> instead of <code>spin_lock</code> and <code>spin_unlock</code>.</p>
+<p>Or for example <code>write_seqlock_irqsave</code> and <code>write_sequnlock_irqrestore</code> functions which are the same but used <code>spin_lock_irqsave</code> and <code>spin_unlock_irqsave</code> macro to use in <a href="https://en.wikipedia.org/wiki/Interrupt_request_(PC_architecture)">IRQ</a> handlers.</p>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the sixth part of the <a href="https://en.wikipedia.org/wiki/Synchronization_%28computer_science%29">synchronization primitives</a> chapter in the Linux kernel. In this part we met with new synchronization primitive which is called - <code>sequential lock</code>. From the theoretical side, this synchronization primitive very similar on a <a href="https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock">readers-writer lock</a> synchronization primitive, but allows to avoid <code>writer-starving</code> issue.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/0xAX/linux-insides/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/0xAX/linux-insides">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Synchronization_(computer_science)">synchronization primitives</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock">readers-writer lock</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-1.html">spinlock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Critical_section">critical section</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt">lock validator</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Debugging">debugging</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Timers/">Timers and time management in the Linux kernel</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_handler">interrupt handlers</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/Interrupts/interrupts-9.html">softirq</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_request_(PC_architecture)">IRQ</a></li>
+<li><a href="https://0xax.gitbooks.io/linux-insides/content/SyncPrim/sync-5.html">Previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/151/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/151/index.html">Shell脚本编程30分钟入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/83.html">qinjx</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">5页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年3月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 5224个">5224</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/45/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/71/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/71/index.html">使用 jMonkeyEngine 进行游戏开发</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/43.html">jmecn</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">23页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8个">8</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/37/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/37/index.html">安卓逆向系列教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 87个">87</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/88/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/spring_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/88/index.html">Spring Data JPA 参考指南 中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/56.html">ityouknow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="spring">spring</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">13页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 92个">92</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/104/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="7458">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="7459">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="7460">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="7461">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="7462">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="7463">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="7464">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="7465">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="7466">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="7467">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="7468">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="7469">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="7470">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="7471">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="7472">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="7473">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="7474">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="7475">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="7476">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="7477">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="7478">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="7479">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="7480">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="7481">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="7482">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="7483">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="7484">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="7485">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="7486">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="7487">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="7488">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="7489">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="7490">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="7491">Linux 内核如何运行程序</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="7492">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="7493">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="7494">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="7495">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="7496">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="7497">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="7498">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="7499">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="7500">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="7501">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="7502">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="7503">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="7504">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="7505">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="7506">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="7508">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="7509">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="7510">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="7511">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="7512">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="7513">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="7514">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="7515">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="7516">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="7517">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="7518">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="7519">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="7520">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="7521">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="7522">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="7523">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="7524">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="7525">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="7526">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="7527">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="7528">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/" title="Write and Submit your first Linux kernel Patch" data-book-page-rel-url="" data-book-page-id="7507">Write and Submit your first Linux kernel Patch</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="7529">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/104/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="7530">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="7531">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/104/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="7532">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =104;var bookPageId =7506;var bookPageRelUrl ='SyncPrim/sync-6.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

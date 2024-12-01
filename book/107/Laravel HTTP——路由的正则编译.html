@@ -1,0 +1,1054 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Laravel HTTP——路由的正则编译-Laravel 源码详解</title>
+<meta content='Laravel HTTP——路由的正则编译,Laravel 源码详解' name='keywords'>
+<meta content='Laravel HTTP——路由的正则编译,Laravel 源码详解' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Laravel HTT..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html">
+<span class="">Laravel HTT..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/107/index.html">Laravel 源码详解</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/laravel-source-analysis" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="前言">前言</h1>
+<p>利用 <code>pipeline</code> 进行中间件的层层处理后，接下来 <code>laravel</code> 就会利用请求的 <code>url</code> 来寻找与其对应的路由，<code>laravel</code> 采用对路由注册的 <code>uri</code> 进行正则编译，然后利用 <code>request</code> 的 <code>url</code> 进行正则匹配来寻找正确的路由。</p>
+<h1 id="前期准备">前期准备</h1>
+<p>在上一篇文章中，我们了解了 <code>Pipeline</code> 的原理，我们知道它调用了 <code>dispatchToRouter()</code> 这个函数：</p>
+<pre><code class="language-php">protected function sendRequestThroughRouter($request)
+{
+    $this-&gt;app-&gt;instance('request', $request);
+
+    Facade::clearResolvedInstance('request');
+
+    $this-&gt;bootstrap();
+
+    return (new Pipeline($this-&gt;app))
+                -&gt;send($request)
+                -&gt;through($this-&gt;app-&gt;shouldSkipMiddleware() ? [] : $this-&gt;middleware)
+                -&gt;then($this-&gt;dispatchToRouter());
+}
+
+protected function dispatchToRouter()
+{
+    return function ($request) {
+        $this-&gt;app-&gt;instance('request', $request);
+
+        return $this-&gt;router-&gt;dispatch($request);
+    };
+}
+</code></pre>
+<p>这个函数实际上利用的是 <code>Router</code> 的 <code>dispatch</code>,这个函数的任务是进行路由匹配，并且调用路由绑定的控制器或者闭包函数：</p>
+<pre><code class="language-php">class Router implements RegistrarContract, BindingRegistrar
+{
+    public function dispatch(Request $request)
+    {
+        $this-&gt;currentRequest = $request;
+
+        return $this-&gt;dispatchToRoute($request);
+    }
+    
+    public function dispatchToRoute(Request $request)
+    {
+        $route = $this-&gt;findRoute($request);
+
+        $request-&gt;setRouteResolver(function () use ($route) {
+            return $route;
+        });
+
+        $this-&gt;events-&gt;dispatch(new Events\RouteMatched($route, $request));
+
+        $response = $this-&gt;runRouteWithinStack($route, $request);
+
+        return $this-&gt;prepareResponse($request, $response);
+    }
+}
+</code></pre>
+<p>我们这篇文章就是讲解第一句: <code>findRoute()</code> 路由匹配:</p>
+<pre><code class="language-php">protected function findRoute($request)
+{
+    $this-&gt;current = $route = $this-&gt;routes-&gt;match($request);
+
+    $this-&gt;container-&gt;instance(Route::class, $route);
+
+    return $route;
+}
+</code></pre>
+<p>寻找路由的任务由 <code>RouteCollection</code> 负责，这个函数负责匹配路由，并且把 <code>request</code> 的 <code>url</code> 参数绑定到路由中：</p>
+<pre><code class="language-php">class RouteCollection implements Countable, IteratorAggregate
+{
+    public function match(Request $request)
+    {
+        $routes = $this-&gt;get($request-&gt;getMethod());
+
+        $route = $this-&gt;matchAgainstRoutes($routes, $request);
+
+        if (! is_null($route)) {
+            return $route-&gt;bind($request);
+        }
+
+        $others = $this-&gt;checkForAlternateVerbs($request);
+
+        if (count($others) &gt; 0) {
+            return $this-&gt;getRouteForMethods($request, $others);
+        }
+
+        throw new NotFoundHttpException;
+    }
+    
+    protected function matchAgainstRoutes(array $routes, $request, $includingMethod = true)
+    {
+        return Arr::first($routes, function ($value) use ($request, $includingMethod) {
+            return $value-&gt;matches($request, $includingMethod);
+        });
+    }
+}
+</code></pre>
+<h1 id="路由正则匹配">路由正则匹配</h1>
+<p>如何去寻找请求 <code>request</code> 想要调用的路由呢？ <code>laravel</code> 首先对路由进行正则编译，得到路由的正则匹配串，然后利用请求的 <code>url</code> 尝试去匹配，如果匹配成功，那么就会选定该路由：</p>
+<pre><code class="language-php">class Route
+{
+	public function matches(Request $request, $includingMethod = true)
+    {
+        $this-&gt;compileRoute();
+
+        foreach ($this-&gt;getValidators() as $validator) {
+            if (! $includingMethod &amp;&amp; $validator instanceof MethodValidator) {
+                continue;
+            }
+
+            if (! $validator-&gt;matches($this, $request)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+    
+    protected function compileRoute()
+    {
+        if (! $this-&gt;compiled) {
+            $this-&gt;compiled = (new RouteCompiler($this))-&gt;compile();
+        }
+
+       return $this-&gt;compiled;
+    }
+}
+</code></pre>
+<p>可以看出，路由的正则编译由 <code>RouteCompiler</code> 类专门负责：</p>
+<pre><code class="language-php">class RouteCompiler
+{
+     public function __construct($route)
+    {
+        $this-&gt;route = $route;
+    }
+    
+    public function compile()
+    {
+        $optionals = $this-&gt;getOptionalParameters();
+
+        $uri = preg_replace('/\{(\w+?)\?\}/', '{$1}', $this-&gt;route-&gt;uri());
+
+        return (
+            new SymfonyRoute($uri, $optionals, $this-&gt;route-&gt;wheres, [], $this-&gt;route-&gt;domain() ?: '')
+        )-&gt;compile();
+    }
+}
+</code></pre>
+<p>可以看出， <code>laravel</code> 真正的正则编译是重用 <code>symfony</code> 框架的，但是在利用 <code>symfony</code> 进行正则编译之前，<code>laravel</code> 先对路由的 <code>uri</code> 进行了一些处理，以适应 <code>symfony</code> 的要求。</p>
+<h2 id="路由可选参数转换">路由可选参数转换</h2>
+<p>对于 <code>laravel</code> 来说，可以选择某个路由 <code>url</code> 的参数是可选的，通常来说，这种可选参数都有默认值。 <code>laravel</code> 利用 <code>?</code> 来表示可选参数：</p>
+<pre><code class="language-php">$router-&gt;get('{foo?}/{baz?}', function ($name = 'taylor', $age = 25) {
+     return $name.$age;
+});
+</code></pre>
+<p>但是对于 <code>symfony</code> 来说， <code>?</code> 没有任何特殊意义， <code>symfony</code> 利用 <code>SymfonyRoute</code> 类进行路由初始化，并把第二个参数作为可选参数，因此 <code>laravel</code> 需要把可选参数提取出来，然后赋给 <code>SymfonyRoute</code> 构造函数。</p>
+<p>可选参数的提取由 <code>getOptionalParameters</code> 负责：</p>
+<pre><code class="language-php"> protected function getOptionalParameters()
+{
+    preg_match_all('/\{(\w+?)\?\}/', $this-&gt;route-&gt;uri(), $matches);
+
+    return isset($matches[1]) ? array_fill_keys($matches[1], null) : [];
+}
+</code></pre>
+<blockquote>
+<p><code>preg_match_all</code> 函数用于进行正则表达式全局匹配，成功返回整个模式匹配的次数（可能为零），如果出错返回 FALSE。</p>
+</blockquote>
+<blockquote>
+<p>默认排序方式为 <code>PREG_PATTERN_ORDER</code>,结果排序为 <code>$matches[0]</code> 保存完整模式的所有匹配, <code>$matches[1]</code> 保存第一个子组的所有匹配，以此类推。</p>
+</blockquote>
+<blockquote>
+<p>若排序方式为 <code>PREG_SET_ORDER</code>,结果排序为 <code>$matches[0]</code> 包含第一次匹配得到的所有匹配(包含子组)， <code>$matches[1]</code> 是包含第二次匹配到的所有匹配(包含子组)的数组，以此类推。</p>
+</blockquote>
+<p>以 <code>{foo?}/{baz?}</code> 为例，得到的 <code>matches[0]</code>:</p>
+<pre><code class="language-php">matches[0] = array (
+    0 = '{foo?}',
+    1 = '{baz?}',
+)
+</code></pre>
+<p>得到的结果 <code>matches</code> 中 <code>matches[1]</code> 是被匹配上的字符串，以 <code>{foo?}/{baz?}</code> 为例，得到的 <code>matches[1]</code>:</p>
+<pre><code class="language-php">matches[1] = array (
+    0 = 'foo',
+    1 = 'baz',
+)
+</code></pre>
+<p><code>array_fill_keys</code> 函数负责使用指定的键和值填充数组，例如上例中就可以得到：</p>
+<pre><code class="language-php">optionals = array (
+    foo = null,
+    baz = null,
+)
+</code></pre>
+<p>得到可选参数的数组 <code>optionals</code> 后，就要将路由的 <code>uri</code> 中 <code>?</code> 替换掉，这也就是 <code>preg_replace</code> 的作用，以 <code>{foo?}/{baz?}</code> 为例，最后得到的替换结果为 <code>{foo}/{baz}</code>。</p>
+<h2 id="symfony-路由初始化">Symfony 路由初始化</h2>
+<p>在 <code>symfony</code> 的路由初始化中，由很多参数：</p>
+<ul>
+<li>path 是路由的 <code>uri</code></li>
+<li>defaults 是路由可选参数</li>
+<li>requirements 是路由的参数正则约束</li>
+<li>options 路由的选项参数，例如路由正则编译类等</li>
+<li>host 是路由的主域</li>
+<li>schenes 是 web 的协议，例如 http, https</li>
+<li>methods 是调用的方法，例如 <code>get</code>、<code>post</code></li>
+<li>condition</li>
+</ul>
+<pre><code class="language-php">namespace Symfony\Component\Routing;
+
+class Route implements \Serializable
+{
+    public function __construct($path, array $defaults = array(), array $requirements = array(), array $options = array(), $host = '', $schemes = array(), $methods = array(), $condition = '')
+    {
+        $this-&gt;setPath($path);
+        $this-&gt;setDefaults($defaults);
+        $this-&gt;setRequirements($requirements);
+        $this-&gt;setOptions($options);
+        $this-&gt;setHost($host);
+        $this-&gt;setSchemes($schemes);
+        $this-&gt;setMethods($methods);
+        $this-&gt;setCondition($condition);
+    }
+    
+    public function setOptions(array $options)
+    {
+        $this-&gt;options = array(
+            'compiler_class' =&gt; 'Symfony\\Component\\Routing\\RouteCompiler',
+        );
+
+        return $this-&gt;addOptions($options);
+    }
+}
+</code></pre>
+<p>可以看出， <code>laravel</code> 初始化路由的时候，分别初始化了 <code>path</code>、<code>defaults</code>、<code>requirements</code>、<code>host</code>，其余都是默认值。其中 <code>host</code> 是路由的 <code>domain</code> 去除 <code>http</code>、<code>https</code> 之后的主域。</p>
+<pre><code class="language-php">public function domain()
+{
+    return isset($this-&gt;action['domain'])
+            ? str_replace(['http://', 'https://'], '', $this-&gt;action['domain']) : null;
+}
+</code></pre>
+<h2 id="路由的正则编译">路由的正则编译</h2>
+<p>路由的编译由 <code>symfony</code> 的 <code>route</code> 类完成：</p>
+<pre><code class="language-php">public function compile()
+{
+    if (null !== $this-&gt;compiled) {
+        return $this-&gt;compiled;
+    }
+
+    $class = $this-&gt;getOption('compiler_class');
+
+    return $this-&gt;compiled = $class::compile($this);
+}
+</code></pre>
+<p><code>compiler_class</code> 是初始化的时候提供的类 <code>Symfony\\Component\\Routing\\RouteCompiler</code>.</p>
+<p>下面是就是路由编译的主要功能实现：</p>
+<h3 id="compile-函数">compile 函数</h3>
+<pre><code class="language-php">namespace Symfony\Component\Routing;
+
+class RouteCompiler implements RouteCompilerInterface
+{
+    public static function compile(Route $route)
+    {
+        $hostVariables = array();
+        $variables = array();
+        $hostRegex = null;
+        $hostTokens = array();
+
+        if ('' !== $host = $route-&gt;getHost()) {
+            $result = self::compilePattern($route, $host, true);
+
+            $hostVariables = $result['variables'];
+            $variables = $hostVariables;
+
+            $hostTokens = $result['tokens'];
+            $hostRegex = $result['regex'];
+        }
+
+        $path = $route-&gt;getPath();
+
+        $result = self::compilePattern($route, $path, false);
+
+        $staticPrefix = $result['staticPrefix'];
+
+        $pathVariables = $result['variables'];
+
+        foreach ($pathVariables as $pathParam) {
+            if ('_fragment' === $pathParam) {
+                throw new \InvalidArgumentException(sprintf('Route pattern "%s" cannot contain "_fragment" as a path parameter.', $route-&gt;getPath()));
+            }
+        }
+
+        $variables = array_merge($variables, $pathVariables);
+
+        $tokens = $result['tokens'];
+        $regex = $result['regex'];
+
+        return new CompiledRoute(
+            $staticPrefix,
+            $regex,
+            $tokens,
+            $pathVariables,
+            $hostRegex,
+            $hostTokens,
+            $hostVariables,
+            array_unique($variables)
+        );
+    }
+}
+</code></pre>
+<p>可以看出，路由的正则编译由两个部分构成：主域的正则编译与 <code>uri</code> 的正则编译。这两个部分的编译功能由函数 <code>compilePattern</code> 负责，这个函数会有返回三种数据结果，以 <code>/foo/{bar}</code> 为例：</p>
+<ul>
+<li><code>variables</code> 代表正则匹配的路由参数,如 <code>bar</code></li>
+<li><code>tokens</code> 代表正则匹配的普通路由字符串,如 <code>foo</code></li>
+<li><code>regex</code> 代表路由匹配的正则表达式结果</li>
+<li>有时候也会有 <code>$staticPrefix</code>,这个是路由 <code>url</code> 前没有路由参数的字符串前缀，如 <code>/foo/</code>.</li>
+</ul>
+<h3 id="compilepattern-函数">compilePattern 函数</h3>
+<p>由于 <code>symfony</code> 原始的正则编译稍微复杂，本文剔除了一些处理 <code>utf8</code> 和异常处理的代码，特意挑选计算正则表达式的主干代码，如下：</p>
+<pre><code class="language-php">	private static function compilePattern(Route $route, $pattern, $isHost)
+    {
+        $tokens = array();
+        $variables = array();
+        $matches = array();
+        $pos = 0;
+        $defaultSeparator = $isHost ? '.' : '/';
+       
+        preg_match_all('#\{\w+\}#', $pattern, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
+        foreach ($matches as $match) {
+            $varName = substr($match[0][0], 1, -1);
+            $precedingText = substr($pattern, $pos, $match[0][1] - $pos);
+            $pos = $match[0][1] + strlen($match[0][0]);
+
+            if (!strlen($precedingText)) {
+                $precedingChar = '';
+            } else {
+                $precedingChar = substr($precedingText, -1);
+            }
+            $isSeparator = '' !== $precedingChar &amp;&amp; false !== strpos(static::SEPARATORS, $precedingChar);
+
+            if ($isSeparator &amp;&amp; $precedingText !== $precedingChar) {
+                $tokens[] = array('text', substr($precedingText, 0, -strlen($precedingChar)));
+            } elseif (!$isSeparator &amp;&amp; strlen($precedingText) &gt; 0) {
+                $tokens[] = array('text', $precedingText);
+            }
+
+            $regexp = $route-&gt;getRequirement($varName);
+            if (null === $regexp) {
+                $followingPattern = (string) substr($pattern, $pos);
+                
+                $nextSeparator = self::findNextSeparator($followingPattern, $useUtf8);
+                $regexp = sprintf(
+                    '[^%s%s]+',
+                    preg_quote($defaultSeparator, self::REGEX_DELIMITER),
+                    $defaultSeparator !== $nextSeparator &amp;&amp; '' !== $nextSeparator ? preg_quote($nextSeparator, self::REGEX_DELIMITER) : ''
+                );
+                if (('' !== $nextSeparator &amp;&amp; !preg_match('#^\{\w+\}#', $followingPattern)) || '' === $followingPattern) {
+                    $regexp .= '+';
+                }
+            }
+
+            $tokens[] = array('variable', $isSeparator ? $precedingChar : '', $regexp, $varName);
+            $variables[] = $varName;
+        }
+
+        if ($pos &lt; strlen($pattern)) {
+            $tokens[] = array('text', substr($pattern, $pos));
+        }
+
+        // find the first optional token
+        $firstOptional = PHP_INT_MAX;
+        if (!$isHost) {
+            for ($i = count($tokens) - 1; $i &gt;= 0; --$i) {
+                $token = $tokens[$i];
+                if ('variable' === $token[0] &amp;&amp; $route-&gt;hasDefault($token[3])) {
+                    $firstOptional = $i;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // compute the matching regexp
+        $regexp = '';
+        for ($i = 0, $nbToken = count($tokens); $i &lt; $nbToken; ++$i) {
+            $regexp .= self::computeRegexp($tokens, $i, $firstOptional);
+        }
+        $regexp = self::REGEX_DELIMITER.'^'.$regexp.'$'.self::REGEX_DELIMITER.'s'.($isHost ? 'i' : '');
+
+        return array(
+            'staticPrefix' =&gt; 'text' === $tokens[0][0] ? $tokens[0][1] : '',
+            'regex' =&gt; $regexp,
+            'tokens' =&gt; array_reverse($tokens),
+            'variables' =&gt; $variables,
+        );
+    }
+</code></pre>
+<p>下面本文将以 <code>prefix/{foo}/{baz}.{ext}/tail</code> 为例，来详细讲一下路由 <code>uri</code> 的正则编译过程。</p>
+<h3 id="preg-match-all-全匹配"><code>preg_match_all</code> 全匹配</h3>
+<p>由于 <code>preg_match_all</code> 使用了 <code>PREG_SET_ORDER</code>,因此结果数组 <code>matches</code> 中每一个元素都是一次匹配的结果，本例中：</p>
+<pre><code class="language-php">$matches = array (
+	0 = array (
+		0 = array (
+			0 = "{foo}",
+			1 = 8
+		)
+	)
+    1 = array (
+		0 = array (
+			0 = "{baz}",
+			1 = 14
+		)
+	)
+	2 = array (
+		0 = array (
+			0 = "{ext}",
+			1 = 20
+		)
+	)
+)
+</code></pre>
+<p>接下来，程序会用循环来分别处理各个匹配的结果。</p>
+<h3 id="变量">变量</h3>
+<p>每个匹配结果都会先计算变量: <code>varName</code>、<code>precedingText</code>、<code>precedingChar</code>、<code>isSeparator</code></p>
+<ul>
+<li><code>varName</code> 匹配结果会将路由参数提取出来，本例中：<code>foo</code>、<code>baz</code>、<code>ext</code></li>
+<li><code>precedingText</code> 是两个路由参数之间的字符串，本例中：<code>prefix/</code>、<code>/</code>、<code>.</code></li>
+<li><code>precedingChar</code> 是每个路由参数之前的字符，也就是 <code>precedingText</code> 的最后一个字符,本例中：<code>/</code>、<code>/</code>、<code>.</code></li>
+<li><code>isSeparator</code> 判断 <code>precedingChar</code> 是否是 <code>url</code> 的间隔符，本例中：<code>true</code>、<code>true</code>、<code>true</code></li>
+</ul>
+<h3 id="tokens-text">tokens-text</h3>
+<p>将 <code>precedingText</code> 记录进 <code>tokens</code> 数组，key 为 <code>text</code>。 第一次循环，tokens：</p>
+<pre><code class="language-php">tokens = array (
+	0 = text,
+	1 = prefix,
+)
+</code></pre>
+<p>第二次循环与第三次循环由于 <code>precedingText</code> == <code>precedingChar</code>，所以并不会记录。</p>
+<h3 id="构建-regexp">构建 regexp</h3>
+<p>若在路由定义的过程中利用 <code>where</code> 属性或者 <code>pattern</code> 为路由的参数设置正则约束，那么此时就会将约束规则赋给 <code>regexp</code>，否则就会启用构建 <code>regexp</code> 的过程：</p>
+<pre><code class="language-php">$followingPattern = (string) substr($pattern, $pos);
+$nextSeparator = self::findNextSeparator($followingPattern, $useUtf8);
+
+$regexp = sprintf(
+            '[^%s%s]+',
+            preg_quote($defaultSeparator, self::REGEX_DELIMITER),
+            $defaultSeparator !== $nextSeparator &amp;&amp; '' !== $nextSeparator ? preg_quote($nextSeparator, self::REGEX_DELIMITER) : ''
+);
+
+if (('' !== $nextSeparator &amp;&amp; !preg_match('#^\{\w+\}#', $followingPattern)) || '' === $followingPattern) {    
+    $regexp .= '+';
+}
+</code></pre>
+<p>构建 <code>regexp</code> 有两个部分，</p>
+<ul>
+<li>寻找 <code>nextSeparator</code> ：</li>
+</ul>
+<pre><code class="language-php">private static function findNextSeparator($pattern, $useUtf8)
+{
+    if ('' == $pattern) {
+        return '';
+    }
+       
+    if ('' === $pattern = preg_replace('#\{\w+\}#', '', $pattern)) {
+        return '';
+    }
+
+    return false !== strpos(static::SEPARATORS, $pattern[0]) ? $pattern[0] : '';
+}
+</code></pre>
+<p>这个函数的意义在于为路由的 <code>uri</code> 的路由参数寻找非默认间隔符，例如，路由可以这样设置 <code>uri</code> ：</p>
+<pre><code class="language-php">/{baz}.{ext}/
+</code></pre>
+<p>默认的间隔符就是 <code>/</code>，如果不设置非默认间隔符的时候，那么 <code>regexp = [^/]</code>，<code>mobile.html</code> 这样的请求就会被 <code>{baz}</code> 这个参数全部匹配到，<code>{ext}</code> 就没有任何参数来对应。设置了非默认间隔符后 <code>regexp = [^/.]</code>, <code>baz</code> 就会匹配 <code>mobile</code>，<code>ext</code> 就会匹配 <code>html</code>。</p>
+<ul>
+<li>侵占型正则表达式</li>
+</ul>
+<pre><code class="language-php">if (('' !== $nextSeparator &amp;&amp; !preg_match('#^\{\w+\}#', $followingPattern)) || '' === $followingPattern) {
+    $regexp .= '+';
+}
+</code></pre>
+<p>为了减少贪婪型正则表达式的回溯导致的性能浪费，当后续字符串已经结束或者不存在 <code>/{x}{y}</code> 这样情况的时候，程序将贪婪型正则表达式改为侵占型正则表达式。有关正则表达式的模式请查看：<a href="http://blog.csdn.net/u014762221/article/details/68953155">正则表达式之 贪婪与非贪婪模式详解（概述）</a></p>
+<h3 id="tokens-variable">tokens-variable</h3>
+<p>获取路由参数和正则表达式之后，就要更新 <code>tokens</code>,分别将 <code>isSeparator</code>, <code>regexp</code>, <code>varName</code> 更新到结果数组中。</p>
+<p>以 <code>prefix/{foo}/{baz}.{ext}/tail</code> 为例，<code>$tokens</code> 在各个循环时值为：</p>
+<pre><code class="language-php">$tokens = array (
+	0 = array (
+		0 = ‘text’,
+		1 = '/prefix'
+	)
+	1 = array (
+		0 = ‘variable’,
+		1 = '/',
+		0 = ‘[^/]++’,
+		1 = 'foo'
+	)//第一次循环结束
+	2 = array (
+		0 = ‘variable’,
+		1 = '/',
+		0 = ‘[^/\.]++’,
+		1 = 'baz'
+	)//第二次循环结束
+	3 = array (
+		0 = ‘variable’,
+		1 = '.',
+		0 = ‘[^/]++’,
+		1 = 'ext'
+	)//循环结束
+	4 = array (
+		0 = ‘text’,
+		1 = '/tail'
+	)//	循环外
+)
+
+</code></pre>
+<h3 id="默认路由参数">默认路由参数</h3>
+<p>接下来就要计算首个默认路由参数在整个路由 <code>url</code> 的位置，以便在生成正则表达式中使用：</p>
+<pre><code class="language-php">$firstOptional = PHP_INT_MAX;
+if (!$isHost) {
+    for ($i = count($tokens) - 1; $i &gt;= 0; --$i) {
+        $token = $tokens[$i];
+        if ('variable' === $token[0] &amp;&amp; $route-&gt;hasDefault($token[3])) {
+            $firstOptional = $i;
+        } else {
+            break;
+        }
+    }
+}
+</code></pre>
+<h3 id="计算正则表达式">计算正则表达式</h3>
+<p>所有的 <code>tokens</code> 数组都构建完毕，接下来就需要利用这个数组来构建正则表达式了。</p>
+<pre><code class="language-php">$regexp = '';
+for ($i = 0, $nbToken = count($tokens); $i &lt; $nbToken; ++$i) {
+    $regexp .= self::computeRegexp($tokens, $i, $firstOptional);
+}
+$regexp = self::REGEX_DELIMITER.'^'.$regexp.'$'.self::REGEX_DELIMITER.'s'.($isHost ? 'i' : '');
+</code></pre>
+<pre><code class="language-php">    private static function computeRegexp(array $tokens, $index, $firstOptional)
+    {
+        $token = $tokens[$index];
+        if ('text' === $token[0]) {
+            // Text tokens
+            return preg_quote($token[1], self::REGEX_DELIMITER);
+        } else {
+            // Variable tokens
+            if (0 === $index &amp;&amp; 0 === $firstOptional) {
+                // When the only token is an optional variable token, the separator is required
+                return sprintf('%s(?P&lt;%s&gt;%s)?', preg_quote($token[1], self::REGEX_DELIMITER), $token[3], $token[2]);
+            } else {
+                $regexp = sprintf('%s(?P&lt;%s&gt;%s)', preg_quote($token[1], self::REGEX_DELIMITER), $token[3], $token[2]);
+                if ($index &gt;= $firstOptional) {
+                    $regexp = "(?:$regexp";
+                    $nbTokens = count($tokens);
+                    if ($nbTokens - 1 == $index) {
+                        // Close the optional subpatterns
+                        $regexp .= str_repeat(')?', $nbTokens - $firstOptional - (0 === $firstOptional ? 1 : 0));
+                    }
+                }
+
+                return $regexp;
+            }
+        }
+    }
+</code></pre>
+<p><code>computeRegexp</code> 函数的大致流程为：</p>
+<ul>
+<li>若 <code>tokens</code> 当前元素是 <code>text</code> ，不是路由参数的时候，直接赋值原字符串即可</li>
+<li>若 <code>url</code> 中路由参数都是可选参数，且没有任何 <code>text</code>，那么第一个可选参数使用捕获分组</li>
+<li>若当前路由参数是可选参数的时候，需要在正则表达式中不断叠加非捕获分组 <code>(?</code>，再最后设置为可选分组 <code>)?</code>，例如 <code>(?:/(?P&lt;baz&gt;[^/]++)(?:/(?P&lt;ext&gt;[^/]++))?)?</code></li>
+<li>若当前路由参数不是可选参数的时候，正则表达式就是固定模式，例如： <code>/(?P&lt;foo&gt;[^/]++)</code></li>
+</ul>
+<p>利用 <code>computeRegexp</code> 函数拼接正则表达式后，还要在最两侧分隔符、开始符 <code>^</code>,结束符 <code>$</code>、单行修正符 <code>s</code>，如果是主域的正则表达式，还要添加不区分大小写的修正符 <code>i</code>。</p>
+<p>以 <code>prefix/{foo}/{baz}.{ext}/tail</code> 为例,每次生成的正则表达式如下：</p>
+<pre><code class="language-php">/prefix
+/prefix/(?P&lt;foo&gt;[^/]++)
+/prefix/(?P&lt;foo&gt;[^/]++)/(?P&lt;baz&gt;[^/\.]++)
+/prefix/(?P&lt;foo&gt;[^/]++)/(?P&lt;baz&gt;[^/\.]++)\.(?P&lt;ext&gt;[^/]++)
+/prefix/(?P&lt;foo&gt;[^/]++)/(?P&lt;baz&gt;[^/\.]++)\.(?P&lt;ext&gt;[^/]++)/tail
+#^/prefix/(?P&lt;foo&gt;[^/]++)/(?P&lt;baz&gt;[^/\.]++)\.(?P&lt;ext&gt;[^/]++)/tail$#s
+</code></pre>
+<p>以 <code>{foo?}/{baz?}.{ext?}</code> 为例,每次生成的正则表达式如下：</p>
+<pre><code class="language-php">/(?P&lt;foo&gt;[^/]++)?
+/(?P&lt;foo&gt;[^/]++)?(?:/(?P&lt;baz&gt;[^/\.]++)
+/(?P&lt;foo&gt;[^/]++)?(?:/(?P&lt;baz&gt;[^/\.]++)(?:\.(?P&lt;ext&gt;[^/]++))?)?
+#^/(?P&lt;foo&gt;[^/]++)?(?:/(?P&lt;baz&gt;[^/\.]++)(?:\.(?P&lt;ext&gt;[^/]++))?)?$#s
+
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/175/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nodejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/175/index.html">Node.js面试题，侧重后端应用与对Node核心的理解</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/97.html">jimuyouyou</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nodejs">nodejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">8页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1483个">1483</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/69/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/android_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/69/index.html">Android 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1046个">1046</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/132/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/vuejs_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/132/index.html">vue-router文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/71.html">srzyhead</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="vuejs">vuejs</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">30页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年8月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/168/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/168/index.html">AiLearning: 机器学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 14197个">14197</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/103/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/103/index.html">http2讲解中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/63.html">ye11ow</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 254个">254</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/4/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/redux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/4/index.html">Redux 中文文档</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/4.html">camsong</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="redux">redux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">69页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2786个">2786</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/107/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7730">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="PHP Composer 自动加载" disabled data-book-page-rel-url="" data-book-page-id="7731">PHP Composer 自动加载</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——自动加载原理.html" title="PHP Composer——自动加载原理" data-book-page-rel-url="PHP%20Composer——自动加载原理.html" data-book-page-id="7732">PHP Composer——自动加载原理</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer——%20初始化源码分析.html" title="PHP Composer—— 初始化源码分析" data-book-page-rel-url="PHP%20Composer——%20初始化源码分析.html" data-book-page-id="7733">PHP Composer—— 初始化源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/PHP%20Composer-——-注册与运行源码分析.html" title="PHP Composer-——-注册与运行源码分析" data-book-page-rel-url="PHP%20Composer-——-注册与运行源码分析.html" data-book-page-id="7734">PHP Composer-——-注册与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Facade 门面" disabled data-book-page-rel-url="" data-book-page-id="7735">Laravel Facade 门面</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Facade——Facade%20门面源码分析.html" title="Laravel Facade——Facade 门面源码分析" data-book-page-rel-url="Laravel%20Facade——Facade%20门面源码分析.html" data-book-page-id="7736">Laravel Facade——Facade 门面源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Ioc 容器" disabled data-book-page-rel-url="" data-book-page-id="7737">Laravel Ioc 容器</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器.html" title="Laravel Container——IoC 服务容器" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器.html" data-book-page-id="7738">Laravel Container——IoC 服务容器</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器绑定)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器绑定%29.html" data-book-page-id="7739">Laravel Container——IoC 服务容器源码解析(服务器绑定)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" title="Laravel Container——IoC 服务容器源码解析(服务器解析)" data-book-page-rel-url="Laravel%20Container——IoC%20服务容器源码解析%28服务器解析%29.html" data-book-page-id="7740">Laravel Container——IoC 服务容器源码解析(服务器解析)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Container——服务容器的细节特性.html" title="Laravel Container——服务容器的细节特性" data-book-page-rel-url="Laravel%20Container——服务容器的细节特性.html" data-book-page-id="7741">Laravel Container——服务容器的细节特性</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Route 路由" disabled data-book-page-rel-url="" data-book-page-id="7742">Laravel Route 路由</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由.html" title="Laravel HTTP——路由" data-book-page-rel-url="Laravel%20HTTP——路由.html" data-book-page-id="7743">Laravel HTTP——路由</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由加载源码分析.html" title="Laravel HTTP——路由加载源码分析" data-book-page-rel-url="Laravel%20HTTP——路由加载源码分析.html" data-book-page-id="7744">Laravel HTTP——路由加载源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——Pipeline中间件处理源码分析.html" title="Laravel HTTP——Pipeline中间件处理源码分析" data-book-page-rel-url="Laravel%20HTTP——Pipeline中间件处理源码分析.html" data-book-page-id="7745">Laravel HTTP——Pipeline中间件处理源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的正则编译.html" title="Laravel HTTP——路由的正则编译" data-book-page-rel-url="Laravel%20HTTP——路由的正则编译.html" data-book-page-id="7746">Laravel HTTP——路由的正则编译</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由的匹配与参数绑定.html" title="Laravel HTTP——路由的匹配与参数绑定" data-book-page-rel-url="Laravel%20HTTP——路由的匹配与参数绑定.html" data-book-page-id="7747">Laravel HTTP——路由的匹配与参数绑定</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——路由中间件源码分析.html" title="Laravel HTTP——路由中间件源码分析" data-book-page-rel-url="Laravel%20HTTP——路由中间件源码分析.html" data-book-page-id="7748">Laravel HTTP——路由中间件源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" title="Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析" data-book-page-rel-url="Laravel%20HTTP——SubstituteBindings%20参数绑定中间件的使用与源码解析.html" data-book-page-id="7749">Laravel HTTP——SubstituteBindings 参数绑定中间件的使用与源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——控制器方法的参数构建与运行.html" title="Laravel HTTP——控制器方法的参数构建与运行" data-book-page-rel-url="Laravel%20HTTP——控制器方法的参数构建与运行.html" data-book-page-id="7750">Laravel HTTP——控制器方法的参数构建与运行</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" title="Laravel HTTP—— RESTFul 风格路由的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——%20RESTFul%20风格路由的使用与源码分析.html" data-book-page-id="7751">Laravel HTTP—— RESTFul 风格路由的使用与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20HTTP——重定向的使用与源码分析.html" title="Laravel HTTP——重定向的使用与源码分析" data-book-page-rel-url="Laravel%20HTTP——重定向的使用与源码分析.html" data-book-page-id="7752">Laravel HTTP——重定向的使用与源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel ENV 环境变量" disabled data-book-page-rel-url="" data-book-page-id="7753">Laravel ENV 环境变量</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20ENV——%20环境变量的加载与源码解析.html" title="Laravel ENV—— 环境变量的加载与源码解析" data-book-page-rel-url="Laravel%20ENV——%20环境变量的加载与源码解析.html" data-book-page-id="7754">Laravel ENV—— 环境变量的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Config 配置文件" disabled data-book-page-rel-url="" data-book-page-id="7755">Laravel Config 配置文件</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Config——%20配置文件的加载与源码解析.html" title="Laravel Config—— 配置文件的加载与源码解析" data-book-page-rel-url="Laravel%20Config——%20配置文件的加载与源码解析.html" data-book-page-id="7756">Laravel Config—— 配置文件的加载与源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Exceptions 异常处理" disabled data-book-page-rel-url="" data-book-page-id="7757">Laravel Exceptions 异常处理</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Exceptions——异常与错误处理.html" title="Laravel Exceptions——异常与错误处理.html" data-book-page-rel-url="Laravel%20Exceptions——异常与错误处理.html" data-book-page-id="7758">Laravel Exceptions——异常与错误处理.html</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Providers 服务提供者" disabled data-book-page-rel-url="" data-book-page-id="7759">Laravel Providers 服务提供者</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Providers——服务提供者的注册与启动源码解析.html" title="Laravel Providers——服务提供者的注册与启动源码解析" data-book-page-rel-url="Laravel%20Providers——服务提供者的注册与启动源码解析.html" data-book-page-id="7760">Laravel Providers——服务提供者的注册与启动源码解析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Database 数据库" disabled data-book-page-rel-url="" data-book-page-id="7761">Laravel Database 数据库</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库服务的启动与连接.html" title="Laravel Database——数据库服务的启动与连接" data-book-page-rel-url="Laravel%20Database——数据库服务的启动与连接.html" data-book-page-id="7762">Laravel Database——数据库服务的启动与连接</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——数据库的%20CRUD%20操作.html" title="Laravel Database——数据库的 CRUD 操作" data-book-page-rel-url="Laravel%20Database——数据库的%20CRUD%20操作.html" data-book-page-id="7763">Laravel Database——数据库的 CRUD 操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(上)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28上%29.html" data-book-page-id="7764">Laravel Database——查询构造器与语法编译器源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(中)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28中%29.html" data-book-page-id="7765">Laravel Database——查询构造器与语法编译器源码分析(中)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" title="Laravel Database——查询构造器与语法编译器源码分析(下)" data-book-page-rel-url="Laravel%20Database——查询构造器与语法编译器源码分析%28下%29.html" data-book-page-id="7766">Laravel Database——查询构造器与语法编译器源码分析(下)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——分页原理与源码分析.html" title="Laravel Database——分页原理与源码分析" data-book-page-rel-url="Laravel%20Database——分页原理与源码分析.html" data-book-page-id="7767">Laravel Database——分页原理与源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" title="Laravel Database——Eloquent Model 源码分析(上)" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析%28上%29.html" data-book-page-id="7768">Laravel Database——Eloquent Model 源码分析(上)</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" title="Laravel Database——Eloquent Model 源码分析（下）" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20源码分析（下）.html" data-book-page-id="7769">Laravel Database——Eloquent Model 源码分析（下）</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20关联源码分析.html" title="Laravel Database——Eloquent Model 关联源码分析" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20关联源码分析.html" data-book-page-id="7770">Laravel Database——Eloquent Model 关联源码分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" title="Laravel Database——Eloquent Model 模型关系加载与查询" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20模型关系加载与查询.html" data-book-page-id="7771">Laravel Database——Eloquent Model 模型关系加载与查询</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Database——Eloquent%20Model%20更新关联模型.html" title="Laravel Database——Eloquent Model 更新关联模型" data-book-page-rel-url="Laravel%20Database——Eloquent%20Model%20更新关联模型.html" data-book-page-id="7772">Laravel Database——Eloquent Model 更新关联模型</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Session" disabled data-book-page-rel-url="" data-book-page-id="7773">Laravel Session</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Session——session%20的启动与运行源码分析.html" title="Laravel Session——session 的启动与运行源码分析" data-book-page-rel-url="Laravel%20Session——session%20的启动与运行源码分析.html" data-book-page-id="7774">Laravel Session——session 的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Event 事件系统" disabled data-book-page-rel-url="" data-book-page-id="7775">Laravel Event 事件系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Event——事件系统的启动与运行源码分析.html" title="Laravel Event——事件系统的启动与运行源码分析" data-book-page-rel-url="Laravel%20Event——事件系统的启动与运行源码分析.html" data-book-page-id="7776">Laravel Event——事件系统的启动与运行源码分析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Queue 队列" disabled data-book-page-rel-url="" data-book-page-id="7777">Laravel Queue 队列</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务与分发源码剖析.html" title="Laravel Queue——消息队列任务与分发源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务与分发源码剖析.html" data-book-page-id="7778">Laravel Queue——消息队列任务与分发源码剖析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Queue——消息队列任务处理器源码剖析.html" title="Laravel Queue——消息队列任务处理器源码剖析" data-book-page-rel-url="Laravel%20Queue——消息队列任务处理器源码剖析.html" data-book-page-id="7779">Laravel Queue——消息队列任务处理器源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel 广播系统" disabled data-book-page-rel-url="" data-book-page-id="7780">Laravel 广播系统</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Broadcast——广播系统源码剖析.html" title="Laravel Broadcast——广播系统源码剖析" data-book-page-rel-url="Laravel%20Broadcast——广播系统源码剖析.html" data-book-page-id="7781">Laravel Broadcast——广播系统源码剖析</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Laravel Passport" disabled data-book-page-rel-url="" data-book-page-id="7782">Laravel Passport</a>
+<ul>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" title="Laravel Passport——OAuth2 API 认证系统源码解析" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析.html" data-book-page-id="7783">Laravel Passport——OAuth2 API 认证系统源码解析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/107/Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" title="Laravel Passport——OAuth2 API 认证系统源码解析(下)" data-book-page-rel-url="Laravel%20Passport——OAuth2%20API%20认证系统源码解析（下）.html" data-book-page-id="7784">Laravel Passport——OAuth2 API 认证系统源码解析(下)</a>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =107;var bookPageId =7746;var bookPageRelUrl ='Laravel%20HTTP——路由的正则编译.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

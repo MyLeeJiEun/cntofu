@@ -1,0 +1,480 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>使用Visitor模式计算结果-ANTLR 4简明教程</title>
+<meta content='使用Visitor模式计算结果,ANTLR 4简明教程' name='keywords'>
+<meta content='使用Visitor模式计算结果,ANTLR 4简明教程' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/115/arithmetic-expression.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">算术表达式语言</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/115/calculator-listener.html">
+<span class="">使用Listener模..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/115/index.html">ANTLR 4简明教程</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/antlr4-short-course" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="使用visitor模式计算结果">使用Visitor模式计算结果</h1>
+<p>为了给前面的算术表达式语法分析器计算出结果，我们还需要做些其它的事情。</p>
+<p>ANTLR v4鼓励我们保持语法的整洁，使用语法分析树Visitor和其它遍历器来实现语言应用。不过在接触这些之前，我们需要对语法做些修改。</p>
+<p>首先，我们需要用标签标明规则的选项，标签可以是和规则名没有冲突的任意标志符。如果选项上没有标签，ANTLR只会为每个规则生成一个visit方法。</p>
+<p>在本例中，我们希望为每个选项生成一个不同的visit方法，以便每种输入短语都能得到不同的事件。在新的语法中，标签出现在选项的右边缘，且以“#”符号开头：</p>
+<pre><code>stat
+    : expr                   # printExpr
+    | ID '=' expr            # assign
+    ;
+
+expr
+    : expr op=(MUL|DIV) expr # MulDiv
+    | expr op=(ADD|SUB) expr # AddSub
+    | INT                    # int
+    | ID                     # id
+    | '(' expr ')'           # parens
+    ;
+</code></pre>
+<p>接下来，让我们为运算符字面量定义一些记号名字，以便以后可以在visit方法中引用作为Java常量的它们：</p>
+<pre><code>MUL : '*' ;
+
+DIV : '/' ;
+
+ADD : '+' ;
+
+SUB : '-' ;
+</code></pre>
+<p>现在，我们有了一个增强型的语法。接下来要做的事情是实现一个EvalVisitor类，它通过遍历表达式语法分析树计算和返回值。</p>
+<p>执行下面的命令，让ANTLR生成Visitor接口和它的默认实现，其中-no-listener参数是告诉ANTLR不再生成Listener相关的代码：</p>
+<pre><code>antlr -no-listener -visitor Calc.g
+</code></pre>
+<p>所有被标签标明的选项在生成的Visitor接口中都定义了一个visit方法：</p>
+<pre><code>public interface CalcVisitor&lt;T&gt; extends ParseTreeVisitor&lt;T&gt; {
+    T visitProg(CalcParser.ProgContext ctx);
+    T visitPrintExpr(CalcParser.PrintExprContext ctx);
+    T visitAssign(CalcParser.AssignContext ctx);
+    ...
+}
+</code></pre>
+<p>接口定义使用的是Java泛型，visit方法的返回值为参数化类型，这允许我们根据表达式计算返回值的类型去设定实现的泛型参数。因为表达式的计算结果是整型，所以我们的EvalVisitor应该继承<code>CalcBaseVisitor&lt;Integer&gt;</code>类。为计算语法分析树的每个节点，我们需要覆写与语句和表达式选项相关的方法。这里是全部的代码：</p>
+<pre><code>public class EvalVisitor extends CalcBaseVisitor&lt;Integer&gt; {
+    /** "memory" for our calculator; variable/value pairs go here */
+    Map&lt;String, Integer&gt; memory = new HashMap&lt;String, Integer&gt;();
+
+    /** ID '=' expr */
+    @Override
+    public Integer visitAssign(CalcParser.AssignContext ctx) {
+        String id = ctx.ID().getText();  // id is left-hand side of '='
+        int value = visit(ctx.expr());   // compute value of expression on right
+        memory.put(id, value);           // store it in our memory
+        return value;
+    }
+
+    /** expr */
+    @Override
+    public Integer visitPrintExpr(CalcParser.PrintExprContext ctx) {
+        Integer value = visit(ctx.expr()); // evaluate the expr child
+        System.out.println(value);         // print the result
+        return 0;                          // return dummy value
+    }
+
+    /** INT */
+    @Override
+    public Integer visitInt(CalcParser.IntContext ctx) {
+        return Integer.valueOf(ctx.INT().getText());
+    }
+
+    /** ID */
+    @Override
+    public Integer visitId(CalcParser.IdContext ctx) {
+        String id = ctx.ID().getText();
+        if ( memory.containsKey(id) ) return memory.get(id);
+        return 0;
+    }
+
+    /** expr op=('*'|'/') expr */
+    @Override
+    public Integer visitMulDiv(CalcParser.MulDivContext ctx) {
+        int left = visit(ctx.expr(0));  // get value of left subexpression
+        int right = visit(ctx.expr(1)); // get value of right subexpression
+        if ( ctx.op.getType() == CalcParser.MUL ) return left * right;
+        return left / right; // must be DIV
+    }
+
+    /** expr op=('+'|'-') expr */
+    @Override
+    public Integer visitAddSub(CalcParser.AddSubContext ctx) {
+        int left = visit(ctx.expr(0));  // get value of left subexpression
+        int right = visit(ctx.expr(1)); // get value of right subexpression
+        if ( ctx.op.getType() == CalcParser.ADD ) return left + right;
+        return left - right; // must be SUB
+    }
+
+    /** '(' expr ')' */
+    @Override
+    public Integer visitParens(CalcParser.ParensContext ctx) {
+        return visit(ctx.expr()); // return child expr's value
+    }
+}
+</code></pre>
+<p>以前开发和测试语法都是使用的TestRig，这次我们试着编写计算器的主程序来启动代码：</p>
+<pre><code>public class Calc {
+
+    public static void main(String[] args) throws Exception {
+        InputStream is = args.length &gt; 0 ? new FileInputStream(args[0]) : System.in;
+
+        ANTLRInputStream input = new ANTLRInputStream(is);
+        CalcLexer lexer = new CalcLexer(input);
+        CommonTokenStream tokens = new CommonTokenStream(lexer);
+        CalcParser parser = new CalcParser(tokens);
+        ParseTree tree = parser.prog();
+
+        EvalVisitor eval = new EvalVisitor();
+        // 开始遍历语法分析树
+        eval.visit(tree);
+
+        System.out.println(tree.toStringTree(parser));
+    }
+}
+</code></pre>
+<p>创建一个运行主程序的脚本：</p>
+<pre><code>#!/bin/sh
+java -cp .:./antlr-4.5.1-complete.jar:$CLASSPATH $*
+</code></pre>
+<p>把它保存为run.sh后，执行以下命令：</p>
+<pre><code>compile *.java
+run Calc calc.txt
+</code></pre>
+<p>然后你就会看到文本形式的语法分析树以及计算结果：</p>
+<pre><code>193
+17
+9
+(prog (stat (expr 193)) (stat a = (expr 5)) (stat b = (expr 6))
+ (stat (expr (expr a) + (expr (expr b) * (expr 2)))) (stat (expr
+ (expr ( (expr (expr 1) + (expr 2)) )) * (expr 3))))
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/155/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/155/index.html">CHNote，Apple设备、Git、Shell等使用教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/87.html">wanggw911</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">21页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/105/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/105/index.html">程序员的自我修养</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/64.html">leohxj</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">136页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 130个">130</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/184/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/code_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/184/index.html">对开发人员有用的定律、理论、原则和模式</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/103.html">nusr</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="code">code</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">80页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 2325个">2325</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/53/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/53/index.html">前端开发者指南 2018</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/30.html">稀土</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">103页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 282个">282</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/27/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/tensorflow_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/27/index.html">Sklearn 与 TensorFlow 机器学习实用指南</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/18.html">ApacheCN</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="tensorflow">tensorflow</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">20页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 916个">916</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/51/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/51/index.html">前端开发笔记本</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/28.html">li-xinyang</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="css3">css3</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">67页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月2日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 1436个">1436</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/115/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/README.html" title="自述" data-book-page-rel-url="README.html" data-book-page-id="8144">自述</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/introduction.html" title="简介" data-book-page-rel-url="introduction.html" data-book-page-id="8145">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/installing-antlr.html" title="安装ANTLR" data-book-page-rel-url="installing-antlr.html" data-book-page-id="8146">安装ANTLR</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/getting-started.html" title="入门" data-book-page-rel-url="getting-started.html" data-book-page-id="8147">入门</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/basic-concept.html" title="基本概念" data-book-page-rel-url="basic-concept.html" data-book-page-id="8148">基本概念</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/embedding-actions.html" title="在语法中嵌入任意的操作" data-book-page-rel-url="embedding-actions.html" data-book-page-id="8149">在语法中嵌入任意的操作</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/semantic-predicate.html" title="使用语义谓词改变语法分析" data-book-page-rel-url="semantic-predicate.html" data-book-page-id="8150">使用语义谓词改变语法分析</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/multiple-formats.html" title="处理同一文件中的不同格式" data-book-page-rel-url="multiple-formats.html" data-book-page-id="8151">处理同一文件中的不同格式</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/rewriting-input-stream.html" title="重写输入流" data-book-page-rel-url="rewriting-input-stream.html" data-book-page-id="8152">重写输入流</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/different-channels.html" title="发送记号到不同的通道" data-book-page-rel-url="different-channels.html" data-book-page-id="8153">发送记号到不同的通道</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/arithmetic-expression.html" title="算术表达式语言" data-book-page-rel-url="arithmetic-expression.html" data-book-page-id="8154">算术表达式语言</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/calculator-visitor.html" title="使用Visitor模式计算结果" data-book-page-rel-url="calculator-visitor.html" data-book-page-id="8155">使用Visitor模式计算结果</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/calculator-listener.html" title="使用Listener模式计算结果" data-book-page-rel-url="calculator-listener.html" data-book-page-id="8156">使用Listener模式计算结果</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/grammar-design.html" title="语法设计" data-book-page-rel-url="grammar-design.html" data-book-page-id="8157">语法设计</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/common-language-patterns.html" title="常用语言模式" data-book-page-rel-url="common-language-patterns.html" data-book-page-id="8158">常用语言模式</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/precedence-left-recursion-associativity.html" title="优先级，左递归以及相关性" data-book-page-rel-url="precedence-left-recursion-associativity.html" data-book-page-id="8159">优先级，左递归以及相关性</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/common-lexical-structures.html" title="常用词法结构" data-book-page-rel-url="common-lexical-structures.html" data-book-page-id="8160">常用词法结构</a>
+</li>
+<li>
+<a class="pjax" href="../../book/115/line-between-lexer-and-parser.html" title="词法分析器和语法分析器的界线" data-book-page-rel-url="line-between-lexer-and-parser.html" data-book-page-id="8161">词法分析器和语法分析器的界线</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =115;var bookPageId =8155;var bookPageRelUrl ='calculator-visitor.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

@@ -1,0 +1,848 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>Clockevents 框架简介-Linux 内核揭密</title>
+<meta content='Clockevents 框架简介,Linux 内核揭密' name='keywords'>
+<meta content='Clockevents 框架简介,Linux 内核揭密' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../../static/components/css/base.css">
+<link rel="stylesheet" href="../../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../../book/114/Timers/timers-4.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">定时器介绍</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../../book/114/Timers/timers-6.html">
+<span class="">x86 相关的时钟源</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../../book/114/index.html">Linux 内核揭密</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/linux-insides-zh" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="timers-and-time-management-in-the-linux-kernel-part-5">Timers and time management in the Linux kernel. Part 5.</h1>
+<h2 id="introduction-to-the-clockevents-framework">Introduction to the <code>clockevents</code> framework</h2>
+<p>This is fifth part of the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/index.html">chapter</a> which describes timers and time management related stuff in the Linux kernel. As you might noted from the title of this part, the <code>clockevents</code> framework will be discussed. We already saw one framework in the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-2.html">second</a> part of this chapter. It was <code>clocksource</code> framework. Both of these frameworks represent timekeeping abstractions in the Linux kernel.</p>
+<p>At first let's refresh your memory and try to remember what is it <code>clocksource</code> framework and and what its purpose. The main goal of the <code>clocksource</code> framework is to provide <code>timeline</code>. As described in the <a href="https://github.com/0xAX/linux/blob/master/Documentation/timers/timekeeping.txt">documentation</a>:</p>
+<blockquote>
+<p>For example issuing the command 'date' on a Linux system will eventually read the clock source to determine exactly what time it is.</p>
+</blockquote>
+<p>The Linux kernel supports many different clock sources. You can find some of them in the <a href="https://github.com/torvalds/linux/tree/master/drivers/clocksource">drivers/closksource</a>. For example old good <a href="https://en.wikipedia.org/wiki/Intel_8253">Intel 8253</a> - <a href="https://en.wikipedia.org/wiki/Programmable_interval_timer">programmable interval timer</a> with <code>1193182</code> Hz frequency, yet another one - <a href="http://uefi.org/sites/default/files/resources/ACPI_5.pdf">ACPI PM</a> timer with <code>3579545</code> Hz frequency. Besides the <a href="https://github.com/torvalds/linux/tree/master/drivers/clocksource">drivers/closksource</a> directory, each architecture may provide own architecture-specific clock sources. For example <a href="https://en.wikipedia.org/wiki/X86">x86</a> architecture provides <a href="https://en.wikipedia.org/wiki/High_Precision_Event_Timer">High Precision Event Timer</a>, or for example <a href="https://en.wikipedia.org/wiki/PowerPC">powerpc</a> provides access to the processor timer through <code>timebase</code> register.</p>
+<p>Each clock source provides monotonic atomic counter. As I already wrote, the Linux kernel supports a huge set of different clock source and each clock source has own parameters like <a href="https://en.wikipedia.org/wiki/Frequency">frequency</a>. The main goal of the <code>clocksource</code> framework is to provide <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> to select best available clock source in the system i.e. a clock source with the highest frequency. Additional goal of the <code>clocksource</code> framework is to represent an atomic counter provided by a clock source in human units. In this time, nanoseconds are the favorite choice for the time value units of the given clock source in the Linux kernel.</p>
+<p>The <code>clocksource</code> framework represented by the <code>clocksource</code> structure which is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/clocksource.h">include/linux/clocksource.h</a> header code file which contains <code>name</code> of a clock source, rating of certain clock source in the system (a clock source with the higher frequency has the biggest rating in the system), <code>list</code> of all registered clock source in the system, <code>enable</code> and <code>disable</code> fields to enable and disable a clock source, pointer to the <code>read</code> function which must return an atomic counter of a clock source and etc.</p>
+<p>Additionally the <code>clocksource</code> structure provides two fields: <code>mult</code> and <code>shift</code> which are needed for translation of an atomic counter which is provided by a certain clock source to the human units, i.e. <a href="https://en.wikipedia.org/wiki/Nanosecond">nanoseconds</a>. Translation occurs via following formula:</p>
+<pre><code>ns ~= (clocksource * mult) &gt;&gt; shift
+</code></pre>
+<p>As we already know, besides the <code>clocksource</code> structure, the <code>clocksource</code> framework provides an API for registration of clock source with different frequency scale factor:</p>
+<pre><code class="language-C">static inline int clocksource_register_hz(struct clocksource *cs, u32 hz)
+static inline int clocksource_register_khz(struct clocksource *cs, u32 khz)
+</code></pre>
+<p>A clock source unregistration:</p>
+<pre><code class="language-C">int clocksource_unregister(struct clocksource *cs)
+</code></pre>
+<p>and etc.</p>
+<p>Additionally to the <code>clocksource</code> framework, the Linux kernel provides <code>clockevents</code> framework. As described in the <a href="https://github.com/0xAX/linux/blob/master/Documentation/timers/timekeeping.txt">documentation</a>:</p>
+<blockquote>
+<p>Clock events are the conceptual reverse of clock sources</p>
+</blockquote>
+<p>Main goal of the is to manage clock event devices or in other words - to manage devices that allow to register an event or in other words <a href="https://en.wikipedia.org/wiki/Interrupt">interrupt</a> that is going to happen at a defined point of time in the future.</p>
+<p>Now we know a little about the <code>clockevents</code> framework in the Linux kernel, and now time is to see on it <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a>.</p>
+<h2 id="api-of-clockevents-framework">API of <code>clockevents</code> framework</h2>
+<p>The main structure which described a clock event device is <code>clock_event_device</code> structure. This structure is defined in the <a href="https://github.com/torvalds/linux/blob/master/include/linux/clockchips.h">include/linux/clockchips.h</a> header file and contains a huge set of fields. as well as the <code>clocksource</code> structure it has <code>name</code> fields which contains human readable name of a clock event device, for example <a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">local APIC</a> timer:</p>
+<pre><code class="language-C">static struct clock_event_device lapic_clockevent = {
+    .name                   = "lapic",
+    ...
+    ...
+    ...
+}
+</code></pre>
+<p>Addresses of the <code>event_handler</code>, <code>set_next_event</code>, <code>next_event</code> functions for a certain clock event device which are an <a href="https://en.wikipedia.org/wiki/Interrupt_handler">interrupt handler</a>, setter of next event and local storage for next event respectively. Yet another field of the <code>clock_event_device</code> structure is - <code>features</code> field. Its value maybe on of the following generic features:</p>
+<pre><code class="language-C">#define CLOCK_EVT_FEAT_PERIODIC	0x000001
+#define CLOCK_EVT_FEAT_ONESHOT		0x000002
+</code></pre>
+<p>Where the <code>CLOCK_EVT_FEAT_PERIODIC</code> represents device which may be programmed to generate events periodically. The <code>CLOCK_EVT_FEAT_ONESHOT</code> represents device which may generate an event only once. Besides these two features, there are also architecture-specific features. For example <a href="https://en.wikipedia.org/wiki/X86-64">x86_64</a> supports two additional features:</p>
+<pre><code class="language-C">#define CLOCK_EVT_FEAT_C3STOP		0x000008
+</code></pre>
+<p>The first <code>CLOCK_EVT_FEAT_C3STOP</code> means that a clock event device will be stopped in the <a href="https://en.wikipedia.org/wiki/Advanced_Configuration_and_Power_Interface#Device_states">C3</a> state. Additionally the <code>clock_event_device</code> structure has <code>mult</code> and <code>shift</code> fields as well as <code>clocksource</code> structure. The <code>clocksource</code> structure also contains other fields, but we will consider it later.</p>
+<p>After we considered part of the <code>clock_event_device</code> structure, time is to look at the <code>API</code> of the <code>clockevents</code> framework. To work with a clock event device, first of all we need to initialize <code>clock_event_device</code> structure and register a clock events device. The <code>clockevents</code> framework provides following <code>API</code> for registration of clock event devices:</p>
+<pre><code class="language-C">void clockevents_register_device(struct clock_event_device *dev)
+{
+   ...
+   ...
+   ...
+}
+</code></pre>
+<p>This function defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/clockevents.c">kernel/time/clockevents.c</a> source code file and as we may see, the <code>clockevents_register_device</code> function takes only one parameter:</p>
+<ul>
+<li>address of a <code>clock_event_device</code> structure which represents a clock event device.</li>
+</ul>
+<p>So, to register a clock event device, at first we need to initialize <code>clock_event_device</code> structure with parameters of a certain clock event device. Let's take a look at one random clock event device in the Linux kernel source code. We can find one in the <a href="https://github.com/torvalds/linux/tree/master/drivers/clocksource">drivers/closksource</a> directory or try to take a look at an architecture-specific clock event device. Let's take for example - <a href="http://www.atmel.com/Images/doc6062.pdf">Periodic Interval Timer (PIT) for at91sam926x</a>. You can find its implementation in the <a href="https://github.com/torvalds/linux/tree/master/drivers/clocksource/timer-atmel-pit.c">drivers/closksource</a>.</p>
+<p>First of all let's look at initialization of the <code>clock_event_device</code> structure. This occurs in the <code>at91sam926x_pit_common_init</code> function:</p>
+<pre><code class="language-C">struct pit_data {
+    ...
+    ...
+    struct clock_event_device       clkevt;
+    ...
+    ...
+};
+
+static void __init at91sam926x_pit_common_init(struct pit_data *data)
+{
+    ...
+    ...
+    ...
+    data-&gt;clkevt.name = "pit";
+    data-&gt;clkevt.features = CLOCK_EVT_FEAT_PERIODIC;
+    data-&gt;clkevt.shift = 32;
+    data-&gt;clkevt.mult = div_sc(pit_rate, NSEC_PER_SEC, data-&gt;clkevt.shift);
+    data-&gt;clkevt.rating = 100;
+    data-&gt;clkevt.cpumask = cpumask_of(0);
+
+    data-&gt;clkevt.set_state_shutdown = pit_clkevt_shutdown;
+    data-&gt;clkevt.set_state_periodic = pit_clkevt_set_periodic;
+    data-&gt;clkevt.resume = at91sam926x_pit_resume;
+    data-&gt;clkevt.suspend = at91sam926x_pit_suspend;
+    ...
+}
+</code></pre>
+<p>Here we can see that <code>at91sam926x_pit_common_init</code> takes one parameter - pointer to the <code>pit_data</code> structure which contains <code>clock_event_device</code> structure which will contain clock event related information of the <code>at91sam926x</code> <a href="https://en.wikipedia.org/wiki/Programmable_interval_timer">periodic Interval Timer</a>. At the start we fill <code>name</code> of the timer device and its <code>features</code>. In our case we deal with periodic timer which as we already know may be programmed to generate events periodically.</p>
+<p>The next two fields <code>shift</code> and <code>mult</code> are familiar to us. They will be used to translate counter of our timer to nanoseconds. After this we set rating of the timer to <code>100</code>. This means if there will not be timers with higher rating in the system, this timer will be used for timekeeping. The next field - <code>cpumask</code> indicates for which processors in the system the device will work. In our case, the device will work for the first processor. The <code>cpumask_of</code> macro defined in the <a href="https://github.com/torvalds/linux/tree/master/include/linux/cpumask.h">include/linux/cpumask.h</a> header file and just expands to the call of the:</p>
+<pre><code class="language-C">#define cpumask_of(cpu) (get_cpu_mask(cpu))
+</code></pre>
+<p>Where the <code>get_cpu_mask</code> returns the cpumask containing just a given <code>cpu</code> number. More about <code>cpumasks</code> concept you may read in the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">CPU masks in the Linux kernel</a> part. In the last four lines of code we set callbacks for the clock event device suspend/resume, device shutdown and update of the clock event device state.</p>
+<p>After we finished with the initialization of the <code>at91sam926x</code> periodic timer, we can register it by the call of the following functions:</p>
+<pre><code class="language-C">clockevents_register_device(&amp;data-&gt;clkevt);
+</code></pre>
+<p>Now we can consider implementation of the <code>clockevent_register_device</code> function. As I already wrote above, this function is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/clockevents.c">kernel/time/clockevents.c</a> source code file and starts from the initialization of the initial event device state:</p>
+<pre><code class="language-C">clockevent_set_state(dev, CLOCK_EVT_STATE_DETACHED);
+</code></pre>
+<p>Actually, an event device may be in one of this states:</p>
+<pre><code class="language-C">enum clock_event_state {
+	CLOCK_EVT_STATE_DETACHED,
+	CLOCK_EVT_STATE_SHUTDOWN,
+	CLOCK_EVT_STATE_PERIODIC,
+	CLOCK_EVT_STATE_ONESHOT,
+	CLOCK_EVT_STATE_ONESHOT_STOPPED,
+};
+</code></pre>
+<p>Where:</p>
+<ul>
+<li><code>CLOCK_EVT_STATE_DETACHED</code> - a clock event device is not not used by <code>clockevents</code> framework. Actually it is initial state of all clock event devices;</li>
+<li><code>CLOCK_EVT_STATE_SHUTDOWN</code> - a clock event device is powered-off;</li>
+<li><code>CLOCK_EVT_STATE_PERIODIC</code> - a clock event device may be programmed to generate event periodically;</li>
+<li><code>CLOCK_EVT_STATE_ONESHOT</code> - a clock event device may be programmed to generate event only once;</li>
+<li><code>CLOCK_EVT_STATE_ONESHOT_STOPPED</code> - a clock event device was programmed to generate event only once and now it is temporary stopped.</li>
+</ul>
+<p>The implementation of the <code>clock_event_set_state</code> function is pretty easy:</p>
+<pre><code class="language-C">static inline void clockevent_set_state(struct clock_event_device *dev,
+					enum clock_event_state state)
+{
+	dev-&gt;state_use_accessors = state;
+}
+</code></pre>
+<p>As we can see, it just fills the <code>state_use_accessors</code> field of the given <code>clock_event_device</code> structure with the given value which is in our case is <code>CLOCK_EVT_STATE_DETACHED</code>. Actually all clock event devices has this initial state during registration. The <code>state_use_accessors</code> field of the <code>clock_event_device</code> structure provides <code>current</code> state of the clock event device.</p>
+<p>After we have set initial state of the given <code>clock_event_device</code> structure we check that the <code>cpumask</code> of the given clock event device is not zero:</p>
+<pre><code class="language-C">if (!dev-&gt;cpumask) {
+	WARN_ON(num_possible_cpus() &gt; 1);
+	dev-&gt;cpumask = cpumask_of(smp_processor_id());
+}
+</code></pre>
+<p>Remember that we have set the <code>cpumask</code> of the <code>at91sam926x</code> periodic timer to first processor. If the <code>cpumask</code> field is zero, we check the number of possible processors in the system and print warning message if it is less than on. Additionally we set the <code>cpumask</code> of the given clock event device to the current processor. If you are interested in how the <code>smp_processor_id</code> macro is implemented, you can read more about it in the fourth <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Initialization/linux-initialization-4.html">part</a> of the Linux kernel initialization process chapter.</p>
+<p>After this check we lock the actual code of the clock event device registration by the call following macros:</p>
+<pre><code class="language-C">raw_spin_lock_irqsave(&amp;clockevents_lock, flags);
+...
+...
+...
+raw_spin_unlock_irqrestore(&amp;clockevents_lock, flags);
+</code></pre>
+<p>Additionally the <code>raw_spin_lock_irqsave</code> and the <code>raw_spin_unlock_irqrestore</code> macros disable local interrupts, however interrupts on other processors still may occur. We need to do it to prevent potential <a href="https://en.wikipedia.org/wiki/Deadlock">deadlock</a> if we adding new clock event device to the list of clock event devices and an interrupt occurs from other clock event device.</p>
+<p>We can see following code of clock event device registration between the <code>raw_spin_lock_irqsave</code> and <code>raw_spin_unlock_irqrestore</code> macros:</p>
+<pre><code class="language-C">list_add(&amp;dev-&gt;list, &amp;clockevent_devices);
+tick_check_new_device(dev);
+clockevents_notify_released();
+</code></pre>
+<p>First of all we add the given clock event device to the list of clock event devices which is represented by the <code>clockevent_devices</code>:</p>
+<pre><code class="language-C">static LIST_HEAD(clockevent_devices);
+</code></pre>
+<p>At the next step we call the <code>tick_check_new_device</code> function which is defined in the <a href="https://github.com/torvalds/linux/blob/master/kernel/time/tick-common.c">kernel/time/tick-common.c</a> source code file and checks do the new registered clock event device should be used or not. The <code>tick_check_new_device</code> function checks the given <code>clock_event_device</code> gets the current registered tick device which is represented by the <code>tick_device</code> structure and compares their ratings and features. Actually <code>CLOCK_EVT_STATE_ONESHOT</code> is preferred:</p>
+<pre><code class="language-C">static bool tick_check_preferred(struct clock_event_device *curdev,
+				 struct clock_event_device *newdev)
+{
+	if (!(newdev-&gt;features &amp; CLOCK_EVT_FEAT_ONESHOT)) {
+		if (curdev &amp;&amp; (curdev-&gt;features &amp; CLOCK_EVT_FEAT_ONESHOT))
+			return false;
+		if (tick_oneshot_mode_active())
+			return false;
+	}
+
+	return !curdev ||
+		newdev-&gt;rating &gt; curdev-&gt;rating ||
+	       !cpumask_equal(curdev-&gt;cpumask, newdev-&gt;cpumask);
+}
+</code></pre>
+<p>If the new registered clock event device is more preferred than old tick device, we exchange old and new registered devices and install new device:</p>
+<pre><code class="language-C">clockevents_exchange_device(curdev, newdev);
+tick_setup_device(td, newdev, cpu, cpumask_of(cpu));
+</code></pre>
+<p>The <code>clockevents_exchange_device</code> function releases or in other words deleted the old clock event device from the <code>clockevent_devices</code> list. The next function - <code>tick_setup_device</code> as we may understand from its name, setups new tick device. This function check the mode of the new registered clock event device and call the <code>tick_setup_periodic</code> function or the <code>tick_setup_oneshot</code> depends on the tick device mode:</p>
+<pre><code class="language-C">if (td-&gt;mode == TICKDEV_MODE_PERIODIC)
+	tick_setup_periodic(newdev, 0);
+else
+	tick_setup_oneshot(newdev, handler, next_event);
+</code></pre>
+<p>Both of this functions calls the <code>clockevents_switch_state</code> to change state of the clock event device and the <code>clockevents_program_event</code> function to set next event of clock event device based on delta between the maximum and minimum difference current time and time for the next event. The <code>tick_setup_periodic</code>:</p>
+<pre><code class="language-C">clockevents_switch_state(dev, CLOCK_EVT_STATE_PERIODIC);
+clockevents_program_event(dev, next, false))
+</code></pre>
+<p>and the <code>tick_setup_oneshot_periodic</code>:</p>
+<pre><code class="language-C">clockevents_switch_state(newdev, CLOCK_EVT_STATE_ONESHOT);
+clockevents_program_event(newdev, next_event, true);
+</code></pre>
+<p>The <code>clockevents_switch_state</code> function checks that the clock event device is not in the given state and calls the <code>__clockevents_switch_state</code> function from the same source code file:</p>
+<pre><code class="language-C">if (clockevent_get_state(dev) != state) {
+	if (__clockevents_switch_state(dev, state))
+		return;
+</code></pre>
+<p>The <code>__clockevents_switch_state</code> function just makes a call of the certain callback depends on the given state:</p>
+<pre><code class="language-C">static int __clockevents_switch_state(struct clock_event_device *dev,
+				      enum clock_event_state state)
+{
+	if (dev-&gt;features &amp; CLOCK_EVT_FEAT_DUMMY)
+		return 0;
+
+	switch (state) {
+	case CLOCK_EVT_STATE_DETACHED:
+	case CLOCK_EVT_STATE_SHUTDOWN:
+		if (dev-&gt;set_state_shutdown)
+			return dev-&gt;set_state_shutdown(dev);
+		return 0;
+
+	case CLOCK_EVT_STATE_PERIODIC:
+		if (!(dev-&gt;features &amp; CLOCK_EVT_FEAT_PERIODIC))
+			return -ENOSYS;
+		if (dev-&gt;set_state_periodic)
+			return dev-&gt;set_state_periodic(dev);
+		return 0;
+    ...
+    ...
+    ...
+</code></pre>
+<p>In our case for <code>at91sam926x</code> periodic timer, the state is the <code>CLOCK_EVT_FEAT_PERIODIC</code>:</p>
+<pre><code class="language-C">data-&gt;clkevt.features = CLOCK_EVT_FEAT_PERIODIC;
+data-&gt;clkevt.set_state_periodic = pit_clkevt_set_periodic;
+</code></pre>
+<p>So, for the <code>pit_clkevt_set_periodic</code> callback will be called. If we will read the documentation of the <a href="http://www.atmel.com/Images/doc6062.pdf">Periodic Interval Timer (PIT) for at91sam926x</a>, we will see that there is <code>Periodic Interval Timer Mode Register</code> which allows us to control of periodic interval timer.</p>
+<p>It looks like:</p>
+<pre><code>31                                                   25        24
++---------------------------------------------------------------+
+|                                          |  PITIEN  |  PITEN  |
++---------------------------------------------------------------+
+23                            19                               16
++---------------------------------------------------------------+
+|                             |               PIV               |
++---------------------------------------------------------------+
+15                                                              8
++---------------------------------------------------------------+
+|                            PIV                                |
++---------------------------------------------------------------+
+7                                                               0
++---------------------------------------------------------------+
+|                            PIV                                |
++---------------------------------------------------------------+
+</code></pre>
+<p>Where <code>PIV</code> or <code>Periodic Interval Value</code> - defines the value compared with the primary <code>20-bit</code> counter of the Periodic Interval Timer. The <code>PITEN</code> or <code>Period Interval Timer Enabled</code> if the bit is <code>1</code> and the <code>PITIEN</code> or <code>Periodic Interval Timer Interrupt Enable</code> if the bit is <code>1</code>. So, to set periodic mode, we need to set <code>24</code>, <code>25</code> bits in the <code>Periodic Interval Timer Mode Register</code>. And we are doing it in the <code>pit_clkevt_set_periodic</code> function:</p>
+<pre><code class="language-C">static int pit_clkevt_set_periodic(struct clock_event_device *dev)
+{
+        struct pit_data *data = clkevt_to_pit_data(dev);
+        ...
+        ...
+        ...
+        pit_write(data-&gt;base, AT91_PIT_MR,
+                  (data-&gt;cycle - 1) | AT91_PIT_PITEN | AT91_PIT_PITIEN);
+
+        return 0;
+}
+</code></pre>
+<p>Where the <code>AT91_PT_MR</code>, <code>AT91_PT_PITEN</code> and the <code>AT91_PIT_PITIEN</code> are declared as:</p>
+<pre><code class="language-C">#define AT91_PIT_MR             0x00
+#define AT91_PIT_PITIEN       BIT(25)
+#define AT91_PIT_PITEN        BIT(24)
+</code></pre>
+<p>After the setup of the new clock event device is finished, we can return to the <code>clockevents_register_device</code> function. The last function in the <code>clockevents_register_device</code> function is:</p>
+<pre><code class="language-C">clockevents_notify_released();
+</code></pre>
+<p>This function checks the <code>clockevents_released</code> list which contains released clock event devices (remember that they may occur after the call of the <code>clockevents_exchange_device</code> function). If this list is not empty, we go through clock event devices from the <code>clock_events_released</code> list and delete it from the <code>clockevent_devices</code>:</p>
+<pre><code class="language-C">static void clockevents_notify_released(void)
+{
+	struct clock_event_device *dev;
+
+	while (!list_empty(&amp;clockevents_released)) {
+		dev = list_entry(clockevents_released.next,
+				 struct clock_event_device, list);
+		list_del(&amp;dev-&gt;list);
+		list_add(&amp;dev-&gt;list, &amp;clockevent_devices);
+		tick_check_new_device(dev);
+	}
+}
+</code></pre>
+<p>That's all. From this moment we have registered new clock event device. So the usage of the <code>clockevents</code> framework is simple and clear. Architectures registered their clock event devices, in the clock events core. Users of the clockevents core can get clock event devices for their use. The <code>clockevents</code> framework provides notification mechanisms for various clock related management events like a clock event device registered or unregistered, a processor is offlined in system which supports <a href="https://www.kernel.org/doc/Documentation/cpu-hotplug.txt">CPU hotplug</a> and etc.</p>
+<p>We saw implementation only of the <code>clockevents_register_device</code> function. But generally, the clock event layer <a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a> is small. Besides the <code>API</code> for clock event device registration, the <code>clockevents</code> framework provides functions to schedule the next event interrupt, clock event device notification service and support for suspend and resume for clock event devices.</p>
+<p>If you want to know more about <code>clockevents</code> API you can start to research following source code and header files: <a href="https://github.com/torvalds/linux/blob/master/kernel/time/tick-common.c">kernel/time/tick-common.c</a>, <a href="https://github.com/torvalds/linux/blob/master/kernel/time/clockevents.c">kernel/time/clockevents.c</a> and <a href="https://github.com/torvalds/linux/blob/master/include/linux/clockchips.h">include/linux/clockchips.h</a>.</p>
+<p>That's all.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>This is the end of the fifth part of the <a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/index.html">chapter</a> that describes timers and timer management related stuff in the Linux kernel. In the previous part got acquainted with the <code>timers</code> concept. In this part we continued to learn time management related stuff in the Linux kernel and saw a little about yet another framework - <code>clockevents</code>.</p>
+<p>If you have questions or suggestions, feel free to ping me in twitter <a href="https://twitter.com/0xAX">0xAX</a>, drop me <a href="anotherworldofworld@gmail.com">email</a> or just create <a href="https://github.com/MintCN/linux-insides-zh/issues/new">issue</a>.</p>
+<p><strong>Please note that English is not my first language and I am really sorry for any inconvenience. If you found any mistakes please send me PR to <a href="https://github.com/MintCN/linux-insides-zh">linux-insides</a>.</strong></p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="https://github.com/0xAX/linux/blob/master/Documentation/timers/timekeeping.txt">timekeeping documentation</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Intel_8253">Intel 8253</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Programmable_interval_timer">programmable interval timer</a></li>
+<li><a href="http://uefi.org/sites/default/files/resources/ACPI_5.pdf">ACPI pdf</a></li>
+<li><a href="https://en.wikipedia.org/wiki/X86">x86</a></li>
+<li><a href="https://en.wikipedia.org/wiki/High_Precision_Event_Timer">High Precision Event Timer</a></li>
+<li><a href="https://en.wikipedia.org/wiki/PowerPC">powerpc</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Frequency">frequency</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Application_programming_interface">API</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Nanosecond">nanoseconds</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt">interrupt</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Interrupt_handler">interrupt handler</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">local APIC</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Configuration_and_Power_Interface#Device_states">C3 state</a></li>
+<li><a href="http://www.atmel.com/Images/doc6062.pdf">Periodic Interval Timer (PIT) for at91sam926x</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Concepts/cpumask.html">CPU masks in the Linux kernel</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Deadlock">deadlock</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/cpu-hotplug.txt">CPU hotplug</a></li>
+<li><a href="https://xinqiu.gitbooks.io/linux-insides-cn/content/Timers/timers-3.html">previous part</a></li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/46/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/46/index.html">软件开发平台及语言笔记大全(超详细)</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/22.html">jasonblog</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="android">android</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="cplusplus">cplusplus</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1,399页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 16个">16</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/28/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/28/index.html">笨办法学 Linux</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">34页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 326个">326</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/31/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/31/index.html">操作系统思考</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">15页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 74个">74</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/100/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/lua_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/100/index.html">Lua编程入门</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/61.html">andycai</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="lua">lua</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">14页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 192个">192</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/20/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/java_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/20/index.html">Java 8 简明教程</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="java">java</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 133个">133</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../../book/75/index.html">
+<img class="uk-book-cover" src="../../../static/icons/48/gitbook_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../../book/75/index.html">GitBook 中文解說</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../../user/47.html">wastemobile</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="git">git</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">42页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月24日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 9个">9</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../../" title="返回首页"><img class="" src="../../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../../book/114/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/README.html" title="简介" data-book-page-rel-url="README.html" data-book-page-id="8065">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/README.html" title="引导" data-book-page-rel-url="Booting/README.html" data-book-page-id="8066">引导</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-1.html" title="从引导加载程序内核" data-book-page-rel-url="Booting/linux-bootstrap-1.html" data-book-page-id="8067">从引导加载程序内核</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-2.html" title="在内核安装代码的第一步" data-book-page-rel-url="Booting/linux-bootstrap-2.html" data-book-page-id="8068">在内核安装代码的第一步</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-3.html" title="视频模式初始化和转换到保护模式" data-book-page-rel-url="Booting/linux-bootstrap-3.html" data-book-page-id="8069">视频模式初始化和转换到保护模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-4.html" title="过渡到 64 位模式" data-book-page-rel-url="Booting/linux-bootstrap-4.html" data-book-page-id="8070">过渡到 64 位模式</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Booting/linux-bootstrap-5.html" title="内核解压缩" data-book-page-rel-url="Booting/linux-bootstrap-5.html" data-book-page-id="8071">内核解压缩</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/README.html" title="初始化" data-book-page-rel-url="Initialization/README.html" data-book-page-id="8072">初始化</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-1.html" title="内核解压之后的首要步骤" data-book-page-rel-url="Initialization/linux-initialization-1.html" data-book-page-id="8073">内核解压之后的首要步骤</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-2.html" title="早期的中断和异常控制" data-book-page-rel-url="Initialization/linux-initialization-2.html" data-book-page-id="8074">早期的中断和异常控制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-3.html" title="在到达内核入口之前最后的准备" data-book-page-rel-url="Initialization/linux-initialization-3.html" data-book-page-id="8075">在到达内核入口之前最后的准备</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-4.html" title="内核入口 - start_kernel" data-book-page-rel-url="Initialization/linux-initialization-4.html" data-book-page-id="8076">内核入口 - start_kernel</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-5.html" title="体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-5.html" data-book-page-id="8077">体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-6.html" title="进一步初始化指定体系架构" data-book-page-rel-url="Initialization/linux-initialization-6.html" data-book-page-id="8078">进一步初始化指定体系架构</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-7.html" title="最后对指定体系架构初始化" data-book-page-rel-url="Initialization/linux-initialization-7.html" data-book-page-id="8079">最后对指定体系架构初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-8.html" title="调度器初始化" data-book-page-rel-url="Initialization/linux-initialization-8.html" data-book-page-id="8080">调度器初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-9.html" title="RCU 初始化" data-book-page-rel-url="Initialization/linux-initialization-9.html" data-book-page-id="8081">RCU 初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Initialization/linux-initialization-10.html" title="初始化结束" data-book-page-rel-url="Initialization/linux-initialization-10.html" data-book-page-id="8082">初始化结束</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/README.html" title="中断" data-book-page-rel-url="Interrupts/README.html" data-book-page-id="8083">中断</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-1.html" title="中断和中断处理 Part 1." data-book-page-rel-url="Interrupts/interrupts-1.html" data-book-page-id="8084">中断和中断处理 Part 1.</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-2.html" title="深入 Linux 内核中的中断" data-book-page-rel-url="Interrupts/interrupts-2.html" data-book-page-id="8085">深入 Linux 内核中的中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-3.html" title="初步中断处理" data-book-page-rel-url="Interrupts/interrupts-3.html" data-book-page-id="8086">初步中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-4.html" title="中断处理" data-book-page-rel-url="Interrupts/interrupts-4.html" data-book-page-id="8087">中断处理</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-5.html" title="异常处理的实现" data-book-page-rel-url="Interrupts/interrupts-5.html" data-book-page-id="8088">异常处理的实现</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-6.html" title="处理不可屏蔽中断" data-book-page-rel-url="Interrupts/interrupts-6.html" data-book-page-id="8089">处理不可屏蔽中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-7.html" title="深入外部硬件中断" data-book-page-rel-url="Interrupts/interrupts-7.html" data-book-page-id="8090">深入外部硬件中断</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-8.html" title="IRQs的非早期初始化" data-book-page-rel-url="Interrupts/interrupts-8.html" data-book-page-id="8091">IRQs的非早期初始化</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-9.html" title="Softirq, Tasklets and Workqueues" data-book-page-rel-url="Interrupts/interrupts-9.html" data-book-page-id="8092">Softirq, Tasklets and Workqueues</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Interrupts/interrupts-10.html" title="最后一部分" data-book-page-rel-url="Interrupts/interrupts-10.html" data-book-page-id="8093">最后一部分</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/README.html" title="系统调用" data-book-page-rel-url="SysCall/README.html" data-book-page-id="8094">系统调用</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-1.html" title="系统调用概念简介" data-book-page-rel-url="SysCall/syscall-1.html" data-book-page-id="8095">系统调用概念简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-2.html" title="Linux 内核如何处理系统调用" data-book-page-rel-url="SysCall/syscall-2.html" data-book-page-id="8096">Linux 内核如何处理系统调用</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-3.html" title="vsyscall and vDSO" data-book-page-rel-url="SysCall/syscall-3.html" data-book-page-id="8097">vsyscall and vDSO</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-4.html" title="Linux 内核如何运行程序" data-book-page-rel-url="SysCall/syscall-4.html" data-book-page-id="8098">Linux 内核如何运行程序</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SysCall/syscall-5.html" title="open 系统调用的实现" data-book-page-rel-url="SysCall/syscall-5.html" data-book-page-id="8099">open 系统调用的实现</a>
+</li>
+<li>
+<a class="pjax" href="javascript:;" class="uk-link-muted uk-text-muted" title="Linux 资源限制" disabled data-book-page-rel-url="SysCall/syscall-6.html" data-book-page-id="8100">Linux 资源限制</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/README.html" title="定时器和时钟管理" data-book-page-rel-url="Timers/README.html" data-book-page-id="8101">定时器和时钟管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-1.html" title="简介" data-book-page-rel-url="Timers/timers-1.html" data-book-page-id="8102">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-2.html" title="时钟源框架简介" data-book-page-rel-url="Timers/timers-2.html" data-book-page-id="8103">时钟源框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-3.html" title="The tick broadcast framework and dyntick" data-book-page-rel-url="Timers/timers-3.html" data-book-page-id="8104">The tick broadcast framework and dyntick</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-4.html" title="定时器介绍" data-book-page-rel-url="Timers/timers-4.html" data-book-page-id="8105">定时器介绍</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-5.html" title="Clockevents 框架简介" data-book-page-rel-url="Timers/timers-5.html" data-book-page-id="8106">Clockevents 框架简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-6.html" title="x86 相关的时钟源" data-book-page-rel-url="Timers/timers-6.html" data-book-page-id="8107">x86 相关的时钟源</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Timers/timers-7.html" title="Linux 内核中与时钟相关的系统调用" data-book-page-rel-url="Timers/timers-7.html" data-book-page-id="8108">Linux 内核中与时钟相关的系统调用</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/README.html" title="同步原语" data-book-page-rel-url="SyncPrim/README.html" data-book-page-id="8109">同步原语</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-1.html" title="自旋锁简介" data-book-page-rel-url="SyncPrim/sync-1.html" data-book-page-id="8110">自旋锁简介</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-2.html" title="队列自旋锁" data-book-page-rel-url="SyncPrim/sync-2.html" data-book-page-id="8111">队列自旋锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-3.html" title="信号量" data-book-page-rel-url="SyncPrim/sync-3.html" data-book-page-id="8112">信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-4.html" title="互斥锁" data-book-page-rel-url="SyncPrim/sync-4.html" data-book-page-id="8113">互斥锁</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-5.html" title="读者/写者信号量" data-book-page-rel-url="SyncPrim/sync-5.html" data-book-page-id="8114">读者/写者信号量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/SyncPrim/sync-6.html" title="顺序锁" data-book-page-rel-url="SyncPrim/sync-6.html" data-book-page-id="8115">顺序锁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/README.html" title="内存管理" data-book-page-rel-url="MM/README.html" data-book-page-id="8117">内存管理</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-1.html" title="内存块" data-book-page-rel-url="MM/linux-mm-1.html" data-book-page-id="8118">内存块</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-2.html" title="固定映射地址和 ioremap" data-book-page-rel-url="MM/linux-mm-2.html" data-book-page-id="8119">固定映射地址和 ioremap</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/MM/linux-mm-3.html" title="kmemcheck" data-book-page-rel-url="MM/linux-mm-3.html" data-book-page-id="8120">kmemcheck</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/README.html" title="Cgroups" data-book-page-rel-url="Cgroups/README.html" data-book-page-id="8121">Cgroups</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Cgroups/cgroups1.html" title="控制组简介" data-book-page-rel-url="Cgroups/cgroups1.html" data-book-page-id="8122">控制组简介</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/README.html" title="概念" data-book-page-rel-url="Concepts/README.html" data-book-page-id="8123">概念</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/per-cpu.html" title="每个 CPU 的变量" data-book-page-rel-url="Concepts/per-cpu.html" data-book-page-id="8124">每个 CPU 的变量</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/cpumask.html" title="CPU 掩码" data-book-page-rel-url="Concepts/cpumask.html" data-book-page-id="8125">CPU 掩码</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/initcall.html" title="initcall 机制" data-book-page-rel-url="Concepts/initcall.html" data-book-page-id="8126">initcall 机制</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Concepts/notification_chains.html" title="Linux 内核的通知链" data-book-page-rel-url="Concepts/notification_chains.html" data-book-page-id="8127">Linux 内核的通知链</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/README.html" title="Linux 内核中的数据结构" data-book-page-rel-url="DataStructures/README.html" data-book-page-id="8128">Linux 内核中的数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/dlist.html" title="双向链表" data-book-page-rel-url="DataStructures/dlist.html" data-book-page-id="8129">双向链表</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/radix-tree.html" title="基数树" data-book-page-rel-url="DataStructures/radix-tree.html" data-book-page-id="8130">基数树</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/DataStructures/bitmap.html" title="位数组" data-book-page-rel-url="DataStructures/bitmap.html" data-book-page-id="8131">位数组</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/README.html" title="理论" data-book-page-rel-url="Theory/README.html" data-book-page-id="8132">理论</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Theory/Paging.html" title="分页" data-book-page-rel-url="Theory/Paging.html" data-book-page-id="8133">分页</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Theory/ELF.html" title="Elf64 格式" data-book-page-rel-url="Theory/ELF.html" data-book-page-id="8134">Elf64 格式</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/README.html" title="杂项" data-book-page-rel-url="Misc/README.html" data-book-page-id="8135">杂项</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/Misc/how_kernel_compiled.html" title="内核编译方法" data-book-page-rel-url="Misc/how_kernel_compiled.html" data-book-page-id="8136">内核编译方法</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/linkers.html" title="链接器" data-book-page-rel-url="Misc/linkers.html" data-book-page-id="8137">链接器</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/contribute.html" title="Linux 内核开发" data-book-page-rel-url="Misc/contribute.html" data-book-page-id="8138">Linux 内核开发</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/Misc/program_startup.html" title="用户空间的程序启动过程" data-book-page-rel-url="Misc/program_startup.html" data-book-page-id="8139">用户空间的程序启动过程</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/" title="书写并提交你第一个内核补丁" data-book-page-rel-url="" data-book-page-id="8116">书写并提交你第一个内核补丁</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/README.html" title="内核数据结构" data-book-page-rel-url="KernelStructures/README.html" data-book-page-id="8140">内核数据结构</a>
+<ul>
+<li>
+<a class="pjax" href="../../../book/114/KernelStructures/idt.html" title="中断描述符表" data-book-page-rel-url="KernelStructures/idt.html" data-book-page-id="8141">中断描述符表</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/LINKS.html" title="有帮助的链接" data-book-page-rel-url="LINKS.html" data-book-page-id="8142">有帮助的链接</a>
+</li>
+<li>
+<a class="pjax" href="../../../book/114/contributors.html" title="贡献者" data-book-page-rel-url="contributors.html" data-book-page-id="8143">贡献者</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =114;var bookPageId =8106;var bookPageRelUrl ='Timers/timers-5.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

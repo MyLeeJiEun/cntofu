@@ -1,0 +1,678 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>程序执行的一刹那-C 语言编程透视</title>
+<meta content='程序执行的一刹那,C 语言编程透视' name='keywords'>
+<meta content='程序执行的一刹那,C 语言编程透视' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="/static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="/static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="/static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="/static/components/css/base.css">
+<link rel="stylesheet" href="/static/components/css/reader.css">
+<link rel="stylesheet" href="/static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="/book/43/zh/chapters/02-chapter2.markdown">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">Gcc 编译的背后</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="/book/43/zh/chapters/02-chapter4.markdown">
+<span class="">动态符号链接的细节</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="/book/43/index.html">C 语言编程透视</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tinyclub/open-c-book" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="/static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<h1 id="程序执行的一刹那">程序执行的一刹那</h1>
+<ul>
+<li><a href="#toc_16100_6031_1">什么是命令行接口</a></li>
+<li><a href="#toc_16100_6031_2">/bin/bash 是什么时候启动的</a></li>
+<li><a href="#toc_16100_6031_3">/bin/login</a></li>
+<li><a href="#toc_16100_6031_4">/bin/getty</a></li>
+<li><a href="#toc_16100_6031_5">/sbin/init</a></li>
+<li><a href="#toc_16100_6031_6">命令启动过程追本溯源</a></li>
+<li><a href="#toc_16100_6031_7">谁启动了 /sbin/init</a></li>
+<li><a href="#toc_16100_6031_8">/bin/bash 如何处理用户键入的命令</a></li>
+<li><a href="#toc_16100_6031_9">预备知识</a></li>
+<li><a href="#toc_16100_6031_10">哪种命令先被执行</a></li>
+<li><a href="#toc_16100_6031_11">这些特殊字符是如何解析的：<code>|, &gt;, &lt;, &amp;</code></a></li>
+<li><a href="#toc_16100_6031_12">/bin/bash 用什么魔法让一个普通程序变成了进程</a></li>
+<li><a href="#toc_16100_6031_13">参考资料</a></li>
+</ul>
+<p>当我们在 Linux 下的命令行输入一个命令之后，这背后发生了什么？</p>
+<p><span id="toc_16100_6031_1"></span></p>
+<h2 id="什么是命令行接口">什么是命令行接口</h2>
+<p>用户使用计算机有两种常见的方式，一种是图形化的接口（GUI），另外一种则是命令行接口（CLI）。对于图形化的接口，用户点击某个图标就可启动后台的某个程序；对于命令行的接口，用户键入某个程序的名字就可启动某个程序。这两者的基本过程是类似的，都需要查找程序文件在磁盘上的位置，加载到内存并通过不同的解释器进行解析和运行。下面以命令行为例来介绍程序执行一刹那发生的一些事情。</p>
+<p>首先来介绍什么是命令行？命令行就是 <code>Command Line</code>，很直观的概念就是系统启动后的那个黑屏幕：有一个提示符，并有光标在闪烁的那样一个终端，一般情况下可以用 <code>CTRL+ALT+F1-6</code> 切换到不同的终端；在 GUI 界面下也会有一些伪终端，看上去和系统启动时的那个终端没有什么区别，也会有一个提示符，并有一个光标在闪烁。就提示符和响应用户的键盘输入而言，它们两者在功能上是一样的，实际上它们就是同一个东西，用下面的命令就可以把它们打印出来。</p>
+<pre><code>$ echo $SHELL # 打印当前SHELL，当前运行的命令行接口程序
+/bin/bash
+$ echo $$     # 该程序对应进程ID，$$是个特殊的环境变量，它存放了当前进程ID
+1481
+$ ps -C bash   # 通过PS命令查看
+  PID TTY          TIME CMD
+ 1481 pts/0    00:00:00 bash
+</code></pre>
+<p>从上面的操作结果可以看出，当前命令行接口实际上是一个程序，那就是 <code>/bin/bash</code>，它是一个实实在在的程序，它打印提示符，接受用户输入的命令，分析命令序列并执行然后返回结果。不过 <code>/bin/bash</code> 仅仅是当前使用的命令行程序之一，还有很多具有类似功能的程序，比如 <code>/bin/ash</code>, <code>/bin/dash</code> 等。不过这里主要来讨论 <code>bash</code>，讨论它自己是怎么启动的，它怎么样处理用户输入的命令等后台细节？</p>
+<p><span id="toc_16100_6031_2"></span></p>
+<h2 id="binbash-是什么时候启动的">/bin/bash 是什么时候启动的</h2>
+<p><span id="toc_16100_6031_3"></span></p>
+<h3 id="binlogin">/bin/login</h3>
+<p>先通过 <code>CTRL+ALT+F1</code> 切换到一个普通终端下面，一般情况下看到的是 "XXX login: " 提示输入用户名，接着是提示输入密码，然后呢？就直接登录到了我们的命令行接口。实际上正是你输入正确的密码后，那个程序才把 <code>/bin/bash</code> 给启动了。那是什么东西提示 "XXX login:" 的呢？正是 <code>/bin/login</code> 程序，那 <code>/bin/login</code> 程序怎么知道要启动 <code>/bin/bash</code>，而不是其他的 <code>/bin/dash</code> 呢？</p>
+<p><code>/bin/login</code> 程序实际上会检查我们的 <code>/etc/passwd</code> 文件，在这个文件里头包含了用户名、密码和该用户的登录 Shell。密码和用户名匹配用户的登录，而登录 Shell 则作为用户登录后的命令行程序。看看 <code>/etc/passwd</code> 中典型的这么一行：</p>
+<pre><code>$ cat /etc/passwd | grep falcon
+falcon:x:1000:1000:falcon,,,:/home/falcon:/bin/bash
+</code></pre>
+<p>这个是我用的帐号的相关信息哦，看到最后一行没？<code>/bin/bash</code>，这正是我登录用的命令行解释程序。至于密码呢，看到那个 <strong><code>x</code></strong> 没？这个 <code>x</code> 说明我的密码被保存在另外一个文件里头 <code>/etc/shadow</code>，而且密码是经过加密的。至于这两个文件的更多细节，看手册吧。</p>
+<p>我们怎么知道刚好是 <code>/bin/login</code> 打印了 "XXX login" 呢？现在回顾一下很早以前学习的那个 <code>strace</code> 命令。我们可以用 <code>strace</code> 命令来跟踪 <code>/bin/login</code> 程序的执行。</p>
+<p>跟上面一样，切换到一个普通终端，并切换到 Root 用户，用下面的命令：</p>
+<pre><code>$ strace -f -o strace.out /bin/login
+</code></pre>
+<p>退出以后就可以打开 <code>strace.out</code> 文件，看看到底执行了哪些文件，读取了哪些文件。从中可以看到正是 <code>/bin/login</code> 程序用 <code>execve</code> 调用了 <code>/bin/bash</code> 命令。通过后面的演示，可以发现 <code>/bin/login</code> 只是在子进程里头用 <code>execve</code> 调用了 <code>/bin/bash</code>，因为在启动 <code>/bin/bash</code> 后，可以看到 <code>/bin/login</code> 并没有退出。</p>
+<p><span id="toc_16100_6031_4"></span></p>
+<h3 id="bingetty">/bin/getty</h3>
+<p>那 <code>/bin/login</code> 又是怎么起来的呢？</p>
+<p>下面再来看一个演示。先在一个可以登陆的终端下执行下面的命令。</p>
+<pre><code>$ getty 38400 tty8 linux
+</code></pre>
+<p><code>getty</code> 命令停留在那里，貌似等待用户的什么操作，现在切回到第 8 个终端，是不是看到有 "XXX login:" 的提示了。输入用户名并登录，之后退出，回到第一个终端，发现 <code>getty</code> 命令已经退出。</p>
+<p>类似地，也可以用 <code>strace</code> 命令来跟踪 <code>getty</code> 的执行过程。在第一个终端下切换到 Root 用户。执行如下命令：</p>
+<pre><code>$ strace -f -o strace.out getty 38400 tty8 linux
+</code></pre>
+<p>同样在 <code>strace.out</code> 命令中可以找到该命令的相关启动细节。比如，可以看到正是 <code>getty</code> 程序用 <code>execve</code> 系统调用执行了 <code>/bin/login</code> 程序。这个地方，<code>getty</code> 是在自己的主进程里头直接执行了 <code>/bin/login</code>，这样 <code>/bin/login</code> 将把 <code>getty</code> 的进程空间替换掉。</p>
+<p><span id="toc_16100_6031_5"></span></p>
+<h3 id="sbininit">/sbin/init</h3>
+<p>这里涉及到一个非常重要的东西：<code>/sbin/init</code>，通过 <code>man init</code> 命令可以查看到该命令的作用，它可是“万物之王”（init is the parent of all processes on the system）哦。它是 Linux 系统默认启动的第一个程序，负责进行 Linux 系统的一些初始化工作，而这些初始化工作的配置则是通过 <code>/etc/inittab</code> 来做的。那么来看看 <code>/etc/inittab</code> 的一个简单的例子吧，可以通过 <code>man inittab</code> 查看相关帮助。</p>
+<p>需要注意的是，在较新版本的 Ubuntu 和 Fedora 等发行版中，一些新的 <code>init</code> 程序，比如 <code>upstart</code> 和 <code>systemd</code> 被开发出来用于取代 <code>System V init</code>，它们可能放弃了对 <code>/etc/inittab</code> 的使用，例如 <code>upstart</code> 会读取 <code>/etc/init/</code> 下的配置，比如 <code>/etc/init/tty1.conf</code>，但是，基本的配置思路还是类似 <code>/etc/inittab</code>，对于 <code>upstart</code> 的 <code>init</code> 配置，这里不做介绍，请通过 <code>man 5 init</code> 查看帮助。</p>
+<p>配置文件 <code>/etc/inittab</code> 的语法非常简单，就是下面一行的重复，</p>
+<pre><code>id:runlevels:action:process
+</code></pre>
+<ul>
+<li> <p><code>id</code> 就是一个唯一的编号，不用管它，一个名字而言，无关紧要。</p> </li>
+<li> <p><code>runlevels</code> 是运行级别，这个还是比较重要的，理解运行级别的概念很有必要，它可以有如下的取值：</p> <pre><code>0 is halt.
+1 is single-user.
+2-5 are multi-user.
+6 is reboot.
+</code></pre> <p>不过，真正在配置文件里头用的是 <code>1-5</code> 了，而 <code>0</code> 和 <code>6</code> 非常特别，除了用它作为 <code>init</code> 命令的参数关机和重启外，似乎没有哪个“傻瓜”把它写在系统的配置文件里头，让系统启动以后就关机或者重启。<code>1</code> 代表单用户，而 <code>2-5</code> 则代表多用户。对于 <code>2-5</code> 可能有不同的解释，比如在 Slackware 12.0 上，<code>2,3,5</code> 被用来作为多用户模式，但是默认不启动 X windows （GUI接口），而 <code>4</code> 则作为启动 X windows 的运行级别。</p> </li>
+<li> <p><code>action</code> 是动作，它也有很多选择，我们关心几个常用的</p> </li>
+<li> <p><code>initdefault</code>：用来指定系统启动后进入的运行级别，通常在 <code>/etc/inittab</code> 的第一条配置，如：</p> <pre><code>id:3:initdefault:
+</code></pre> <p>这个说明默认运行级别是 3，即多用户模式，但是不启动 X window 的那种。</p> </li>
+<li> <p><code>sysinit</code>：指定那些在系统启动时将被执行的程序，例如：</p> <pre><code>si:S:sysinit:/etc/rc.d/rc.S
+</code></pre> <p>在 <code>man inittab</code> 中提到，对于 <code>sysinit</code>，<code>boot</code> 等动作，<code>runlevels</code> 选项是不用管的，所以可以很容易解读这条配置：它的意思是系统启动时将默认执行 <code>/etc/rc.d/rc.S</code> 文件，在这个文件里可直接或者间接地执行想让系统启动时执行的任何程序，完成系统的初始化。</p> </li>
+<li> <p><code>wait</code>：当进入某个特别的运行级别时，指定的程序将被执行一次，<code>init</code> 将等到它执行完成，例如：</p> <pre><code>rc:2345:wait:/etc/rc.d/rc.M
+</code></pre> <p>这个说明无论是进入运行级别 2，3，4，5 中哪一个，<code>/etc/rc.d/rc.M</code> 将被执行一次，并且有 <code>init</code> 等待它执行完成。</p> </li>
+<li> <p><code>ctrlaltdel</code>，当 <code>init</code> 程序接收到 <code>SIGINT</code> 信号时，某个指定的程序将被执行，我们通常通过按下 <code>CTRL+ALT+DEL</code>，这个默认情况下将给 <code>init</code> 发送一个 <code>SIGINT</code> 信号。</p> <p>如果我们想在按下这几个键时，系统重启，那么可以在 <code>/etc/inittab</code> 中写入：</p> <pre><code>ca::ctrlaltdel:/sbin/shutdown -t5 -r now
+</code></pre> </li>
+<li> <p><code>respawn</code>：这个指定的进程将被重启，任何时候当它退出时。这意味着没有办法结束它，除非 <code>init</code> 自己结束了。例如：</p> <pre><code>c1:1235:respawn:/sbin/agetty 38400 tty1 linux
+</code></pre> <p>这一行的意思非常简单，就是系统运行在级别 1，2，3，5 时，将默认执行 <code>/sbin/agetty</code> 程序（这个类似于上面提到的 <code>getty</code> 程序），这个程序非常有意思，就是无论什么时候它退出，<code>init</code> 将再次启动它。这个有几个比较有意思的问题：</p> </li>
+</ul>
+<ul>
+<li>在 Slackware 12.0 下，当默认运行级别为 4 时，只有第 6 个终端可以用。原因是什么呢？因为类似上面的配置，因为那里只有 <code>1235</code>，而没有 <code>4</code>，这意味着当系统运行在第 <code>4</code> 级别时，其他终端下的 <code>/sbin/agetty</code> 没有启动。所以，如果想让其他终端都可以用，把 <code>1235</code> 修改为 <code>12345</code> 即可。</li>
+<li>另外一个有趣的问题就是：正是 <code>init</code> 程序在读取这个配置行以后启动了 <code>/sbin/agetty</code>，这就是 <code>/sbin/agetty</code> 的秘密。</li>
+<li>还有一个问题：无论退出哪个终端，那个 "XXX login:" 总是会被打印，原因是 <code>respawn</code> 动作有趣的性质，因为它告诉 <code>init</code>，无论 <code>/sbin/agetty</code> 什么时候退出，重新把它启动起来，那跟 "XXX login:" 有什么关系呢？从前面的内容，我们发现正是 <code>/sbin/getty</code> （同 <code>agetty</code>）启动了 <code>/bin/login</code>，而 <code>/bin/login</code> 又启动了 <code>/bin/bash</code>，即我们的命令行程序。</li>
+</ul>
+<p><span id="toc_16100_6031_6"></span></p>
+<h3 id="命令启动过程追本溯源">命令启动过程追本溯源</h3>
+<p>而 <code>init</code> 程序作为“万物之王”，它是所有进程的“父”（也可能是祖父……）进程，那意味着其他进程最多只能是它的儿子进程。而这个子进程是怎么创建的，<code>fork</code> 调用，而不是之前提到的 <code>execve</code> 调用。前者创建一个子进程，后者则会覆盖当前进程。因为我们发现 <code>/sbin/getty</code> 运行时，<code>init</code> 并没有退出，因此可以判断是 <code>fork</code> 调用创建一个子进程后，才通过 <code>execve</code> 执行了 <code>/sbin/getty</code>。</p>
+<p>因此，可以总结出这么一个调用过程：</p>
+<pre><code>     fork     execve         execve         fork           execve
+init --&gt; init --&gt; /sbin/getty --&gt; /bin/login --&gt; /bin/login --&gt; /bin/bash
+</code></pre>
+<p>这里的 <code>execve</code> 调用以后，后者将直接替换前者，因此当键入 <code>exit</code> 退出 <code>/bin/bash</code> 以后，也就相当于 <code>/sbin/getty</code> 都已经结束了，因此最前面的 <code>init</code> 程序判断 <code>/sbin/getty</code> 退出了，又会创建一个子进程把 <code>/sbin/getty</code> 启动，进而又启动了 <code>/bin/login</code>，又看到了那个 "XXX login:"。</p>
+<p>通过 <code>ps</code> 和 <code>pstree</code> 命令看看实际情况是不是这样，前者打印出进程的信息，后者则打印出调用关系。</p>
+<pre><code>$ ps -ef | egrep "/sbin/init|/sbin/getty|bash|/bin/login"
+root         1     0  0 21:43 ?        00:00:01 /sbin/init
+root      3957     1  0 21:43 tty4     00:00:00 /sbin/getty 38400 tty4
+root      3958     1  0 21:43 tty5     00:00:00 /sbin/getty 38400 tty5
+root      3963     1  0 21:43 tty3     00:00:00 /sbin/getty 38400 tty3
+root      3965     1  0 21:43 tty6     00:00:00 /sbin/getty 38400 tty6
+root      7023     1  0 22:48 tty1     00:00:00 /sbin/getty 38400 tty1
+root      7081     1  0 22:51 tty2     00:00:00 /bin/login --
+falcon    7092  7081  0 22:52 tty2     00:00:00 -bash
+</code></pre>
+<p>上面的结果已经过滤了一些不相干的数据。从上面的结果可以看到，除了 <code>tty2</code> 被替换成 <code>/bin/login</code> 外，其他终端都运行着 <code>/sbin/getty</code>，说明终端 2 上的进程是 <code>/bin/login</code>，它已经把 <code>/sbin/getty</code> 替换掉，另外，我们看到 <code>-bash</code> 进程的父进程是 <code>7081</code> 刚好是 <code>/bin/login</code> 程序，这说明 <code>/bin/login</code> 启动了 <code>-bash</code>，但是它并没有替换掉 <code>/bin/login</code>，而是成为了 <code>/bin/login</code> 的子进程，这说明 <code>/bin/login</code> 通过 <code>fork</code> 创建了一个子进程并通过 <code>execve</code> 执行了 <code>-bash</code>（后者通过 <code>strace</code>跟踪到）。而 <code>init</code> 呢，其进程 ID 是 1，是 <code>/sbin/getty</code> 和 <code>/bin/login</code> 的父进程，说明 <code>init</code> 启动或者间接启动了它们。下面通过 <code>pstree</code> 来查看调用树，可以更清晰地看出上述关系。</p>
+<pre><code>$ pstree | egrep "init|getty|\-bash|login"
+init-+-5*[getty]
+     |-login---bash
+     |-xfce4-terminal-+-bash-+-grep
+</code></pre>
+<p>结果显示 <code>init</code> 是 5 个 <code>getty</code> 程序，<code>login</code> 程序和 <code>xfce4-terminal</code> 的父进程，而后两者则是 <code>bash</code> 的父进程，另外我们执行的 <code>grep</code> 命令则在 <code>bash</code> 上运行，是 <code>bash</code> 的子进程，这个将是我们后面关心的问题。</p>
+<p>从上面的结果发现，<code>init</code> 作为所有进程的父进程，它的父进程 ID 饶有兴趣的是 0，它是怎么被启动的呢？谁才是真正的“造物主”？</p>
+<p><span id="toc_16100_6031_7"></span></p>
+<h3 id="谁启动了-sbininit">谁启动了 /sbin/init</h3>
+<p>如果用过 <code>Lilo</code> 或者 <code>Grub</code> 这些操作系统引导程序，可能会用到 Linux 内核的一个启动参数 <code>init</code>，当忘记密码时，可能会把这个参数设置成 <code>/bin/bash</code>，让系统直接进入命令行，而无须输入帐号和密码，这样就可以方便地把登录密码修改掉。</p>
+<p>这个 <code>init</code> 参数是个什么东西呢？通过 <code>man bootparam</code> 会发现它的秘密，<code>init</code> 参数正好指定了内核启动后要启动的第一个程序，而如果没有指定该参数，内核将依次查找 <code>/sbin/init</code>，<code>/etc/init</code>，<code>/bin/init</code>，<code>/bin/sh</code>，如果找不到这几个文件中的任何一个，内核就要恐慌（panic）了，并挂（hang）在那里一动不动了（注：如果 <code>panic=timeout</code> 被传递给内核并且 <code>timeout</code> 大于 0，那么就不会挂住而是重启）。</p>
+<p>因此 <code>/sbin/init</code> 就是 Linux 内核启动的。而 Linux 内核呢？是通过 <code>Lilo</code> 或者 <code>Grub</code> 等引导程序启动的，<code>Lilo</code> 和 <code>Grub</code> 都有相应的配置文件，一般对应 <code>/etc/lilo.conf</code> 和 <code>/boot/grub/menu.lst</code>，通过这些配置文件可以指定内核映像文件、系统根目录所在分区、启动选项标签等信息，从而能够让它们顺利把内核启动起来。</p>
+<p>那 <code>Lilo</code> 和 <code>Grub</code> 本身又是怎么被运行起来的呢？有了解 MBR 不？MBR 就是主引导扇区，一般情况下这里存放着 <code>Lilo</code> 和 <code>Grub</code> 的代码，而谁知道正好是这里存放了它们呢？BIOS，如果你用光盘安装过操作系统的话，那么应该修改过 <code>BIOS</code> 的默认启动设置，通过设置可以让系统从光盘、硬盘、U 盘甚至软盘启动。正是这里的设置让 BIOS 知道了 MBR 处的代码需要被执行。</p>
+<p>那 BIOS 又是什么时候被起来的呢？处理器加电后有一个默认的起始地址，一上电就执行到了这里，再之前就是开机键按键后的上电时序。</p>
+<p>更多系统启动的细节，看看 <code>man boot-scripts</code> 吧。</p>
+<p>到这里，<code>/bin/bash</code> 的神秘面纱就被揭开了，它只是系统启动后运行的一个程序而已，只不过这个程序可以响应用户的请求，那它到底是如何响应用户请求的呢？</p>
+<p><span id="toc_16100_6031_8"></span></p>
+<h2 id="binbash-如何处理用户键入的命令">/bin/bash 如何处理用户键入的命令</h2>
+<p><span id="toc_16100_6031_9"></span></p>
+<h3 id="预备知识">预备知识</h3>
+<p>在执行磁盘上某个程序时，通常不会指定这个程序文件的绝对路径，比如要执行 <code>echo</code> 命令时，一般不会输入 <code>/bin/echo</code>，而仅仅是输入 <code>echo</code>。那为什么这样 <code>bash</code> 也能够找到 <code>/bin/echo</code> 呢？原因是 Linux 操作系统支持这样一种策略：Shell 的一个环境变量 <code>PATH</code> 里头存放了程序的一些路径，当 Shell 执行程序时有可能去这些目录下查找。<code>which</code> 作为 Shell（这里特指 <code>bash</code>）的一个内置命令，如果用户输入的命令是磁盘上的某个程序，它会返回这个文件的全路径。</p>
+<p>有三个东西和终端的关系很大，那就是标准输入、标准输出和标准错误，它们是三个文件描述符，一般对应描述符 0，1，2。在 C 语言程序里，我们可以把它们当作文件描述符一样进行操作。在命令行下，则可以使用重定向字符<code>&gt;，&lt;</code>等对它们进行操作。对于标准输出和标准错误，都默认输出到终端，对于标准输入，也同样默认从终端输入。</p>
+<p><span id="toc_16100_6031_10"></span></p>
+<h3 id="哪种命令先被执行">哪种命令先被执行</h3>
+<p>在 C 语言里头要写一段输入字符串的命令很简单，调用 <code>scanf</code> 或者 <code>fgets</code> 就可以。这个在 <code>bash</code> 里头应该是类似的。但是它获取用户的命令以后，如何分析命令，如何响应不同的命令呢？</p>
+<p>首先来看看 <code>bash</code> 下所谓的命令，用最常见的 <code>test</code> 来作测试。</p>
+<ul>
+<li> <p>字符串被解析成命令</p> <p>随便键入一个字符串 <code>test1</code>， <code>bash</code> 发出响应，告知找不到这个程序：</p> <pre><code>  $ test1
+  bash: test1: command not found
+</code></pre> </li>
+<li> <p>内置命令</p> <p>而当键入 <code>test</code> 时，看不到任何输出，唯一响应是，新命令提示符被打印了：</p> <pre><code>  $ test
+  $
+</code></pre> <p>查看 <code>test</code> 这个命令的类型，即查看 <code>test</code> 将被如何解释， <code>type</code> 告诉我们 <code>test</code> 是一个内置命令，如果没有理解错， <code>test</code> 应该是利用诸如 <code>case "test": do something;break;</code> 这样的机制实现的，具体如何实现可以查看 <code>bash</code> 源代码。</p> <pre><code>  $ type test
+  test is a shell builtin
+</code></pre> </li>
+<li> <p>外部命令</p> <p>这里通过 <code>which</code> 查到 <code>/usr/bin</code> 下有一个 <code>test</code> 命令文件，在键入 <code>test</code> 时，到底哪一个被执行了呢？</p> <pre><code>  $ which test
+  /usr/bin/test
+</code></pre> <p>执行这个呢？也没什么反应，到底谁先被执行了？</p> <pre><code>  $ /usr/bin/test
+</code></pre> <p>从上述演示中发现一个问题？如果输入一个命令，这个命令要么就不存在，要么可能同时是 Shell 的内置命令、也有可能是磁盘上环境变量 <code>PATH</code> 所指定的目录下的某个程序文件。</p> <p>考虑到 <code>test</code> 内置命令和 <code>/usr/bin/test</code> 命令的响应结果一样，我们无法知道哪一个先被执行了，怎么办呢？把 <code>/usr/bin/test</code> 替换成一个我们自己的命令，并让它打印一些信息(比如 <code>hello, world!</code> )，这样我们就知道到底谁被执行了。写完程序，编译好，命名为 <code>test</code> 放到 <code>/usr/bin</code> 下（记得备份原来那个）。开始测试：</p> <p>键入 <code>test</code> ，还是没有效果：</p> <pre><code>  $ test
+  $
+</code></pre> <p>而键入绝对路径呢，则打印了 <code>hello, world!</code> 诶，那默认情况下肯定是内置命令先被执行了：</p> <pre><code>  $ /usr/bin/test
+  hello, world!
+</code></pre> <p>由上述实验结果可见，内置命令比磁盘文件中的程序优先被 <code>bash</code> 执行。原因应该是内置命令避免了不必要的 <code>fork/execve</code> 调用，对于采用类似算法实现的功能，内置命令理论上有更高运行效率。</p> <p>下面看看更多有趣的内容，键盘键入的命令还有可能是什么呢？因为 <code>bash</code> 支持别名（<code>alias</code>）和函数（<code>function</code>），所以还有可能是别名和函数，另外，如果 <code>PATH</code> 环境变量指定的不同目录下有相同名字的程序文件，那到底哪个被优先找到呢？</p> <p>下面再作一些实验，</p> </li>
+<li> <p>别名</p> <p>把 <code>test</code> 命名为 <code>ls -l</code> 的别名，再执行 <code>test</code> ，竟然执行了 <code>ls -l</code> ，说明别名（<code>alias</code>）比内置命令（<code>builtin</code>）更优先：</p> <pre><code>  $ alias test="ls -l"
+  $ test
+  total 9488
+  drwxr-xr-x 12 falcon falcon    4096 2008-02-21 23:43 bash-3.2
+  -rw-r--r--  1 falcon falcon 2529838 2008-02-21 23:30 bash-3.2.tar.gz
+</code></pre> </li>
+<li> <p>函数</p> <p>定义一个名叫 <code>test</code> 的函数，执行一下，发现，还是执行了 <code>ls -l</code> ，说明 <code>function</code> 没有 <code>alias</code> 优先级高：</p> <pre><code>  $ function test { echo "hi, I'm a function"; }
+  $ test
+  total 9488
+  drwxr-xr-x 12 falcon falcon    4096 2008-02-21 23:43 bash-3.2
+  -rw-r--r--  1 falcon falcon 2529838 2008-02-21 23:30 bash-3.2.tar.gz
+</code></pre> <p>把别名给去掉（<code>unalias</code>），现在执行的是函数，说明函数的优先级比内置命令也要高：</p> <pre><code>  $ unalias test
+  $ test
+  hi, I'm a function
+</code></pre> <p>如果在命令之前跟上 <code>builtin</code> ，那么将直接执行内置命令：</p> <pre><code>  $ builtin test
+</code></pre> <p>要去掉某个函数的定义，这样就可以：</p> <pre><code>  $ unset test
+</code></pre> </li>
+</ul>
+<p>通过这个实验我们得到一个命令的别名（<code>alias</code>）、函数（<code>function</code>），内置命令（<code>builtin</code>）和程序（<code>program</code>）的执行优先次序：</p>
+<pre><code>    先    alias --&gt; function --&gt; builtin --&gt; program   后
+</code></pre>
+<p>实际上， <code>type</code> 命令会告诉我们这些细节， <code>type -a</code> 会按照 <code>bash</code> 解析的顺序依次打印该命令的类型，而 <code>type -t</code> 则会给出第一个将被解析的命令的类型，之所以要做上面的实验，是为了让大家加印象。</p>
+<pre><code>$ type -a test
+test is a shell builtin
+test is /usr/bin/test
+$ alias test="ls -l"
+$ function test { echo "I'm a function"; }
+$ type -a test
+test is aliased to `ls -l'
+test is a function
+test ()
+{
+    echo "I'm a function"
+}
+test is a shell builtin
+test is /usr/bin/test
+$ type -t test
+alias
+</code></pre>
+<p>下面再看看 <code>PATH</code> 指定的多个目录下有同名程序的情况。再写一个程序，打印 <code>hi, world!</code>，以示和 <code>hello, world!</code> 的区别，放到 <code>PATH</code> 指定的另外一个目录 <code>/bin</code> 下，为了保证测试的说服力，再写一个放到另外一个叫 <code>/usr/local/sbin</code> 的目录下。</p>
+<p>先看看 <code>PATH</code> 环境变量，确保它有 <code>/usr/bin</code>，<code>/bin</code> 和 <code>/usr/local/sbin</code> 这几个目录，然后通过 <code>type -P</code>（<code>-P</code> 参数强制到 <code>PATH</code> 下查找，而不管是别名还是内置命令等，可以通过 <code>help type</code> 查看该参数的含义）查看，到底哪个先被执行。</p>
+<pre><code>$ echo $PATH
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
+$ type -P test
+/usr/local/sbin/test
+</code></pre>
+<p>如上可以看到 <code>/usr/local/sbin</code> 下的先被找到。</p>
+<p>把 <code>/usr/local/sbin/test</code> 下的给删除掉，现在 <code>/usr/bin</code> 下的先被找到：</p>
+<pre><code>$ rm /usr/local/sbin/test
+$ type -P test
+/usr/bin/test
+</code></pre>
+<p><code>type -a</code> 也显示类似的结果：</p>
+<pre><code>$ type -a test
+test is aliased to `ls -l'
+test is a function
+test ()
+{
+    echo "I'm a function"
+}
+test is a shell builtin
+test is /usr/bin/test
+test is /bin/test
+</code></pre>
+<p>因此，可以找出这么一个规律： Shell 从 <code>PATH</code> 列出的路径中依次查找用户输入的命令。考虑到程序的优先级最低，如果想优先执行磁盘上的程序文件 <code>test</code> 呢？那么就可以用 <code>test -P</code> 找出这个文件并执行就可以了。</p>
+<p>补充：对于 Shell 的内置命令，可以通过 <code>help command</code> 的方式获得帮助，对于程序文件，可以查看用户手册（当然，这个需要安装，一般叫做 <code>xxx-doc</code>）， <code>man command</code> 。</p>
+<p><span id="toc_16100_6031_11"></span></p>
+<h3 id="这些特殊字符是如何解析的---">这些特殊字符是如何解析的：<code>|, &gt;, &lt;, &amp;</code></h3>
+<p>在命令行上，除了输入各种命令以及一些参数外，比如上面 <code>type</code> 命令的各种参数 <code>-a</code>，<code>-P</code> 等，对于这些参数，是传递给程序本身的，非常好处理，比如 <code>if</code> ， <code>else</code> 条件分支或者 <code>switch</code>，<code>case</code> 都可以处理。当然，在 <code>bash</code> 里头可能使用专门的参数处理函数 <code>getopt</code> 和 <code>getopt_long</code> 来处理它们。</p>
+<p>而 <code>|</code> ， <code>&gt;</code> ， <code>&lt;</code> ， <code>&amp;</code> 等字符，则比较特别， Shell 是怎么处理它们的呢？它们也被传递给程序本身吗？可我们的程序内部一般都不处理这些字符的，所以应该是 Shell 程序自己解析了它们。</p>
+<p>先来看看这几个字符在命令行的常见用法，</p>
+<p><code>&lt;</code> 字符表示：把 <code>test.c</code> 文件重定向为标准输入，作为 <code>cat</code> 命令输入，而 <code>cat</code> 默认输出到标准输出：</p>
+<pre><code>$ cat &lt; ./test.c
+#include &lt;stdio.h&gt;
+
+int main(void)
+{
+        printf("hi, myself!\n");
+        return 0;
+}
+</code></pre>
+<p><code>&gt;</code> 表示把标准输出重定向为文件 <code>test_new.c</code> ，结果内容输出到 <code>test_new.c</code> ：</p>
+<pre><code>$ cat &lt; ./test.c &gt; test_new.c
+</code></pre>
+<p>对于 <code>&gt;</code> ， <code>&lt;</code> ， <code>&gt;&gt;</code> ， <code>&lt;&lt;</code> ， <code>&lt;&gt;</code> 我们都称之为重定向（<code>redirect</code>）， Shell 到底是怎么进行所谓的“重定向”的呢？</p>
+<p>这主要归功于 <code>dup/fcntl</code> 等函数，它们可以实现：复制文件描述符，让多个文件描述符共享同一个文件表项。比如，当把文件 <code>test.c</code> 重定向为标准输入时。假设之前用以打开 <code>test.c</code> 的文件描述符是 5 ，现在就把 5 复制为了 0 ，这样当 <code>cat</code> 试图从标准输入读出内容时，也就访问了文件描述符 5 指向的文件表项，接着读出了文件内容。输出重定向与此类似。其他的重定向，诸如 <code>&gt;&gt;</code> ， <code>&lt;&lt;</code> ， <code>&lt;&gt;</code> 等虽然和 <code>&gt;</code> ， <code>&lt;</code> 的具体实现功能不太一样，但本质是一样的，都是文件描述符的复制，只不过可能对文件操作有一些附加的限制，比如 <code>&gt;&gt;</code> 在输出时追加到文件末尾，而 <code>&gt;</code> 则会从头开始写入文件，前者意味着文件的大小会增长，而后者则意味文件被重写。</p>
+<p>那么 <code>|</code> 呢？ <code>|</code> 被形象地称为“管道”，实际上它就是通过 C 语言里头的无名管道来实现的。先看一个例子，</p>
+<pre><code>$ cat &lt; ./test.c  | grep hi
+        printf("hi, myself!\n");
+</code></pre>
+<p>在这个例子中， <code>cat</code> 读出了 <code>test.c</code> 文件中的内容，并输出到标准输出上，但是实际上输出的内容却只有一行，原因是这个标准输出被“接到”了 <code>grep</code> 命令的标准输入上，而 <code>grep</code> 命令只打印了包含 “hi” 字符串的一行。</p>
+<p>这是怎么被“接”上的。 <code>cat</code> 和 <code>grep</code> 作为两个单独的命令，它们本身没有办法把两者的输入和输出“接”起来。这正是 Shell 自己的“杰作”，它通过 C 语言里头的 <code>pipe</code> 函数创建了一个管道（一个包含两个文件描述符的整形数组，一个描述符用于写入数据，一个描述符用于读入数据），并且通过 <code>dup/fcntl</code> 把 <code>cat</code> 的输出复制到了管道的输入，而把管道的输出则复制到了 <code>grep</code> 的输入。这真是一个奇妙的想法。</p>
+<p>那 <code>&amp;</code> 呢？当你在程序的最后跟上这个奇妙的字符以后就可以接着做其他事情了，看看效果：</p>
+<pre><code>$ sleep 50 &amp; #让程序在后台运行
+[1] 8261
+</code></pre>
+<p>提示符被打印出来，可以输入东西，让程序到前台运行，无法输入东西了，按下 <code>CTRL+Z</code> ，再让程序到后台运行：</p>
+<pre><code>$ fg %1
+sleep 50
+
+[1]+  Stopped                 sleep 50
+</code></pre>
+<p>实际上 <code>&amp;</code> 正是 <code>Shell</code> 支持作业控制的表征，通过作业控制，用户在命令行上可以同时作几个事情（把当前不做的放到后台，用 <code>&amp;</code> 或者 <code>CTRL+Z</code> 或者 <code>bg</code>）并且可以自由地选择当前需要执行哪一个（用 <code>fg</code> 调到前台）。这在实现时应该涉及到很多东西，包括终端会话（<code>session</code>）、终端信号、前台进程、后台进程等。而在命令的后面加上 <code>&amp;</code> 后，该命令将被作为后台进程执行，后台进程是什么呢？这类进程无法接收用户发送给终端的信号（如 <code>SIGHUP</code> ，<code>SIGQUIT</code> ，<code>SIGINT</code>），无法响应键盘输入（被前台进程占用着），不过可以通过 <code>fg</code> 切换到前台而享受作为前台进程具有的特权。</p>
+<p>因此，当一个命令被加上 <code>&amp;</code> 执行后，Shell 必须让它具有后台进程的特征，让它无法响应键盘的输入，无法响应终端的信号（意味忽略这些信号），并且比较重要的是新的命令提示符得打印出来，并且让命令行接口可以继续执行其他命令，这些就是 Shell 对 <code>&amp;</code> 的执行动作。</p>
+<p>还有什么神秘的呢？你也可以写自己的 Shell 了，并且可以让内核启动后就执行它 <code>l</code> ，在 <code>lilo</code> 或者 <code>grub</code> 的启动参数上设置 <code>init=/path/to/your/own/shell/program</code> 就可以。当然，也可以把它作为自己的登录 Shell ，只需要放到 <code>/etc/passwd</code> 文件中相应用户名所在行的最后就可以。不过貌似到现在还没介绍 Shell 是怎么执行程序，是怎样让程序变成进程的，所以继续。</p>
+<p><span id="toc_16100_6031_12"></span></p>
+<h3 id="binbash-用什么魔法让一个普通程序变成了进程">/bin/bash 用什么魔法让一个普通程序变成了进程</h3>
+<p>当我们从键盘键入一串命令，Shell 奇妙地响应了，对于内置命令和函数，Shell 自身就可以解析了（通过 <code>switch</code> ，<code>case</code> 之类的 C 语言语句）。但是，如果这个命令是磁盘上的一个文件呢。它找到该文件以后，怎么执行它的呢？</p>
+<p>还是用 <code>strace</code> 来跟踪一个命令的执行过程看看。</p>
+<pre><code>$ strace -f -o strace.log /usr/bin/test
+hello, world!
+$ cat strace.log | sed -ne "1p"   #我们对第一行很感兴趣
+8445  execve("/usr/bin/test", ["/usr/bin/test"], [/* 33 vars */]) = 0
+</code></pre>
+<p>从跟踪到的结果的第一行可以看到 <code>bash</code> 通过 <code>execve</code> 调用了 <code>/usr/bin/test</code> ，并且给它传了 33 个参数。这 33 个 <code>vars</code> 是什么呢？看看 <code>declare -x</code> 的结果（这个结果只有 32 个，原因是 <code>vars</code> 的最后一个变量需要是一个结束标志，即 <code>NULL</code>）。</p>
+<pre><code>$ declare -x | wc -l   #declare -x声明的环境变量将被导出到子进程中
+32
+$ export TEST="just a test"   #为了认证declare -x和之前的vars的个数的关系，再加一个
+$ declare -x | wc -l
+33
+$ strace -f -o strace.log /usr/bin/test   #再次跟踪，看看这个关系
+hello, world!
+$ cat strace.log | sed -ne "1p"
+8523  execve("/usr/bin/test", ["/usr/bin/test"], [/* 34 vars */]) = 0
+</code></pre>
+<p>通过这个演示发现，当前 Shell 的环境变量中被设置为 <code>export</code> 的变量被复制到了新的程序里头。不过虽然我们认为 Shell 执行新程序时是在一个新的进程里头执行的，但是 <code>strace</code> 并没有跟踪到诸如 <code>fork</code> 的系统调用（可能是 <code>strace</code> 自己设计的时候并没有跟踪 <code>fork</code> ，或者是在 <code>fork</code> 之后才跟踪）。但是有一个事实我们不得不承认：当前 Shell 并没有被新程序的进程替换，所以说 Shell 肯定是先调用 <code>fork</code> （也有可能是 <code>vfork</code>）创建了一个子进程，然后再调用 <code>execve</code> 执行新程序的。如果你还不相信，那么直接通过 <code>exec</code> 执行新程序看看，这个可是直接把当前 Shell 的进程替换掉的。</p>
+<pre><code>exec /usr/bin/test
+</code></pre>
+<p>该可以看到当前 Shell “哗”（听不到，突然没了而已）的一下就没有了。</p>
+<p>下面来模拟一下 Shell 执行普通程序。 <code>multiprocess</code> 相当于当前 Shell ，而 <code>/usr/bin/test</code> 则相当于通过命令行传递给 Shell 的一个程序。这里是代码：</p>
+<pre><code>/* multiprocess.c */
+#include &lt;stdio.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;unistd.h&gt;&nbsp;&nbsp;&nbsp;&nbsp; /* sleep, fork, _exit */
+
+int main()
+{
+	int child;
+	int status;
+
+	if( (child = fork()) == 0) {&nbsp;&nbsp;&nbsp; /* child */
+		printf("child: my pid is %d\n", getpid());
+		printf("child: my parent's pid is %d\n", getppid());
+		execlp("/usr/bin/test","/usr/bin/test",(char *)NULL);;
+	} else if(child &lt; 0){&nbsp;&nbsp;&nbsp;	/* error */
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;	printf("create child process error!\n");
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;	_exit(0);
+	}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;	/* parent */
+	printf("parent: my pid is %d\n", getpid());
+	if ( wait(&amp;status) == child ) {
+		printf("parent: wait for my child exit successfully!\n");
+	}
+}
+</code></pre>
+<p>运行看看，</p>
+<pre><code>$ make multiprocess
+$ ./multiprocess
+child: my pid is 2251
+child: my parent's pid is 2250
+hello, world!
+parent: my pid is 2250
+parent: wait for my child exit successfully!
+</code></pre>
+<p>从执行结果可以看出，<code>/usr/bin/test</code> 在 <code>multiprocess</code> 的子进程中运行并不干扰父进程，因为父进程一直等到了 <code>/usr/bin/test</code> 执行完成。</p>
+<p>再回头看看代码，你会发现 <code>execlp</code> 并没有传递任何环境变量信息给 <code>/usr/bin/test</code> ，到底是怎么把环境变量传送过去的呢？通过 <code>man exec</code> 我们可以看到一组 <code>exec</code> 的调用，在里头并没有发现 <code>execve</code> ，但是通过 <code>man execve</code> 可以看到该系统调用。实际上 <code>exec</code> 的那一组调用都只是 <code>libc</code> 库提供的，而 <code>execve</code> 才是真正的系统调用，也就是说无论使用 <code>exec</code> 调用中的哪一个，最终调用的都是 <code>execve</code> ，如果使用 <code>execlp</code> ，那么 <code>execlp</code> 将通过一定的处理把参数转换为 <code>execve</code> 的参数。因此，虽然我们没有传递任何环境变量给 <code>execlp</code> ，但是默认情况下，<code>execlp</code> 把父进程的环境变量复制给了子进程，而这个动作是在 <code>execlp</code> 函数内部完成的。</p>
+<p>现在，总结一下 <code>execve</code> ，它有有三个参数，</p>
+<p><code>-</code> 第一个是程序本身的绝对路径，对于刚才使用的 <code>execlp</code> ，我们没有指定路径，这意味着它会设法到 <code>PATH</code> 环境变量指定的路径下去寻找程序的全路径。 <code>-</code> 第二个参数是一个将传递给被它执行的程序的参数数组指针。正是这个参数把我们从命令行上输入的那些参数，诸如 <code>grep</code> 命令的 <code>-v</code> 等传递给了新程序，可以通过 <code>main</code> 函数的第二个参数 <code>char</code> * <code>argv[]</code> 获得这些内容。 <code>-</code> 第三个参数是一个将传递给被它执行的程序的环境变量，这些环境变量也可以通过 <code>main</code> 函数的第三个变量获取，只要定义一个 <code>char</code> * <code>env[]</code> 就可以了，只是通常不直接用它罢了，而是通过另外的方式，通过 <code>extern char</code> ** <code>environ</code> 全局变量（环境变量表的指针）或者 <code>getenv</code> 函数来获取某个环境变量的值。</p>
+<p>当然，实际上，当程序被 <code>execve</code> 执行后，它被加载到了内存里，包括程序的各种指令、数据以及传递给它的各种参数、环境变量等都被存放在系统分配给该程序的内存空间中。</p>
+<p>我们可以通过 <code>/proc/&lt;pid&gt;/maps</code> 把一个程序对应的进程的内存映象看个大概。</p>
+<pre><code>$ cat /proc/self/maps   #查看cat程序自身加载后对应进程的内存映像
+08048000-0804c000 r-xp 00000000 03:01 273716     /bin/cat
+0804c000-0804d000 rw-p 00003000 03:01 273716     /bin/cat
+0804d000-0806e000 rw-p 0804d000 00:00 0          [heap]
+b7c46000-b7e46000 r--p 00000000 03:01 87528      /usr/lib/locale/locale-archive
+b7e46000-b7e47000 rw-p b7e46000 00:00 0
+b7e47000-b7f83000 r-xp 00000000 03:01 466875     /lib/libc-2.5.so
+b7f83000-b7f84000 r--p 0013c000 03:01 466875     /lib/libc-2.5.so
+b7f84000-b7f86000 rw-p 0013d000 03:01 466875     /lib/libc-2.5.so
+b7f86000-b7f8a000 rw-p b7f86000 00:00 0
+b7fa1000-b7fbc000 r-xp 00000000 03:01 402817     /lib/ld-2.5.so
+b7fbc000-b7fbe000 rw-p 0001b000 03:01 402817     /lib/ld-2.5.so
+bfcdf000-bfcf4000 rw-p bfcdf000 00:00 0          [stack]
+ffffe000-fffff000 r-xp 00000000 00:00 0          [vdso]
+</code></pre>
+<p>关于程序加载和进程内存映像的更多细节请参考<a href="02-chapter5.markdown">《C 语言程序缓冲区注入分析》</a>。</p>
+<p>到这里，关于命令行的秘密都被“曝光”了，可以开始写自己的命令行解释程序了。</p>
+<p>关于进程的相关操作请参考<a href="02-chapter7.markdown">《进程与进程的基本操作》</a>。</p>
+<p>补充：上面没有讨论到一个比较重要的内容，那就是即使 <code>execve</code> 找到了某个可执行文件，如果该文件属主没有运行该程序的权限，那么也没有办法运行程序。可通过 <code>ls -l</code> 查看程序的权限，通过 <code>chmod</code> 添加或者去掉可执行权限。</p>
+<p>文件属主具有可执行权限时才可以执行某个程序：</p>
+<pre><code>$ whoami
+falcon
+$ ls -l hello  #查看用户权限(第一个x表示属主对该程序具有可执行权限
+-rwxr-xr-x 1 falcon users 6383 2000-01-23 07:59 hello*
+$ ./hello
+Hello World
+$ chmod -x hello  #去掉属主的可执行权限
+$ ls -l hello
+-rw-r--r-- 1 falcon users 6383 2000-01-23 07:59 hello
+$ ./hello
+-bash: ./hello: Permission denied
+</code></pre>
+<p><span id="toc_16100_6031_13"></span></p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li>Linux 启动过程：<code>man boot-scripts</code></li>
+<li>Linux 内核启动参数：<code>man bootparam</code></li>
+<li><code>man 5 passwd</code></li>
+<li><code>man shadow</code></li>
+<li>《UNIX 环境高级编程》，进程关系一章</li>
+</ul>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/102/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/102/index.html">C 语言进阶</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">32页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月29日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/25/index.html">
+<img class="uk-book-cover" src="/static/icons/48/c_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/25/index.html">笨办法学C</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/15.html">wizardforcel</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="c">c</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">54页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 524个">524</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/191/index.html">
+<img class="uk-book-cover" src="/static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/191/index.html">Linux秘传心法</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">81页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 20277个">20277</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/56/index.html">
+<img class="uk-book-cover" src="/static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/56/index.html">神经网络与深度学习</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/32.html">tigerneil</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">9页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 239个">239</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/154/index.html">
+<img class="uk-book-cover" src="/static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/154/index.html">Python 学习总结</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/86.html">itroger</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月12日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="/book/110/index.html">
+<img class="uk-book-cover" src="/static/icons/48/react_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="/book/110/index.html">React 学习之道</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="/user/62.html">tzivanmoe</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="react">react</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">11页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月1日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 0个">0</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="/" title="返回首页"><img class="" src="/static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="/book/43/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/README.md" title="简介" data-book-page-rel-url="README.md" data-book-page-id="2868">简介</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter0.markdown" title="版本修订历史" data-book-page-rel-url="zh/preface/01-chapter0.markdown" data-book-page-id="2869">版本修订历史</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/preface/01-chapter1.markdown" title="前言" data-book-page-rel-url="zh/preface/01-chapter1.markdown" data-book-page-id="2870">前言</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter1.markdown" title="把 Vim 打造成源代码编辑器" data-book-page-rel-url="zh/chapters/02-chapter1.markdown" data-book-page-id="2871">把 Vim 打造成源代码编辑器</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter2.markdown" title="Gcc 编译的背后" data-book-page-rel-url="zh/chapters/02-chapter2.markdown" data-book-page-id="2872">Gcc 编译的背后</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter3.markdown" title="程序执行的一刹那" data-book-page-rel-url="zh/chapters/02-chapter3.markdown" data-book-page-id="2873">程序执行的一刹那</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter4.markdown" title="动态符号链接的细节" data-book-page-rel-url="zh/chapters/02-chapter4.markdown" data-book-page-id="2874">动态符号链接的细节</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter5.markdown" title="缓冲区溢出与注入分析" data-book-page-rel-url="zh/chapters/02-chapter5.markdown" data-book-page-id="2875">缓冲区溢出与注入分析</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter6.markdown" title="进程的内存映像" data-book-page-rel-url="zh/chapters/02-chapter6.markdown" data-book-page-id="2876">进程的内存映像</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter7.markdown" title="进程和进程的基本操作" data-book-page-rel-url="zh/chapters/02-chapter7.markdown" data-book-page-id="2877">进程和进程的基本操作</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter8.markdown" title="打造史上最小可执行ELF文件(45字节)" data-book-page-rel-url="zh/chapters/02-chapter8.markdown" data-book-page-id="2878">打造史上最小可执行ELF文件(45字节)</a>
+</li>
+<li>
+<a class="pjax" href="/book/43/zh/chapters/02-chapter9.markdown" title="代码测试、调试与优化" data-book-page-rel-url="zh/chapters/02-chapter9.markdown" data-book-page-id="2879">代码测试、调试与优化</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="/static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="/static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="/static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =43;var bookPageId =2873;var bookPageRelUrl ='zh/chapters/02-chapter3.markdown';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>

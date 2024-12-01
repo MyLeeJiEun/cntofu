@@ -1,0 +1,597 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<title>06. 部署 Master 节点-和我一步步部署 kubernetes 集群</title>
+<meta content='06. 部署 Master 节点,和我一步步部署 kubernetes 集群' name='keywords'>
+<meta content='06. 部署 Master 节点,和我一步步部署 kubernetes 集群' name='description'>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="zh-CN" />
+<meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1, user-scalable=no"../../>
+<meta name="applicable-device" content="pc,mobile">
+<link rel="shortcut icon" href="../../favicon.ico" type="image/x-icon" />
+<meta name="renderer" content="webkit">
+<link rel="stylesheet" href="../../static/components/uikit-2.27.5/css/uikit.custom.css">
+<link rel="stylesheet" href="../../static/components/social-share/social-share.min.css">
+<link rel="stylesheet" href="../../static/components/highlight/styles/custom.css">
+<link rel="stylesheet" href="../../static/components/css/base.css">
+<link rel="stylesheet" href="../../static/components/css/reader.css">
+<link rel="stylesheet" href="../../static/components/css/markdown.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5313208362165053" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class=" book-main-wrap uk-container uk-container-center uk-margin-top ">
+<div class="uk-grid">
+<div class="uk-width-1-1 reader-wrap ">
+<div class=" bottom-nav uk-clearfix ">
+<div class="uk-align-left ">
+<a href="../../book/111/05-部署Flannel网络.html">
+<i class="nav-icon-left uk-icon-small  uk-icon-caret-left"></i>
+<span class="">05. 配置 Flan..</span>
+</a>
+</div>
+<div class="uk-align-right ">
+<a href="../../book/111/07-部署Node节点.html">
+<span class="">07. 部署 Node..</span>
+<i class="nav-icon-right uk-icon-small  uk-icon-caret-right"></i>
+</a>
+</div>
+</div>
+<div class="uk-text-center">
+<h2 class="book-page-title uk-container-center">
+<a href="../../book/111/index.html">和我一步步部署 kubernetes 集群</a>
+<a target="_blank" rel="nofollow" href="https://github.com/tzivanmoe/follow-me-install-kubernetes-cluster" class="uk-icon-button uk-icon-github" title="github项目地址"></a>
+</h2>
+</div>
+<script type="text/javascript" src="../../static/components/js/app_intro.js"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5313208362165053" data-ad-slot="1328047120"></ins>
+<script>(adsbygoogle =window.adsbygoogle ||[]).push({});</script>
+<hr class="uk-article-divider">
+<div class="book-content-section  md-content-section  uk-margin-bottom">
+<p>tags: master, kube-apiserver, kube-scheduler, kube-controller-manager</p>
+<h1 id="部署-master-节点">部署 master 节点</h1>
+<p>kubernetes master 节点包含的组件：</p>
+<ul>
+<li>kube-apiserver</li>
+<li>kube-scheduler</li>
+<li>kube-controller-manager</li>
+</ul>
+<p>目前这三个组件需要部署在同一台机器上：</p>
+<ul>
+<li><code>kube-scheduler</code>、<code>kube-controller-manager</code> 和 <code>kube-apiserver</code> 三者的功能紧密相关；</li>
+<li>同时只能有一个 <code>kube-scheduler</code>、<code>kube-controller-manager</code> 进程处于工作状态，如果运行多个，则需要通过选举产生一个 leader；</li>
+</ul>
+<p>本文档介绍部署单机 kubernetes master 节点的步骤，<strong>没有实现高可用 master 集群</strong>。</p>
+<p>计划后续再介绍部署 LB 的步骤，客户端 (kubectl、kubelet、kube-proxy) 使用 LB 的 VIP 来访问 kube-apiserver，从而实现高可用 master 集群。</p>
+<p>master 节点与 node 节点上的 Pods 通过 Pod 网络通信，所以需要在 master 节点上部署 Flannel 网络。</p>
+<h2 id="使用的变量">使用的变量</h2>
+<p>本文档用到的变量定义如下：</p>
+<pre><code class="language-bash">$ export MASTER_IP=10.64.3.7  # 替换为当前部署的 master 机器 IP
+$ # 导入用到的其它全局变量：SERVICE_CIDR、CLUSTER_CIDR、NODE_PORT_RANGE、ETCD_ENDPOINTS、BOOTSTRAP_TOKEN
+$ source /root/local/bin/environment.sh
+$
+</code></pre>
+<h2 id="下载最新版本的二进制文件">下载最新版本的二进制文件</h2>
+<p>有两种下载方式：</p>
+<ol>
+<li> <p>从 <a href="https://github.com/kubernetes/kubernetes/releases">github release 页面</a> 下载发布版 tarball，解压后再执行下载脚本</p> <pre><code class="language-shell">$ wget https://github.com/kubernetes/kubernetes/releases/download/v1.6.2/kubernetes.tar.gz
+$ tar -xzvf kubernetes.tar.gz
+...
+$ cd kubernetes
+$ ./cluster/get-kube-binaries.sh
+...
+</code></pre> </li>
+<li> <p>从 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG.html"><code>CHANGELOG</code>页面</a> 下载 <code>client</code> 或 <code>server</code> tarball 文件</p> <p><code>server</code> 的 tarball <code>kubernetes-server-linux-amd64.tar.gz</code> 已经包含了 <code>client</code>(<code>kubectl</code>) 二进制文件，所以不用单独下载<code>kubernetes-client-linux-amd64.tar.gz</code>文件；</p> <pre><code class="language-shell">$ # wget https://dl.k8s.io/v1.6.2/kubernetes-client-linux-amd64.tar.gz
+$ wget https://dl.k8s.io/v1.6.2/kubernetes-server-linux-amd64.tar.gz
+$ tar -xzvf kubernetes-server-linux-amd64.tar.gz
+...
+$ cd kubernetes
+$ tar -xzvf  kubernetes-src.tar.gz
+</code></pre> </li>
+</ol>
+<p>将二进制文件拷贝到指定路径：</p>
+<pre><code class="language-bash">$ sudo cp -r server/bin/{kube-apiserver,kube-controller-manager,kube-scheduler,kubectl,kube-proxy,kubelet} /root/local/bin/
+$
+</code></pre>
+<h2 id="安装和配置-flanneld">安装和配置 flanneld</h2>
+<p>参考 <a href="./05-部署Flannel网络.html">05-部署Flannel网络.html</a></p>
+<h2 id="创建-kubernetes-证书">创建 kubernetes 证书</h2>
+<p>创建 kubernetes 证书签名请求</p>
+<pre><code class="language-bash">$ cat &gt; kubernetes-csr.json &lt;&lt;EOF
+{
+  "CN": "kubernetes",
+  "hosts": [
+    "127.0.0.1",
+    "${MASTER_IP}",
+    "${CLUSTER_KUBERNETES_SVC_IP}",
+    "kubernetes",
+    "kubernetes.default",
+    "kubernetes.default.svc",
+    "kubernetes.default.svc.cluster",
+    "kubernetes.default.svc.cluster.local"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "BeiJing",
+      "L": "BeiJing",
+      "O": "k8s",
+      "OU": "System"
+    }
+  ]
+}
+EOF
+</code></pre>
+<ul>
+<li> <p>如果 hosts 字段不为空则需要指定授权使用该证书的 <strong>IP 或域名列表</strong>，所以上面分别指定了当前部署的 master 节点主机 IP；</p> </li>
+<li> <p>还需要添加 kube-apiserver 注册的名为 <code>kubernetes</code> 的服务 IP (Service Cluster IP)，一般是 kube-apiserver <code>--service-cluster-ip-range</code> 选项值指定的网段的<strong>第一个IP</strong>，如 "10.254.0.1"；</p> <pre><code class="language-bash">$ kubectl get svc kubernetes
+NAME         CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes   10.254.0.1   &lt;none&gt;        443/TCP   1d
+</code></pre> </li>
+</ul>
+<p>生成 kubernetes 证书和私钥</p>
+<pre><code class="language-bash">$ cfssl gencert -ca=/etc/kubernetes/ssl/ca.pem \
+  -ca-key=/etc/kubernetes/ssl/ca-key.pem \
+  -config=/etc/kubernetes/ssl/ca-config.json \
+  -profile=kubernetes kubernetes-csr.json | cfssljson -bare kubernetes
+$ ls kubernetes*
+kubernetes.csr  kubernetes-csr.json  kubernetes-key.pem  kubernetes.pem
+$ sudo mkdir -p /etc/kubernetes/ssl/
+$ sudo mv kubernetes*.pem /etc/kubernetes/ssl/
+$ rm kubernetes.csr  kubernetes-csr.json
+</code></pre>
+<h2 id="配置和启动-kube-apiserver">配置和启动 kube-apiserver</h2>
+<h3 id="创建-kube-apiserver-使用的客户端-token-文件">创建 kube-apiserver 使用的客户端 token 文件</h3>
+<p>kubelet <strong>首次启动</strong>时向 kube-apiserver 发送 TLS Bootstrapping 请求，kube-apiserver 验证 kubelet 请求中的 token 是否与它配置的 token.csv 一致，如果一致则自动为 kubelet生成证书和秘钥。</p>
+<pre><code class="language-bash">$ # 导入的 environment.sh 文件定义了 BOOTSTRAP_TOKEN 变量
+$ cat &gt; token.csv &lt;&lt;EOF
+${BOOTSTRAP_TOKEN},kubelet-bootstrap,10001,"system:kubelet-bootstrap"
+EOF
+$ mv token.csv /etc/kubernetes/
+$
+</code></pre>
+<h3 id="创建-kube-apiserver-的-systemd-unit-文件">创建 kube-apiserver 的 systemd unit 文件</h3>
+<pre><code class="language-bash">$ cat  &gt; kube-apiserver.service &lt;&lt;EOF
+[Unit]
+Description=Kubernetes API Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+
+[Service]
+ExecStart=/root/local/bin/kube-apiserver \\
+  --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota \\
+  --advertise-address=${MASTER_IP} \\
+  --bind-address=${MASTER_IP} \\
+  --insecure-bind-address=${MASTER_IP} \\
+  --authorization-mode=RBAC \\
+  --runtime-config=rbac.authorization.k8s.io/v1alpha1 \\
+  --kubelet-https=true \\
+  --experimental-bootstrap-token-auth \\
+  --token-auth-file=/etc/kubernetes/token.csv \\
+  --service-cluster-ip-range=${SERVICE_CIDR} \\
+  --service-node-port-range=${NODE_PORT_RANGE} \\
+  --tls-cert-file=/etc/kubernetes/ssl/kubernetes.pem \\
+  --tls-private-key-file=/etc/kubernetes/ssl/kubernetes-key.pem \\
+  --client-ca-file=/etc/kubernetes/ssl/ca.pem \\
+  --service-account-key-file=/etc/kubernetes/ssl/ca-key.pem \\
+  --etcd-cafile=/etc/kubernetes/ssl/ca.pem \\
+  --etcd-certfile=/etc/kubernetes/ssl/kubernetes.pem \\
+  --etcd-keyfile=/etc/kubernetes/ssl/kubernetes-key.pem \\
+  --etcd-servers=${ETCD_ENDPOINTS} \\
+  --enable-swagger-ui=true \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --audit-log-maxage=30 \\
+  --audit-log-maxbackup=3 \\
+  --audit-log-maxsize=100 \\
+  --audit-log-path=/var/lib/audit.log \\
+  --event-ttl=1h \\
+  --v=2
+Restart=on-failure
+RestartSec=5
+Type=notify
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+</code></pre>
+<ul>
+<li>kube-apiserver 1.6 版本开始使用 etcd v3 API 和存储格式；</li>
+<li><code>--authorization-mode=RBAC</code> 指定在安全端口使用 RBAC 授权模式，拒绝未通过授权的请求；</li>
+<li>kube-scheduler、kube-controller-manager 一般和 kube-apiserver 部署在同一台机器上，它们使用<strong>非安全端口</strong>和 kube-apiserver通信;</li>
+<li>kubelet、kube-proxy、kubectl 部署在其它 Node 节点上，如果通过<strong>安全端口</strong>访问 kube-apiserver，则必须先通过 TLS 证书认证，再通过 RBAC 授权；</li>
+<li>kube-proxy、kubectl 通过在使用的证书里指定相关的 User、Group 来达到通过 RBAC 授权的目的；</li>
+<li>如果使用了 kubelet TLS Boostrap 机制，则不能再指定 <code>--kubelet-certificate-authority</code>、<code>--kubelet-client-certificate</code> 和 <code>--kubelet-client-key</code> 选项，否则后续 kube-apiserver 校验 kubelet 证书时出现 ”x509: certificate signed by unknown authority“ 错误；</li>
+<li><code>--admission-control</code> 值必须包含 <code>ServiceAccount</code>，否则部署集群插件时会失败；</li>
+<li><code>--bind-address</code> 不能为 <code>127.0.0.1</code>；</li>
+<li><code>--service-cluster-ip-range</code> 指定 Service Cluster IP 地址段，该地址段不能路由可达；</li>
+<li><code>--service-node-port-range=${NODE_PORT_RANGE}</code> 指定 NodePort 的端口范围；</li>
+<li>缺省情况下 kubernetes 对象保存在 etcd <code>/registry</code> 路径下，可以通过 <code>--etcd-prefix</code> 参数进行调整；</li>
+</ul>
+<p>完整 unit 见 <a href="https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/systemd/kube-apiserver.service">kube-apiserver.service</a></p>
+<h3 id="启动-kube-apiserver">启动 kube-apiserver</h3>
+<pre><code class="language-bash">$ sudo cp kube-apiserver.service /etc/systemd/system/
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable kube-apiserver
+$ sudo systemctl start kube-apiserver
+$ sudo systemctl status kube-apiserver
+$
+</code></pre>
+<h2 id="配置和启动-kube-controller-manager">配置和启动 kube-controller-manager</h2>
+<h3 id="创建-kube-controller-manager-的-systemd-unit-文件">创建 kube-controller-manager 的 systemd unit 文件</h3>
+<pre><code class="language-bash">$ cat &gt; kube-controller-manager.service &lt;&lt;EOF
+[Unit]
+Description=Kubernetes Controller Manager
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+ExecStart=/root/local/bin/kube-controller-manager \\
+  --address=127.0.0.1 \\
+  --master=http://${MASTER_IP}:8080 \\
+  --allocate-node-cidrs=true \\
+  --service-cluster-ip-range=${SERVICE_CIDR} \\
+  --cluster-cidr=${CLUSTER_CIDR} \\
+  --cluster-name=kubernetes \\
+  --cluster-signing-cert-file=/etc/kubernetes/ssl/ca.pem \\
+  --cluster-signing-key-file=/etc/kubernetes/ssl/ca-key.pem \\
+  --service-account-private-key-file=/etc/kubernetes/ssl/ca-key.pem \\
+  --root-ca-file=/etc/kubernetes/ssl/ca.pem \\
+  --leader-elect=true \\
+  --v=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+</code></pre>
+<ul>
+<li> <p><code>--address</code> 值必须为 <code>127.0.0.1</code>，因为当前 kube-apiserver 期望 scheduler 和 controller-manager 在同一台机器，否则：</p> <pre><code class="language-bash">$ kubectl get componentstatuses
+NAME                 STATUS      MESSAGE                                                                                        ERROR
+controller-manager   Unhealthy   Get http://127.0.0.1:10252/healthz: dial tcp 127.0.0.1:10252: getsockopt: connection refused
+scheduler            Unhealthy   Get http://127.0.0.1:10251/healthz: dial tcp 127.0.0.1:10251: getsockopt: connection refused
+</code></pre> <p>参考：https://github.com/kubernetes-incubator/bootkube/issues/64</p> </li>
+<li> <p><code>--master=http://{MASTER_IP}:8080</code>：使用非安全 8080 端口与 kube-apiserver 通信；</p> </li>
+<li> <p><code>--cluster-cidr</code> 指定 Cluster 中 Pod 的 CIDR 范围，该网段在各 Node 间必须路由可达(flanneld保证)；</p> </li>
+<li> <p><code>--service-cluster-ip-range</code> 参数指定 Cluster 中 Service 的CIDR范围，该网络在各 Node 间必须路由不可达，必须和 kube-apiserver 中的参数一致；</p> </li>
+<li> <p><code>--cluster-signing-*</code> 指定的证书和私钥文件用来签名为 TLS BootStrap 创建的证书和私钥；</p> </li>
+<li> <p><code>--root-ca-file</code> 用来对 kube-apiserver 证书进行校验，<strong>指定该参数后，才会在Pod 容器的 ServiceAccount 中放置该 CA 证书文件</strong>；</p> </li>
+<li> <p><code>--leader-elect=true</code> 部署多台机器组成的 master 集群时选举产生一处于工作状态的 <code>kube-controller-manager</code> 进程；</p> </li>
+</ul>
+<p>完整 unit 见 <a href="https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/systemd/kube-controller-manager.service">kube-controller-manager.service</a></p>
+<h3 id="启动-kube-controller-manager">启动 kube-controller-manager</h3>
+<pre><code class="language-bash">$ sudo cp kube-controller-manager.service /etc/systemd/system/
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable kube-controller-manager
+$ sudo systemctl start kube-controller-manager
+$
+</code></pre>
+<h2 id="配置和启动-kube-scheduler">配置和启动 kube-scheduler</h2>
+<h3 id="创建-kube-scheduler-的-systemd-unit-文件">创建 kube-scheduler 的 systemd unit 文件</h3>
+<pre><code class="language-bash">$ cat &gt; kube-scheduler.service &lt;&lt;EOF
+[Unit]
+Description=Kubernetes Scheduler
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+ExecStart=/root/local/bin/kube-scheduler \\
+  --address=127.0.0.1 \\
+  --master=http://${MASTER_IP}:8080 \\
+  --leader-elect=true \\
+  --v=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+</code></pre>
+<ul>
+<li><code>--address</code> 值必须为 <code>127.0.0.1</code>，因为当前 kube-apiserver 期望 scheduler 和 controller-manager 在同一台机器；</li>
+<li><code>--master=http://{MASTER_IP}:8080</code>：使用非安全 8080 端口与 kube-apiserver 通信；</li>
+<li><code>--leader-elect=true</code> 部署多台机器组成的 master 集群时选举产生一处于工作状态的 <code>kube-controller-manager</code> 进程；</li>
+</ul>
+<p>完整 unit 见 <a href="https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/systemd/kube-scheduler.service">kube-scheduler.service</a>。</p>
+<h3 id="启动-kube-scheduler">启动 kube-scheduler</h3>
+<pre><code class="language-bash">$ sudo cp kube-scheduler.service /etc/systemd/system/
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable kube-scheduler
+$ sudo systemctl start kube-scheduler
+$
+</code></pre>
+<h2 id="验证-master-节点功能">验证 master 节点功能</h2>
+<pre><code class="language-bash">$ kubectl get componentstatuses
+NAME                 STATUS    MESSAGE              ERROR
+controller-manager   Healthy   ok
+scheduler            Healthy   ok
+etcd-0               Healthy   {"health": "true"}
+etcd-1               Healthy   {"health": "true"}
+etcd-2               Healthy   {"health": "true"}
+</code></pre>
+</div>
+<hr class="uk-article-divider">
+<div class="uk-block uk-block-muted uk-padding-top-remove uk-padding-bottom-remove uk-margin-large-top  book-recommend-wrap">
+<div class="uk-margin-top uk-margin-bottom uk-margin-left uk-margin-right">
+<div class="uk-margin uk-text-muted "><i class="uk-icon-outdent uk-icon-justify uk-margin-small-right"></i>书籍推荐</div>
+<div class="books">
+<ul class="uk-book-list">
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/45/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/linux_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/45/index.html">嵌入式 Linux 知识库</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/23.html">泰晓科技</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="linux">linux</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">402页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月30日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 97个">97</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/67/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/javascript_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/67/index.html">JavaScript 资源大全中文版</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/19.html">伯乐在线</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="javascript">javascript</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">1页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月6日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 4565个">4565</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/21/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/python_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/21/index.html">笨办法学 Python 3</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/16.html">yammgao</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="python">python</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">63页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年5月3日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 12个">12</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/190/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/nginx_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/190/index.html">Nginx 管理员手册</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/107.html">trimstray</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="nginx">nginx</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">307页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2019年5月26日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 8424个">8424</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/63/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/photoshop_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/63/index.html">Web前端写给Web设计师的注意事项</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/39.html">onface</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="photoshop">photoshop</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="html5">html5</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">33页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年6月5日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 116个">116</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+<li>
+<div class="uk-book-item">
+<div class="uk-book-header uk-clearfix">
+<a href="../../book/129/index.html">
+<img class="uk-book-cover" src="../../static/icons/48/machine-learning_48.png" height="48px" alt="">
+</a>
+<h4 class="uk-book-title uk-margin-small-bottom"><a href="../../book/129/index.html">机器学习实战</a></h4>
+<div class="uk-book-meta  uk-text-middle uk-float-left">
+<a class="uk-margin-small-right  uk-text-middle user-name " href="../../user/69.html">gaolinjie</a>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-badge uk-badge-notification  book-subject" title="machine-learning">machine-learning</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">18页</span>
+<span class="uk-margin-small-right  uk-text-middle">•</span>
+<span class="uk-margin-small-right  uk-text-middle">2018年7月8日</span>
+</div>
+<div class="uk-book-tip uk-float-right  uk-text-middle">
+<span class="uk-badge uk-badge-notification" title="github star 10个">10</span>
+</div>
+</div>
+</div>
+</li>
+<hr>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<nav class="tm-navbar uk-navbar uk-navbar-attached reader-nav">
+<div class="uk-float-left uk-margin-small-top">
+<a href="javascript:;" title="目录菜单" class="show-menu  uk-icon-hover  uk-icon-align-justify uk-margin-right"></a>
+<div data-uk-dropdown="{mode:'click',pos:'bottom-left'}" class="font-setting-wrap">
+<a class="uk-icon-hover uk-icon-font uk-margin-right" aria-label="字体设置" href="javascript:;"></a>
+<div class="uk-dropdown dropdown-menu">
+<div class="dropdown-caret"><span class="caret-outer"></span><span class="caret-inner"></span></div>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-reduce">小字</button>
+<button class="uk-button-link button size-2 font-enlarge">大字</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-2 font-1 ">宋体</button>
+<button class="uk-button-link button size-2 font-2 ">黑体</button>
+</div>
+<hr>
+<div class="buttons uk-clearfix">
+<button class="uk-button-link button size-3 color-theme-sun "><i class="uk-icon-sun-o"></i>白天</button>
+<button class="uk-button-link button size-3 color-theme-eye "><i class="uk-icon-eye"></i>护眼</button>
+<button class="uk-button-link button size-3 color-theme-moon "><i class="uk-icon-moon-o"></i>夜晚</button></div>
+</div>
+</div>
+<a class="logo uk-margin-right" href="../../" title="返回首页"><img class="" src="../../static/components/images/icon_32.png" /></a>
+</div>
+<div class="uk-navbar-flip  uk-hidden-small">
+<div id="share-box"></div>
+</div>
+</nav>
+<div id="menu-id" class="uk-offcanvas reader-offcanvas">
+<div class="uk-offcanvas-bar">
+<ul class="book-menu-bar uk-nav uk-nav-offcanvas" data-uk-nav>
+<li>
+<a href="../../book/111/index.html" data-book-page-rel-url="index.html" data-book-page-id="0" title="封面">封面</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/readme.html" data-book-page-rel-url="readme.html" data-book-page-id="0" title="简介">简介</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/README.html" title="Introduction" data-book-page-rel-url="README.html" data-book-page-id="7884">Introduction</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/01-组件版本和集群环境.html" title="01. 组件版本和集群环境" data-book-page-rel-url="01-组件版本和集群环境.html" data-book-page-id="7885">01. 组件版本和集群环境</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/02-创建CA证书和秘钥.html" title="02. 创建 CA 证书和秘钥" data-book-page-rel-url="02-创建CA证书和秘钥.html" data-book-page-id="7886">02. 创建 CA 证书和秘钥</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/03-部署高可用Etcd集群.html" title="03. 部署高可用 Etcd 集群" data-book-page-rel-url="03-部署高可用Etcd集群.html" data-book-page-id="7887">03. 部署高可用 Etcd 集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/04-部署Kubectl命令行工具.html" title="04. 下载和配置 Kubectl 命令行工具" data-book-page-rel-url="04-部署Kubectl命令行工具.html" data-book-page-id="7888">04. 下载和配置 Kubectl 命令行工具</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/05-部署Flannel网络.html" title="05. 配置 Flannel 网络" data-book-page-rel-url="05-部署Flannel网络.html" data-book-page-id="7889">05. 配置 Flannel 网络</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/06-部署Master节点.html" title="06. 部署 Master 节点" data-book-page-rel-url="06-部署Master节点.html" data-book-page-id="7890">06. 部署 Master 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/07-部署Node节点.html" title="07. 部署 Node 节点" data-book-page-rel-url="07-部署Node节点.html" data-book-page-id="7891">07. 部署 Node 节点</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/08-部署DNS插件.html" title="08. 部署 DNS 插件" data-book-page-rel-url="08-部署DNS插件.html" data-book-page-id="7892">08. 部署 DNS 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/09-部署Dashboard插件.html" title="09. 部署 Dashboard 插件" data-book-page-rel-url="09-部署Dashboard插件.html" data-book-page-id="7893">09. 部署 Dashboard 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/10-部署Heapster插件.html" title="10. 部署 Heapster 插件" data-book-page-rel-url="10-部署Heapster插件.html" data-book-page-id="7894">10. 部署 Heapster 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/11-部署EFK插件.html" title="11. 部署 EFK 插件" data-book-page-rel-url="11-部署EFK插件.html" data-book-page-id="7895">11. 部署 EFK 插件</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/12-部署Docker-Registry.html" title="12. 部署 Docker Registry" data-book-page-rel-url="12-部署Docker-Registry.html" data-book-page-id="7896">12. 部署 Docker Registry</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/13-部署harbor私有仓库.html" title="13. 部署 Harbor 私有仓库" data-book-page-rel-url="13-部署harbor私有仓库.html" data-book-page-id="7897">13. 部署 Harbor 私有仓库</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/14-清理集群.html" title="14. 清理集群" data-book-page-rel-url="14-清理集群.html" data-book-page-id="7898">14. 清理集群</a>
+</li>
+<li>
+<a class="pjax" href="../../book/111/tags.html" title="标签" data-book-page-rel-url="tags.html" data-book-page-id="7899">标签</a>
+</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.staticfile.net/jquery/1.12.4/jquery.min.js"></script>
+<script type="text/javascript" src="../../static/components/uikit-2.27.5/js/uikit.reader.js"></script>
+<script type="text/javascript" src="../../static/components/social-share/social-share.min.js"></script>
+<script>(function(){var bp =document.createElement('script');var curProtocol =window.location.protocol.split(':')[0];if (curProtocol ==='https') {bp.src ='https://zz.bdstatic.com/linksubmit/push.js';}
+else {bp.src ='http://push.zhanzhang.baidu.com/push.js';}
+var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(bp,s);})();</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+<script src="https://cdn.staticfile.net/highlight.js/9.12.0/highlight.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery.pjax/2.0.1/jquery.pjax.min.js"></script>
+<script src="https://cdn.staticfile.net/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+<script src="https://cdn.staticfile.net/uikit/2.27.5/js/components/lightbox.min.js"></script>
+<link rel="dns-prefetch" href="../..//cdn.mathjax.org" />
+<script type="text/x-mathjax-config">
+ function initMathJax() {
+    var mathId = $("book-content-section")[0];
+    MathJax.Hub.Config({
+        tex2jax: {skipTags: ['script', 'noscript', 'style', 'textarea', 'pre','code','a']},
+        showProcessingMessages: false,
+        messageStyle: "none"
+    });
+    MathJax.Hub.Queue(["Typeset",MathJax.Hub,mathId]);
+ };
+initMathJax();
+</script>
+<script src='https://cdn.staticfile.net/mathjax/2.7.4/MathJax.js?config=TeX-AMS-MML_HTMLorMML' async></script>
+<style>
+	.MathJax_Display{display:inline!important;}
+</style>
+<script type="text/javascript" src="../../static/components/js/reader.js"></script>
+<script type="text/javascript">var bookId =111;var bookPageId =7890;var bookPageRelUrl ='06-部署Master节点.html';</script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-38429407-1"></script>
+<script>window.dataLayer =window.dataLayer ||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','UA-38429407-1');</script>
+<script>var _hmt =_hmt ||[];(function() {var hm =document.createElement("script");hm.src ="https://hm.baidu.com/hm.js?f28e71bd2b5dee3439448dca9f534107";var s =document.getElementsByTagName("script")[0];s.parentNode.insertBefore(hm,s);})();</script>
+</body>
+</html>
