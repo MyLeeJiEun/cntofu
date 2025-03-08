@@ -1,22 +1,35 @@
 from pathlib import Path
 
-def rename_md_to_html():
-    # 获取当前目录
+def process_md_files():
     current_dir = Path.cwd()
     
-    # 遍历所有子目录中的.md文件
-    for md_file in current_dir.rglob('*.markdown'):
-        # 构建新的.html路径
-        html_file = md_file.with_suffix('.html')
-        
-        # 如果目标文件已存在则跳过
-        if html_file.exists():
-            print(f"⚠️ 文件已存在，跳过: {html_file}")
+    for md_file in current_dir.rglob('*.md'):
+        # 第一步：替换文件内容
+        try:
+            # 读取文件内容（使用UTF-8编码）
+            content = md_file.read_text(encoding='utf-8')
+            # 执行字符串替换
+            updated_content = content.replace('.markdown', '.html')
+            # 写回修改后的内容
+            md_file.write_text(updated_content, encoding='utf-8')
+        except UnicodeDecodeError:
+            print(f"❌ 解码失败：{md_file}（请检查文件编码）")
             continue
-        
-        # 执行重命名操作
-        md_file.rename(html_file)
-        print(f"✅ 重命名成功: {md_file} -> {html_file}")
+        except Exception as e:
+            print(f"❌ 内容替换失败：{md_file} - {str(e)}")
+            continue
+
+        # 第二步：重命名文件
+        html_file = md_file.with_suffix('.html')
+        if html_file.exists():
+            print(f"⚠️ 跳过已存在文件：{html_file}")
+            continue
+            
+        try:
+            md_file.rename(html_file)
+            print(f"✅ 完成：{md_file.name} -> {html_file.name}")
+        except Exception as e:
+            print(f"❌ 重命名失败：{md_file} - {str(e)}")
 
 if __name__ == "__main__":
-    rename_md_to_html()
+    process_md_files()
